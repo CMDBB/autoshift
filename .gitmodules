@@ -1,0 +1,3 @@
+[submodule "shift-solver"]
+    path = shift-solver
+    url = https://github.com/CMDBB/shift-solver

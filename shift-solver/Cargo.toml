@@ -1,0 +1,26 @@
+[package]
+name = "shift-solver"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "shift-solver"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# coin_cbc requires coinor-libcbc-dev (apt) at build time and coinor-libcbc3 at runtime.
+# Switch to "highs" feature if you prefer a self-contained solver (compiles HiGHS from source).
+good_lp = { version = "1", features = ["coin_cbc"] }
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tqdm = "0.8.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
