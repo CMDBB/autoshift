@@ -1,0 +1,79 @@
+{
+ "actions": [],
+ "autoname": "field:employee",
+ "creation": "2026-06-08 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "employee",
+  "fte",
+  "section_break_branch",
+  "preferred_branch"
+ ],
+ "fields": [
+  {
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Employee",
+   "options": "Employee",
+   "reqd": 1
+  },
+  {
+   "fieldname": "fte",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "FTE %",
+   "reqd": 1,
+   "description": "Full-time equivalent as a percentage (0–100)"
+  },
+  {
+   "fieldname": "section_break_branch",
+   "fieldtype": "Section Break",
+   "label": "Branch Preferences"
+  },
+  {
+   "fieldname": "preferred_branch",
+   "fieldtype": "Table",
+   "label": "Preferred Branch",
+   "options": "Employee Branch Preference"
+  }
+ ],
+ "links": [],
+ "modified": "2026-06-08 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Autoshift",
+ "name": "Employee Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "HR Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

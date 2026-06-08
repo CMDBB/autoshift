@@ -1,3 +1,0 @@
-[workspace]
-members = ["shift-solver"]
-resolver = "2"

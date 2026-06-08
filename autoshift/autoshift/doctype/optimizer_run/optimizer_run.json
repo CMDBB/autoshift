@@ -1,0 +1,149 @@
+{
+ "actions": [],
+ "autoname": "format:AS-{date}-{###}",
+ "creation": "2026-06-08 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "field_order": [
+  "mode",
+  "date",
+  "disregard_assignments",
+  "status",
+  "column_break_1",
+  "objective_value",
+  "section_break_leaves",
+  "leaves_speculations",
+  "section_break_solution",
+  "solution_table",
+  "section_break_log",
+  "solver_log",
+  "section_break_committed",
+  "committed_assignments"
+ ],
+ "fields": [
+  {
+   "fieldname": "mode",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Planning Mode",
+   "options": "1-week\n2-week\n4-week\nUnbounded",
+   "reqd": 1
+  },
+  {
+   "fieldname": "date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Start Date",
+   "reqd": 1,
+   "description": "First Monday of planning period (or any day for Unbounded mode)"
+  },
+  {
+   "fieldname": "disregard_assignments",
+   "fieldtype": "Select",
+   "label": "Existing Shift Assignments",
+   "options": "Use\nIgnore\nWeigh",
+   "default": "Use"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nSolving\nSolved\nApproved\nCommitted\nFailed",
+   "default": "Draft",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "objective_value",
+   "fieldtype": "Float",
+   "label": "Objective Value",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_leaves",
+   "fieldtype": "Section Break",
+   "label": "Leave Speculations"
+  },
+  {
+   "fieldname": "leaves_speculations",
+   "fieldtype": "Table",
+   "label": "Pending Leaves to Treat as Approved",
+   "options": "Leave Speculation"
+  },
+  {
+   "fieldname": "section_break_solution",
+   "fieldtype": "Section Break",
+   "label": "Solution"
+  },
+  {
+   "fieldname": "solution_table",
+   "fieldtype": "Table",
+   "label": "Assigned Slots",
+   "options": "Optimizer Run Slot",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_log",
+   "fieldtype": "Section Break",
+   "label": "Solver Log"
+  },
+  {
+   "fieldname": "solver_log",
+   "fieldtype": "Long Text",
+   "label": "Solver Log",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_committed",
+   "fieldtype": "Section Break",
+   "label": "Committed Assignments"
+  },
+  {
+   "fieldname": "committed_assignments",
+   "fieldtype": "Table MultiSelect",
+   "label": "Shift Assignments Created",
+   "options": "Shift Assignment",
+   "read_only": 1
+  }
+ ],
+ "links": [],
+ "modified": "2026-06-08 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Autoshift",
+ "name": "Optimizer Run",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "HR Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

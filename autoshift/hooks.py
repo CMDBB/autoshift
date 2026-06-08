@@ -1,4 +1,5 @@
 app_name = "autoshift"
+fixtures = ["Custom Field"]
 app_title = "Autoshift"
 app_publisher = "CMDBB"
 app_description = "WIP (mixed integer programming for shift optimization, natural language constraints and preference, explainable decisions)"

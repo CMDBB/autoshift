@@ -1,0 +1,25 @@
+[
+ {
+  "doctype": "Custom Field",
+  "dt": "Employee",
+  "fieldname": "custom_fte",
+  "fieldtype": "Float",
+  "insert_after": "designation",
+  "label": "FTE %",
+  "description": "Full-time equivalent as a percentage (0–100). Used by the shift optimizer when no Employee Settings record exists.",
+  "module": "Autoshift",
+  "name": "Employee-custom_fte"
+ },
+ {
+  "doctype": "Custom Field",
+  "dt": "Shift Location",
+  "fieldname": "custom_discipline",
+  "fieldtype": "Link",
+  "insert_after": "name",
+  "label": "Discipline",
+  "options": "Department",
+  "description": "Which department (discipline) this location belongs to. Required by the shift optimizer.",
+  "module": "Autoshift",
+  "name": "Shift Location-custom_discipline"
+ }
+]

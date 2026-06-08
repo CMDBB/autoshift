@@ -1,0 +1,58 @@
+{
+ "actions": [],
+ "creation": "2026-06-08 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "fte_tolerance_pct",
+  "turnover_weight"
+ ],
+ "fields": [
+  {
+   "default": "0.05",
+   "fieldname": "fte_tolerance_pct",
+   "fieldtype": "Float",
+   "label": "FTE Tolerance",
+   "description": "Allowed deviation from FTE target as a fraction (e.g. 0.05 = ±5%)"
+  },
+  {
+   "default": "1.0",
+   "fieldname": "turnover_weight",
+   "fieldtype": "Float",
+   "label": "Turnover Weight",
+   "description": "Weight applied to room utilisation term in the objective"
+  }
+ ],
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-06-08 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Autoshift",
+ "name": "Optimizer Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "read": 1,
+   "role": "HR Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
