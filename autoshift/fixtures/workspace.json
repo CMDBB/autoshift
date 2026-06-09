@@ -89,6 +89,7 @@
     "type": "DocType"
    }
   ],
-  "title": "Autoshift"
+  "title": "Autoshift",
+  "type": "Public"
  }
 ]

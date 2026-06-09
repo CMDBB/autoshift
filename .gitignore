@@ -57,3 +57,5 @@ jspm_packages/
 # Rust / Cargo
 /target/
 Cargo.lock
+
+.coverage

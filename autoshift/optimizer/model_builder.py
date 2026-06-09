@@ -3,15 +3,15 @@ Constructs the PuLP MILP model from a DataPackage.
 
 Decision variables
 ------------------
-x[e, s, d, b]              Binary  – employee e works shift s on day d at branch b
-active_rooms[k, s, d, b]   Integer – rooms staffed in discipline k, shift s, day d, branch b
+x[e, s, d, b]              Binary  - employee e works shift s on day d at branch b
+active_rooms[k, s, d, b]   Integer - rooms staffed in discipline k, shift s, day d, branch b
 
-Objective (maximise)
+Objective (maximize)
 --------------------
-1. Room utilisation:   Σ active_rooms[k,s,d,b]
-2. Shift fairness:    -Σ_{e1,e2} |unfairness(e1) − unfairness(e2)|
-   where unfairness(e) = Σ_{s1<s2} |total_shifts_in_s1 − total_shifts_in_s2| for employee e
-   Both absolute values are linearised with auxiliary non-negative variables.
+1. Room utilization:      turnover_weight x Σ active_rooms[k,s,d,b]
+2. Shift preferences:     Σ_{e,s,d,b} pref[e,s] x x[e,s,d,b]
+   pref[e,s] comes from Employee Settings → shift_preferences child table.
+   Missing entries are 0.0 (neutral). No auxiliary variables required.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import itertools
 
 import pulp
 
-from .data_loader import DataPackage
+from .types import DataPackage
 
 
 def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
@@ -41,7 +41,7 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 	# ── Decision variables ────────────────────────────────────────────────────
 	x: dict[tuple, pulp.LpVariable] = {}
 	for e, s, d, b in itertools.product(E, S, D, B):
-		x[(e, s, d, b)] = pulp.LpVariable(
+		x[(e, s, d, b)] = prob.add_variable(
 			f"x_{e}_{s}_{d}_{b}".replace("-", "_").replace(" ", "_"),
 			cat="Binary",
 		)
@@ -49,7 +49,7 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 	active_rooms: dict[tuple, pulp.LpVariable] = {}
 	for k, s, d, b in itertools.product(data.disciplines, S, D, B):
 		cap = data.rooms.get((k, b), 0)
-		active_rooms[(k, s, d, b)] = pulp.LpVariable(
+		active_rooms[(k, s, d, b)] = prob.add_variable(
 			f"ar_{k}_{s}_{d}_{b}".replace("-", "_").replace(" ", "_"),
 			lowBound=0,
 			upBound=cap,
@@ -137,49 +137,19 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 
 	# ── Objective ─────────────────────────────────────────────────────────────
 
-	# Term 1: room utilisation
+	# Term 1: room utilization (weighted by turnover_weight from Optimizer Settings)
 	room_util = pulp.lpSum(
 		active_rooms[(k, s, d, b)]
 		for k, s, d, b in itertools.product(data.disciplines, S, D, B)
 	)
 
-	# Term 2: shift fairness (linearised absolute values)
-	# per-employee, per-shift-pair absolute difference in total shifts worked
-	shift_pairs = [(s1, s2) for i, s1 in enumerate(S) for s2 in S[i + 1 :]]
+	# Term 2: employee shift preferences (simple dot product)
+  # Complexity is handled on the user side
+	pref_sum = pulp.lpSum(
+		data.shift_preferences.get(e, {}).get(s, 0.0) * x[(e, s, d, b)]
+		for e, s, d, b in itertools.product(E, S, D, B)
+	)
 
-	# diff[e, s1, s2] ≥ |Σ_{d,b} x[e,s1,d,b] − Σ_{d,b} x[e,s2,d,b]|
-	diff_vars: dict[tuple, pulp.LpVariable] = {}
-	for e, (s1, s2) in itertools.product(E, shift_pairs):
-		key = (e, s1, s2)
-		v = pulp.LpVariable(
-			f"diff_{e}_{s1}_{s2}".replace("-", "_").replace(" ", "_"),
-			lowBound=0,
-		)
-		diff_vars[key] = v
-		lhs = pulp.lpSum(x[(e, s1, d, b)] - x[(e, s2, d, b)] for d in D for b in B)
-		prob += (v >= lhs, f"diff_pos_{e}_{s1}_{s2}".replace("-", "_").replace(" ", "_"))
-		prob += (v >= -lhs, f"diff_neg_{e}_{s1}_{s2}".replace("-", "_").replace(" ", "_"))
-
-	# unfairness(e) expressed as a linear combination (not a standalone variable)
-	def unfairness_expr(e):
-		return pulp.lpSum(diff_vars[(e, s1, s2)] for (s1, s2) in shift_pairs)
-
-	# pair_diff[e1, e2] ≥ |unfairness(e1) − unfairness(e2)|  for e1 < e2
-	pair_diff_vars: dict[tuple, pulp.LpVariable] = {}
-	employee_pairs = [(e1, e2) for i, e1 in enumerate(E) for e2 in E[i + 1 :]]
-	for e1, e2 in employee_pairs:
-		key = (e1, e2)
-		v = pulp.LpVariable(
-			f"pdiff_{e1}_{e2}".replace("-", "_").replace(" ", "_"),
-			lowBound=0,
-		)
-		pair_diff_vars[key] = v
-		delta = unfairness_expr(e1) - unfairness_expr(e2)
-		prob += (v >= delta, f"pdiff_pos_{e1}_{e2}".replace("-", "_").replace(" ", "_"))
-		prob += (v >= -delta, f"pdiff_neg_{e1}_{e2}".replace("-", "_").replace(" ", "_"))
-
-	total_unfairness = pulp.lpSum(pair_diff_vars.values())
-
-	prob += data.turnover_weight * room_util - total_unfairness
+	prob += data.turnover_weight * room_util + pref_sum
 
 	return prob, x, active_rooms

@@ -6,58 +6,11 @@ needed by model_builder.py.
 from __future__ import annotations
 
 import datetime
-from dataclasses import dataclass, field
 
 import frappe
 from frappe.utils import add_days, getdate
 
-
-@dataclass
-class DataPackage:
-	# Index sets
-	employees: list[str]  # employee names
-	shift_types: list[str]  # shift type names
-	working_days: list[datetime.date]  # ordered list of dates in the horizon
-	branches: list[str]  # branch names that appear in config
-
-	# Employee attributes
-	designation: dict[str, str]  # employee -> designation name
-	department: dict[str, str]  # employee -> department (discipline) name
-	is_salaried: dict[str, bool]  # employee -> True if salaried (not turnover)
-
-	# FTE targets (number of shifts, already computed from fte% and horizon length)
-	target_shifts: dict[str, int]  # employee -> target shift count
-
-	# max rooms this designation type can handle in one slot
-	max_rpe: dict[str, int]  # employee -> max rooms per employee (from config)
-
-	# rooms[discipline, branch] -> int
-	rooms: dict[tuple[str, str], int]
-
-	# Disciplines that appear in config
-	disciplines: list[str]
-
-	# assistant designations per discipline
-	assistant_designations: dict[str, list[str]]  # discipline -> [designation, ...]
-
-	# leave blocklist: set of (employee, date) that must be zero
-	leave_blocked: set[tuple[str, datetime.date]]
-
-	# forced assignments: set of (employee, shift_type, date, branch)
-	forced: set[tuple[str, str, datetime.date, str]]
-
-	# optimizer policy
-	fte_tolerance: float  # fraction e.g. 0.05
-	turnover_weight: float
-
-
-def _planning_days(start_date: datetime.date, mode: str) -> list[datetime.date]:
-	weeks = {"1-week": 1, "2-week": 2, "4-week": 4}.get(mode)
-	if weeks:
-		n_days = weeks * 7
-		return [start_date + datetime.timedelta(days=i) for i in range(n_days)]
-	# Unbounded: 4 weeks default; holiday exclusion handled separately
-	return [start_date + datetime.timedelta(days=i) for i in range(28)]
+from .types import DataPackage, planning_days as _planning_days
 
 
 def _exclude_holidays(days: list[datetime.date], employee_holiday_lists: dict) -> set[datetime.date]:
@@ -132,7 +85,7 @@ def load(run_doc) -> DataPackage:
 		fields=["name", "designation", "department", "holiday_list", "employment_type"],
 	)
 
-	# Employee Settings override for FTE
+	# Employee Settings: FTE overrides
 	emp_settings = {
 		row.employee: row
 		for row in frappe.get_all(
@@ -140,6 +93,17 @@ def load(run_doc) -> DataPackage:
 			fields=["employee", "fte"],
 		)
 	}
+
+	# Shift preferences from Employee Settings child table.
+	# Employee Settings are named by employee (autoname = field:employee),
+	# so parent == employee name in the child rows.
+	shift_pref_rows = frappe.get_all(
+		"Employee Shift Preference",
+		fields=["parent", "shift_type", "weight"],
+	)
+	shift_preferences: dict[str, dict[str, float]] = {}
+	for row in shift_pref_rows:
+		shift_preferences.setdefault(row.parent, {})[row.shift_type] = float(row.weight or 0.0)
 
 	employees = []
 	designation: dict[str, str] = {}
@@ -256,6 +220,7 @@ def load(run_doc) -> DataPackage:
 		assistant_designations=assistant_designations,
 		leave_blocked=leave_blocked,
 		forced=forced,
+		shift_preferences=shift_preferences,
 		fte_tolerance=fte_tolerance,
 		turnover_weight=turnover_weight,
 	)

@@ -81,7 +81,15 @@ The rows are added in user space.
 | --- | --- | --- |
 | `employee` | Link → Employee | One row per employee |
 | `fte` | Float, 0–100 | Full time equivalent (percentage) |
+| `shift_preferences` | Table → `Employee Shift Preference` | Per-shift preference weights used in the optimizer objective (§4.5). Leave empty to treat all shifts as neutral (weight 0). |
 | `preferred_branch` | Table | For each branch, a Float (0<=p<=1) marking preference, totaling 1 across branches (by default 1/\|B\|) |
+
+#### `Employee Shift Preference` (child of Employee Settings)
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `shift_type` | Link → Shift Type | The shift being scored |
+| `weight` | Float | Preference score (e.g. 1.0 = neutral, 2.0 = strongly preferred, 0.0 = avoid). Weights are relative — only their ratios matter across shifts for the same employee. |
 
 ### 3.3 `Optimizer Settings`
 
@@ -146,6 +154,7 @@ Each row represents one assigned shift in the proposed solution.
 | `leave[e,d]` | 1 if employee on approved leave | Leave Application |
 | `forced[e,s,d]` | 1 if pre-assigned | Existing Shift Assignment if in ``Use`` mode |
 | `rooms[k,b]` | number of rooms per discipline per branch | `Discipline-Designation-Branch Config[k,b].rooms_num` |
+| `pref[e,s]` | preference weight for employee *e* on shift *s* | `Employee Settings → shift_preferences`; 0.0 if row absent |
 
 ### 4.3 Decision Variables
 
@@ -209,30 +218,19 @@ Number of rooms staffed in discipline *k*, in slot *s* on day *d* in branch *b*.
 
 Maximise a weighted sum of:
 
-1. **Utilisation of rooms**:
+1. **Utilisation of rooms** (weighted by `turnover_weight` from Optimizer Settings):
 
    ```math
-   ∑_{k,s,d,b} \mathtt{active\_rooms}[k,s,d,b]
+   \mathtt{turnover\_weight} \times ∑_{k,s,d,b} \mathtt{active\_rooms}[k,s,d,b]
    ```
 
-2. **Shift balance per employee** — fairness across the eligible shift types (i.e. AM/PM).
-
-   Individual unfairness computed as pairwise difference totals of shift types:
+2. **Employee shift preferences** — a direct dot product of per-employee, per-shift preference weights against the assignment variables:
 
    ```math
-   \mathtt{unfairness}(e)= ∑_{(s_1,s_2)\in S^2:s_1<s_2} \bigg|∑_{d,b} x[e, s_1, d, b] - x[e, s_2,d,b]\bigg|
+   ∑_{e,s,d,b} \mathtt{pref}[e,s] \times x[e, s, d, b]
    ```
 
-   Note that the absolute value acts on the inner sum (over all days), each shift pair is treated as a separate "difference". In the simple case of only 2 possible shifts, the outer sum only has one iteration.
-
-   Then the total unfairness difference between employees is calculated again pairwise:
-
-   ```math
-   \mathtt{total\_unfairness=}∑_{(e_1,e_2)\in E^2} | \mathtt{unfairness}(e_1) - \mathtt{unfairness}(e_2) |
-   ```
-
-   To minimize unfairness, we minimize negative unfairness: ```-total_unfairness```.
-   Since we are maximizing an absolute value with a negative coefficient, the absolute values can be linearised with auxiliary variables.
+   where `pref[e,s]` is a weight for employee *e* and shift type *s*, typically derived from `Employee Settings → shift_preferences`. The pref is used as is, any preference policy must be enforced higher up on the stack.
 
 ---
 

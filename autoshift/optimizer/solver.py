@@ -24,6 +24,7 @@ def run_solve(run_name: str) -> None:
 		prob.solve(solver)
 
 		# Capture CBC log from PuLP's internal buffer
+		assert prob.solver is not None
 		log_lines = prob.solver.solverModel if hasattr(prob, "solver") else []
 		run.solver_log = "\n".join(str(l) for l in (log_lines or []))
 

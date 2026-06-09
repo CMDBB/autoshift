@@ -8,6 +8,8 @@
  "field_order": [
   "employee",
   "fte",
+  "section_break_shift",
+  "shift_preferences",
   "section_break_branch",
   "preferred_branch"
  ],
@@ -27,6 +29,18 @@
    "label": "FTE %",
    "reqd": 1,
    "description": "Full-time equivalent as a percentage (0–100)"
+  },
+  {
+   "fieldname": "section_break_shift",
+   "fieldtype": "Section Break",
+   "label": "Shift Preferences"
+  },
+  {
+   "fieldname": "shift_preferences",
+   "fieldtype": "Table",
+   "label": "Shift Preferences",
+   "options": "Employee Shift Preference",
+   "description": "Per-shift preference weights used in the optimizer objective. Leave empty to treat all shifts equally (weight 0)."
   },
   {
    "fieldname": "section_break_branch",
