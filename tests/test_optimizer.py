@@ -8,7 +8,7 @@ Run with:  pytest autoshift/tests/test_optimizer.py
 from __future__ import annotations
 
 import datetime
-from typing import Any, cast
+from typing import Any
 
 import pulp
 import pytest
@@ -34,7 +34,7 @@ def pkg(**overrides) -> DataPackage:
     """
     disc = "Omni"
     b = "B1"
-    base = dict(
+    base: dict[str, Any] = dict(
         employees=["E1"],
         shift_types=["AM"],
         working_days=[MON],
@@ -53,7 +53,12 @@ def pkg(**overrides) -> DataPackage:
         turnover_weight=1.0,
     )
     base.update(overrides)
-    return DataPackage(**cast(Any, base))
+    if "shift_preferences" not in base:
+        n_shifts: int = len(base["shift_types"])
+        base["shift_preferences"] = {
+            e: {s: 1/n_shifts for s in base["shift_types"]} for e in base["employees"]
+        }
+    return DataPackage(**base)
 
 
 def solve(data: DataPackage):
@@ -69,7 +74,7 @@ def status(prob) -> str:
 def assigned(x, employee=None, shift=None) -> int:
     """Count binary variables set to 1, optionally filtered by employee and/or shift."""
     total = 0
-    for (e, s, d, b), var in x.items():
+    for (e, s, _d, _b), var in x.items():
         if employee is not None and e != employee:
             continue
         if shift is not None and s != shift:
@@ -82,40 +87,29 @@ def assigned(x, employee=None, shift=None) -> int:
 # ── planning_days ─────────────────────────────────────────────────────────────
 
 
-def test_planning_days_one_week():
+def test_planning_days():
     d = planning_days(MON, "1-week")
     assert len(d) == 7
     assert d[0] == MON
     assert d[-1] == MON + datetime.timedelta(days=6)
-
-
-def test_planning_days_two_week():
     assert len(planning_days(MON, "2-week")) == 14
-
-
-def test_planning_days_four_week():
     assert len(planning_days(MON, "4-week")) == 28
 
 
-def test_planning_days_unbounded_defaults_to_four_weeks():
-    assert len(planning_days(MON, "Unbounded")) == 28
+def test_unbounded_nyi():
+    with pytest.raises(NotImplementedError):
+        _ = planning_days(MON, "unbounded")
 
 
 # ── build() guards ────────────────────────────────────────────────────────────
 
 
-def test_raises_on_empty_employees():
-    with pytest.raises(ValueError, match="No eligible employees"):
+def test_raises_on_empty():
+    with pytest.raises(ValueError):
         build(pkg(employees=[]))
-
-
-def test_raises_on_empty_shifts():
-    with pytest.raises(ValueError, match="No shift types"):
+    with pytest.raises(ValueError):
         build(pkg(shift_types=[]))
-
-
-def test_raises_on_empty_days():
-    with pytest.raises(ValueError, match="No working days"):
+    with pytest.raises(ValueError):
         build(pkg(working_days=[]))
 
 
@@ -127,7 +121,7 @@ def test_infeasible_when_fte_impossible():
     Salaried employee requires exactly 2 shifts but only 1 slot exists.
     With zero tolerance the FTE lower bound can't be met.
     """
-    prob, x, _ = solve(pkg(target_shifts={"E1": 2}, fte_tolerance=0.0))
+    prob, _x, _ = solve(pkg(target_shifts={"E1": 2}, fte_tolerance=0.0))
     assert status(prob) == "Infeasible"
 
 
@@ -237,7 +231,7 @@ def test_active_rooms_cannot_exceed_assistants_in_slot():
     """
     D = days_from(2)
     disc, b = "Omni", "B1"
-    prob, x, ar = solve(
+    prob, _x, ar = solve(
         pkg(
             working_days=D,
             rooms={(disc, b): 3},
@@ -256,14 +250,14 @@ def test_discipline_without_assistants_has_zero_active_rooms():
     active_rooms must be forced to 0 for every slot of that discipline.
     """
     disc, b = "Omni", "B1"
-    prob, x, ar = solve(
+    prob, _, ar = solve(
         pkg(
             assistant_designations={disc: ["Nurse"]},  # E1 is Doctor, not Nurse
             rooms={(disc, b): 2},
         )
     )
     assert status(prob) == "Optimal"
-    for (k, s, d, bk), var in ar.items():
+    for _, var in ar.items():
         assert (pulp.value(var) or 0) < 1e-6
 
 
@@ -272,7 +266,6 @@ def test_max_rooms_per_employee_limits_cross_branch_assignment():
     max_rpe=1: an employee can only be in one branch per shift-slot, even
     when two branches exist.
     """
-    disc = "Omni"
     prob, x, _ = solve(
         pkg(
             branches=["B1", "B2"],

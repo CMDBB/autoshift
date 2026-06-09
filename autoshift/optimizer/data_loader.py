@@ -10,7 +10,8 @@ import datetime
 import frappe
 from frappe.utils import add_days, getdate
 
-from .types import DataPackage, planning_days as _planning_days
+from .types import DataPackage
+from .types import planning_days as _planning_days
 
 
 def _exclude_holidays(days: list[datetime.date], employee_holiday_lists: dict) -> set[datetime.date]:
@@ -136,7 +137,7 @@ def load(run_doc) -> DataPackage:
 			fte_pct = float(frappe.db.get_value("Employee", name, "custom_fte") or 100)
 
 		fte_fraction = fte_pct / 100.0
-		# Two shifts per day × number of working days × FTE fraction
+		# Two shifts per day * number of working days * FTE fraction
 		n_slots = len(all_days) * 2
 		target_shifts[name] = round(fte_fraction * n_slots)
 

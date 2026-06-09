@@ -18,10 +18,10 @@ class DataPackage:
 
 	# Employee attributes
 	designation: dict[str, str]  # employee -> designation name
-	department: dict[str, str]   # employee -> department (discipline) name
+	department: dict[str, str]  # employee -> department (discipline) name
 	is_salaried: dict[str, bool]
 
-	# FTE targets (number of shifts, computed from fte% × horizon length × 2 shifts/day)
+	# FTE targets (number of shifts, computed from fte% * horizon length * 2 shifts/day)
 	target_shifts: dict[str, int]
 
 	# max rooms this designation can cover in one slot (e.g. 3 for orthodontists, 1 otherwise)
@@ -47,14 +47,13 @@ class DataPackage:
 	shift_preferences: dict[str, dict[str, float]]
 
 	# optimizer policy
-	fte_tolerance: float   # e.g. 0.05 = ±5%
+	fte_tolerance: float  # e.g. 0.05 = ±5%
 	turnover_weight: float
 
 
 def planning_days(start_date: datetime.date, mode: str) -> list[datetime.date]:
 	"""Return the ordered list of working days for the given planning horizon."""
-	weeks = {"1-week": 1, "2-week": 2, "4-week": 4}.get(mode)
-	if weeks:
-		return [start_date + datetime.timedelta(days=i) for i in range(weeks * 7)]
-	# Unbounded: 4-week default; caller filters out holidays after this
-	return [start_date + datetime.timedelta(days=i) for i in range(28)]
+	weeks = {"1-week": 1, "2-week": 2, "4-week": 4}
+	if mode not in weeks:
+		raise NotImplementedError(f"Planning mode '{mode}' not yet implemented")
+	return [start_date + datetime.timedelta(days=i) for i in range(weeks[mode] * 7)]

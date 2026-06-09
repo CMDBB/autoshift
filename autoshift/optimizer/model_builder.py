@@ -94,7 +94,8 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 	# 5. Assistant coverage: assistants assigned ≥ active_rooms in that discipline/slot
 	for k, s, d, b in itertools.product(data.disciplines, S, D, B):
 		assistants_in_discipline = [
-			e for e in E
+			e
+			for e in E
 			if data.designation.get(e) in data.assistant_designations.get(k, [])
 			and data.department.get(e) == k
 		]
@@ -106,8 +107,7 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 			)
 		else:
 			prob += (
-				pulp.lpSum(x[(e, s, d, b)] for e in assistants_in_discipline)
-				>= active_rooms[(k, s, d, b)],
+				pulp.lpSum(x[(e, s, d, b)] for e in assistants_in_discipline) >= active_rooms[(k, s, d, b)],
 				f"asst_coverage_{k}_{s}_{d}_{b}".replace("-", "_").replace(" ", "_"),
 			)
 
@@ -139,12 +139,11 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 
 	# Term 1: room utilization (weighted by turnover_weight from Optimizer Settings)
 	room_util = pulp.lpSum(
-		active_rooms[(k, s, d, b)]
-		for k, s, d, b in itertools.product(data.disciplines, S, D, B)
+		active_rooms[(k, s, d, b)] for k, s, d, b in itertools.product(data.disciplines, S, D, B)
 	)
 
 	# Term 2: employee shift preferences (simple dot product)
-  # Complexity is handled on the user side
+	# Complexity is handled on the user side
 	pref_sum = pulp.lpSum(
 		data.shift_preferences.get(e, {}).get(s, 0.0) * x[(e, s, d, b)]
 		for e, s, d, b in itertools.product(E, S, D, B)

@@ -7,9 +7,8 @@ from __future__ import annotations
 
 import traceback
 
-import pulp
-
 import frappe
+import pulp
 
 from . import data_loader, model_builder
 
@@ -25,14 +24,14 @@ def run_solve(run_name: str) -> None:
 
 		# Capture CBC log from PuLP's internal buffer
 		assert prob.solver is not None
-		log_lines = prob.solver.solverModel if hasattr(prob, "solver") else []
-		run.solver_log = "\n".join(str(l) for l in (log_lines or []))
+		log_lines = prob.solver.solverModel if hasattr(prob, "solver") else []  # pyright: ignore[reportAttributeAccessIssue]
+		run.set("solver_log", "\n".join(str(l) for l in (log_lines or [])))
 
 		lp_status = pulp.LpStatus[prob.status]
 
 		if lp_status == "Optimal":
-			run.objective_value = pulp.value(prob.objective)
-			run.solution_table = []
+			run.set("objective_value", pulp.value(prob.objective))
+			run.set("solution_table", [])
 
 			for (e, s, d, b), var in x.items():
 				val = pulp.value(var)
@@ -52,7 +51,7 @@ def run_solve(run_name: str) -> None:
 			run.db_set("status", "Solved")
 			run.save(ignore_permissions=True)
 		else:
-			run.solver_log = (run.solver_log or "") + f"\n\nSolver status: {lp_status}"
+			run.set("solver_log", (str(run.get("solver_log")) or "") + f"\n\nSolver status: {lp_status}")
 			run.db_set("status", "Failed")
 			run.save(ignore_permissions=True)
 
@@ -60,7 +59,7 @@ def run_solve(run_name: str) -> None:
 		tb = traceback.format_exc()
 		frappe.log_error(tb, f"Optimizer Run failed: {run_name}")
 		try:
-			run.solver_log = (run.solver_log or "") + f"\n\nException:\n{tb}"
+			run.set("solver_log", (str(run.get("solver_log")) or "") + f"\n\nException:\n{tb}")
 			run.db_set("status", "Failed")
 			run.save(ignore_permissions=True)
 		except Exception:
