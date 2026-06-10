@@ -4,7 +4,7 @@ Converts an approved Optimizer Run into submitted Shift Assignment records.
 
 from __future__ import annotations
 
-import frappe
+import frappe.defaults
 
 
 def commit(run_name: str) -> None:
@@ -21,13 +21,13 @@ def commit(run_name: str) -> None:
 	created = []
 	for slot in run.solution_table:
 		sa = frappe.new_doc("Shift Assignment")
-		sa.employee = slot.employee
-		sa.shift_type = slot.shift_type
-		sa.start_date = slot.date
-		sa.end_date = slot.date
-		sa.company = company
+		sa.set("employee", slot.employee)
+		sa.set("shift_type", slot.shift_type)
+		sa.set("start_date", slot.date)
+		sa.set("end_date", slot.date)
+		sa.set("company", company)
 		if slot.get("branch"):
-			sa.branch = slot.branch
+			sa.set("branch", slot.branch)
 		sa.insert(ignore_permissions=True)
 		sa.submit()
 		created.append(sa.name)

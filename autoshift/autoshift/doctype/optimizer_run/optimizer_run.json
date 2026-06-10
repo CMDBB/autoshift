@@ -1,7 +1,7 @@
 {
  "actions": [],
  "autoname": "format:AS-{date}-{###}",
- "creation": "2026-06-08 00:00:00.000000",
+ "creation": "2026-06-08 00:00:00",
  "doctype": "DocType",
  "document_type": "Document",
  "engine": "InnoDB",
@@ -17,9 +17,7 @@
   "section_break_solution",
   "solution_table",
   "section_break_log",
-  "solver_log",
-  "section_break_committed",
-  "committed_assignments"
+  "solver_log"
  ],
  "fields": [
   {
@@ -31,27 +29,27 @@
    "reqd": 1
   },
   {
+   "description": "First Monday of planning period (or any day for Unbounded mode)",
    "fieldname": "date",
    "fieldtype": "Date",
    "in_list_view": 1,
    "label": "Start Date",
-   "reqd": 1,
-   "description": "First Monday of planning period (or any day for Unbounded mode)"
+   "reqd": 1
   },
   {
+   "default": "Use",
    "fieldname": "disregard_assignments",
    "fieldtype": "Select",
    "label": "Existing Shift Assignments",
-   "options": "Use\nIgnore\nWeigh",
-   "default": "Use"
+   "options": "Use\nIgnore\nWeigh"
   },
   {
+   "default": "Draft",
    "fieldname": "status",
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
    "options": "Draft\nSolving\nSolved\nApproved\nCommitted\nFailed",
-   "default": "Draft",
    "read_only": 1
   },
   {
@@ -97,25 +95,14 @@
    "fieldtype": "Long Text",
    "label": "Solver Log",
    "read_only": 1
-  },
-  {
-   "fieldname": "section_break_committed",
-   "fieldtype": "Section Break",
-   "label": "Committed Assignments"
-  },
-  {
-   "fieldname": "committed_assignments",
-   "fieldtype": "Table MultiSelect",
-   "label": "Shift Assignments Created",
-   "options": "Shift Assignment",
-   "read_only": 1
   }
  ],
  "links": [],
- "modified": "2026-06-08 00:00:00.000000",
+ "modified": "2026-06-10 11:36:41.359601",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Optimizer Run",
+ "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [
   {
@@ -142,6 +129,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],

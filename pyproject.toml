@@ -27,6 +27,8 @@ packages = []
 [dependency-groups]
 dev = [
     "coverage>=7.14.1",
+    "ipykernel>=7.3.0",
+    "pandas>=3.0.3",
     "pytest>=9.0.3",
 ]
 

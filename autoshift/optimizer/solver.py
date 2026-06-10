@@ -4,6 +4,7 @@ Called via Frappe's background job queue.
 """
 
 from __future__ import annotations
+import os
 
 import traceback
 
@@ -19,13 +20,14 @@ def run_solve(run_name: str) -> None:
 		data = data_loader.load(run)
 		prob, x, _active_rooms = model_builder.build(data)
 
-		solver = pulp.PULP_CBC_CMD(msg=True, timeLimit=3600)
+		logPath = "coin_run.log"
+		solver = pulp.COIN_CMD(timeLimit=3600, logPath=logPath)
 		prob.solve(solver)
 
 		# Capture CBC log from PuLP's internal buffer
-		assert prob.solver is not None
-		log_lines = prob.solver.solverModel if hasattr(prob, "solver") else []  # pyright: ignore[reportAttributeAccessIssue]
-		run.set("solver_log", "\n".join(str(l) for l in (log_lines or [])))
+		with open("coin_run.log", "r") as f:
+			run.set("solver_log", f.read())
+		os.remove(logPath)
 
 		lp_status = pulp.LpStatus[prob.status]
 

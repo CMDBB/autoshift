@@ -1,7 +1,7 @@
 {
  "actions": [],
  "autoname": "field:employee",
- "creation": "2026-06-08 00:00:00.000000",
+ "creation": "2026-06-08 00:00:00",
  "doctype": "DocType",
  "document_type": "Setup",
  "engine": "InnoDB",
@@ -9,6 +9,7 @@
   "employee",
   "fte",
   "section_break_shift",
+  "favourite_shift",
   "shift_preferences",
   "section_break_branch",
   "preferred_branch"
@@ -20,15 +21,16 @@
    "in_list_view": 1,
    "label": "Employee",
    "options": "Employee",
-   "reqd": 1
+   "reqd": 1,
+   "unique": 1
   },
   {
+   "description": "Full-time equivalent as a percentage (0-100)",
    "fieldname": "fte",
-   "fieldtype": "Float",
+   "fieldtype": "Percent",
    "in_list_view": 1,
    "label": "FTE %",
-   "reqd": 1,
-   "description": "Full-time equivalent as a percentage (0–100)"
+   "reqd": 1
   },
   {
    "fieldname": "section_break_shift",
@@ -36,11 +38,11 @@
    "label": "Shift Preferences"
   },
   {
+   "description": "Per-shift preference weights used in the optimizer objective. Leave empty to treat all shifts equally (weight 0).",
    "fieldname": "shift_preferences",
    "fieldtype": "Table",
    "label": "Shift Preferences",
-   "options": "Employee Shift Preference",
-   "description": "Per-shift preference weights used in the optimizer objective. Leave empty to treat all shifts equally (weight 0)."
+   "options": "Employee Shift Preference"
   },
   {
    "fieldname": "section_break_branch",
@@ -52,10 +54,17 @@
    "fieldtype": "Table",
    "label": "Preferred Branch",
    "options": "Employee Branch Preference"
+  },
+  {
+   "description": "Preferred singular shift type. Leave empty to ",
+   "fieldname": "favourite_shift",
+   "fieldtype": "Link",
+   "label": "Favourite Shift",
+   "options": "Shift Type"
   }
  ],
  "links": [],
- "modified": "2026-06-08 00:00:00.000000",
+ "modified": "2026-06-10 12:04:23.893845",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Employee Settings",
@@ -86,6 +95,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],

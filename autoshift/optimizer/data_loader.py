@@ -8,12 +8,18 @@ from __future__ import annotations
 import datetime
 
 import frappe
-from frappe.utils import add_days, getdate
+from frappe.utils import add_days, getdate as _getdate
 
 from .types import DataPackage
 from .types import planning_days as _planning_days
 
+def getdate(*args, **kwargs) -> datetime.date:
+	result = _getdate(*args, **kwargs)
+	if result is None:
+		raise ValueError(f"Invalid Arguments to {_getdate.__name__}, ({args},{kwargs})")
+	return result
 
+# TODO: destroy
 def _exclude_holidays(days: list[datetime.date], employee_holiday_lists: dict) -> set[datetime.date]:
 	"""Return the set of dates that are holidays for ALL employees (global non-working days)."""
 	if not employee_holiday_lists:
