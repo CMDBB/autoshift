@@ -1,11 +1,12 @@
 app_name = "autoshift"
 fixtures = [
-	"Custom Field",
-	{"dt": "Workspace", "filters": [["name", "=", "Autoshift"]]},
+	{"dt": "Custom Field", "filters": [["module", "=", "Autoshift"]]},
+	# {"dt": "Workspace", "filters": [["module", "=", "Autoshift"]]},
 ]
 app_title = "Autoshift"
 app_publisher = "CMDBB"
 app_description = "WIP (mixed integer programming for shift optimization, natural language constraints and preference, explainable decisions)"
+app_color = "#88ffee"
 app_email = "adrian.schemel@cmdbalexert.ch"
 app_license = "gpl-3.0"
 
@@ -15,15 +16,17 @@ app_license = "gpl-3.0"
 required_apps = ["frappe/hrms"]
 
 # Each item in the list will be shown as an app in the apps page
-# add_to_apps_screen = [
-# 	{
-# 		"name": "autoshift",
-# 		"logo": "/assets/autoshift/logo.png",
-# 		"title": "Autoshift",
-# 		"route": "/autoshift",
-# 		"has_permission": "autoshift.api.permission.has_app_permission"
-# 	}
-# ]
+add_to_apps_screen = [
+	{
+		"name": app_name,
+		"logo": "/assets/autoshift/images/logo.svg",
+		"title": app_title,
+		"route": "/desk/autoshift",
+		# "has_permission": "autoshift.api.permission.has_app_permission"
+	}
+]
+
+commands = "autoshift.commands"
 
 # Includes in <head>
 # ------------------
@@ -259,4 +262,3 @@ required_apps = ["frappe/hrms"]
 # ------------
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
-

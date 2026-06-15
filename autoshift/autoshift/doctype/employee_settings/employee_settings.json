@@ -7,7 +7,6 @@
  "engine": "InnoDB",
  "field_order": [
   "employee",
-  "fte",
   "section_break_shift",
   "favourite_shift",
   "shift_preferences",
@@ -23,14 +22,6 @@
    "options": "Employee",
    "reqd": 1,
    "unique": 1
-  },
-  {
-   "description": "Full-time equivalent as a percentage (0-100)",
-   "fieldname": "fte",
-   "fieldtype": "Percent",
-   "in_list_view": 1,
-   "label": "FTE %",
-   "reqd": 1
   },
   {
    "fieldname": "section_break_shift",
@@ -64,7 +55,7 @@
   }
  ],
  "links": [],
- "modified": "2026-06-10 12:04:23.893845",
+ "modified": "2026-06-12 15:04:21.264715",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Employee Settings",
