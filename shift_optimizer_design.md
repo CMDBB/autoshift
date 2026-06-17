@@ -81,15 +81,33 @@ The rows are added in user space.
 | --- | --- | --- |
 | `employee` | Link → Employee | One row per employee |
 | `fte` | Float, 0–100 | Full time equivalent (percentage) |
-| `shift_preferences` | Table → `Employee Shift Preference` | Per-shift preference weights used in the optimizer objective (§4.5). Leave empty to treat all shifts as neutral (weight 0). |
-| `preferred_branch` | Table | For each branch, a Float (0<=p<=1) marking preference, totaling 1 across branches (by default 1/\|B\|) |
+| `favourite_shift` | Link → Shift Type | Single most-preferred shift. If set, this layer takes priority over the table and algorithm fields. |
+| `shift_preferences` | Table → `Employee Shift Preference` | Per-shift preference weights. Used when `favourite_shift` is empty; normalized if non-compliant (see §3.2.1). |
+| `shift_algorithm` | Code (Python) | Python snippet that produces a `weights` dict keyed by shift name. Used when both fields above are empty; normalized if non-compliant (see §3.2.1). `shifts` (list of shift names) is injected into the execution namespace. |
+| `preferred_branch` | Table → `Employee Branch Preference` | Per-branch preference weights, summing to 1 across branches (default: 1/\|B\| each). |
+
+#### §3.2.1 Preference resolution and normalization
+
+Preference weights are resolved in three layers, highest priority first:
+
+1. **`favourite_shift`** — the named shift receives the maximum allowed weight; all other shifts share the remainder equally.
+2. **`shift_preferences` table** — raw per-shift weights are read and normalized (see below). Missing shifts default to 0 before normalization.
+3. **`shift_algorithm` code** — the snippet is executed with `shifts` in scope; the resulting `weights` dict is normalized (see below). Execution errors fall through to neutral weights.
+
+If none of the three layers is populated, the employee contributes 0.0 on all shifts (neutral — no shift preference in the objective).
+
+**Normalization principle:** all resolved weights must satisfy:
+- Sum = 1 across all shift types.
+- No individual weight deviates from the uniform baseline (1/N) by more than 50 % of that baseline, i.e. each weight lies in [0.5/N, 1.5/N] where N = |S|.
+
+Compliance is enforced by passing the raw scores through a temperature-scaled softmax. The temperature is derived analytically from N and the max-deviation bound so that even the most extreme inputs (fully polarized scores) produce weights that sit exactly at the band boundary. Any less extreme input stays strictly within the band, giving the guarantee by construction rather than by post-hoc clipping. This bounds the optimizer's ability to concentrate all of an employee's assignments on a single shift solely due to preference, keeping the objective balanced against room utilization.
 
 #### `Employee Shift Preference` (child of Employee Settings)
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `shift_type` | Link → Shift Type | The shift being scored |
-| `weight` | Float | Preference score (e.g. 1.0 = neutral, 2.0 = strongly preferred, 0.0 = avoid). Weights are relative — only their ratios matter across shifts for the same employee. |
+| `weight` | Float | Raw preference score. Only ratios between shifts matter; the loader normalizes the vector before passing it to the model. |
 
 ### 3.3 `Optimizer Settings`
 
@@ -196,10 +214,10 @@ Number of rooms staffed in discipline *k*, in slot *s* on day *d* in branch *b*.
 ∀ e,s,r :\quad ∑_r  x[e, s, d, b] ≤ \mathtt{max\_rpe}[e.k]     
 ```
 
-**Assistant coverage:**
+**Room coverage:**
 
 ```math
-∀k,s,d,b :\quad ∑_{e : e.k=\mathtt{assistant}}  x[e, s, d, b]  ≥  \mathtt{active\_rooms}[k, s, d, b]
+∀k,s,d,b :\quad ∑_{e : e.k=k} \mathtt{max\_rpe[e.k]} * x[e, s, d, b]   ≥  \mathtt{active\_rooms}[k, s, d, b]
 ```
 
 **FTE target (salaried staff):**

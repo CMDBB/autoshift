@@ -4,20 +4,21 @@ Called via Frappe's background job queue.
 """
 
 from __future__ import annotations
-import os
 
+import os
 import traceback
 
 import frappe
 import pulp
 
-from . import data_loader, model_builder
+from autoshift.autoshift.doctype.optimizer_run.optimizer_run import OptimizerRun
+
+from . import model_builder
 
 
-def run_solve(run_name: str) -> None:
+def run_solve(run_name: str, data) -> None:
 	run = frappe.get_doc("Optimizer Run", run_name)
 	try:
-		data = data_loader.load(run)
 		prob, x, _active_rooms = model_builder.build(data)
 
 		logPath = "coin_run.log"
@@ -25,7 +26,7 @@ def run_solve(run_name: str) -> None:
 		prob.solve(solver)
 
 		# Capture CBC log from PuLP's internal buffer
-		with open("coin_run.log", "r") as f:
+		with open(logPath) as f:
 			run.set("solver_log", f.read())
 		os.remove(logPath)
 

@@ -29,7 +29,7 @@
    "label": "Shift Preferences"
   },
   {
-   "description": "Per-shift preference weights used in the optimizer objective. Leave empty to treat all shifts equally (weight 0).",
+   "description": "Per-shift preference weights used in the optimizer objective. Leave empty to use uniform preferences.",
    "fieldname": "shift_preferences",
    "fieldtype": "Table",
    "label": "Shift Preferences",
@@ -47,7 +47,7 @@
    "options": "Employee Branch Preference"
   },
   {
-   "description": "Preferred singular shift type. Leave empty to ",
+   "description": "Preferred singular shift type. Leave empty to use preference table.",
    "fieldname": "favourite_shift",
    "fieldtype": "Link",
    "label": "Favourite Shift",
@@ -55,10 +55,11 @@
   }
  ],
  "links": [],
- "modified": "2026-06-12 15:04:21.264715",
+ "modified": "2026-06-16 11:47:48.581309",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Employee Settings",
+ "naming_rule": "By fieldname",
  "owner": "Administrator",
  "permissions": [
   {

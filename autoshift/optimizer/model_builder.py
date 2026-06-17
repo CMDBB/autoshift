@@ -6,12 +6,17 @@ Decision variables
 x[e, s, d, b]              Binary  - employee e works shift s on day d at branch b
 active_rooms[k, s, d, b]   Integer - rooms staffed in discipline k, shift s, day d, branch b
 
+Room coverage
+-------------
+Every employee in a discipline contributes max_rpe[e] room-slots per assigned shift.
+The weighted sum must be >= active_rooms for that discipline/slot/branch.
+
 Objective (maximize)
 --------------------
-1. Room utilization:      turnover_weight x Σ active_rooms[k,s,d,b]
-2. Shift preferences:     Σ_{e,s,d,b} pref[e,s] x x[e,s,d,b]
+1. Room utilization:  turnover_weight * Σ active_rooms[k,s,d,b]
+2. Shift preferences: Σ_{e,s,d,b} pref[e,s] * x[e,s,d,b]
    pref[e,s] comes from Employee Settings → shift_preferences child table.
-   Missing entries are 0.0 (neutral). No auxiliary variables required.
+   Missing entries are 0.0 (neutral).
 """
 
 from __future__ import annotations
@@ -91,24 +96,20 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 			f"max_rpe_{e}_{s}_{d}".replace("-", "_").replace(" ", "_"),
 		)
 
-	# 5. Assistant coverage: assistants assigned ≥ active_rooms in that discipline/slot
+	# 5. Room coverage: weighted sum of all employees in discipline ≥ active_rooms
+	#    Each employee contributes max_rpe[e] rooms per slot assigned.
 	for k, s, d, b in itertools.product(data.disciplines, S, D, B):
-		assistants_in_discipline = [
-			e
-			for e in E
-			if data.designation.get(e) in data.assistant_designations.get(k, [])
-			and data.department.get(e) == k
-		]
-		if not assistants_in_discipline:
-			# If no assistants configured for this discipline, force active_rooms to 0
+		employees_in_discipline = [e for e in E if data.department.get(e) == k]
+		if not employees_in_discipline:
 			prob += (
 				active_rooms[(k, s, d, b)] == 0,
-				f"no_assistants_{k}_{s}_{d}_{b}".replace("-", "_").replace(" ", "_"),
+				f"no_employees_{k}_{s}_{d}_{b}".replace("-", "_").replace(" ", "_"),
 			)
 		else:
 			prob += (
-				pulp.lpSum(x[(e, s, d, b)] for e in assistants_in_discipline) >= active_rooms[(k, s, d, b)],
-				f"asst_coverage_{k}_{s}_{d}_{b}".replace("-", "_").replace(" ", "_"),
+				pulp.lpSum(data.max_rpe.get(e, 1) * x[(e, s, d, b)] for e in employees_in_discipline)
+				>= active_rooms[(k, s, d, b)],
+				f"room_coverage_{k}_{s}_{d}_{b}".replace("-", "_").replace(" ", "_"),
 			)
 
 	# 6 & 7. FTE targets

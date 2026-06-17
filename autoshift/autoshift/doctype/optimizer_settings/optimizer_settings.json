@@ -1,32 +1,48 @@
 {
  "actions": [],
- "creation": "2026-06-08 00:00:00.000000",
+ "creation": "2026-06-08 00:00:00",
  "doctype": "DocType",
  "document_type": "Setup",
  "engine": "InnoDB",
  "field_order": [
   "fte_tolerance_pct",
-  "turnover_weight"
+  "turnover_weight",
+  "bounded_holiday_list",
+  "unbounded_holiday_list"
  ],
  "fields": [
   {
    "default": "0.05",
+   "description": "Allowed deviation from FTE target as a fraction (e.g. 0.05 = \u00b15%)",
    "fieldname": "fte_tolerance_pct",
    "fieldtype": "Float",
-   "label": "FTE Tolerance",
-   "description": "Allowed deviation from FTE target as a fraction (e.g. 0.05 = ±5%)"
+   "label": "FTE Tolerance"
   },
   {
    "default": "1.0",
+   "description": "Weight applied to room utilisation term in the objective",
    "fieldname": "turnover_weight",
    "fieldtype": "Float",
-   "label": "Turnover Weight",
-   "description": "Weight applied to room utilisation term in the objective"
+   "label": "Turnover Weight"
+  },
+  {
+   "description": "Holiday List for the bounded planners. Include only week-based holidays (i.e. Weekends)",
+   "fieldname": "bounded_holiday_list",
+   "fieldtype": "Link",
+   "label": "Bounded Holiday List",
+   "options": "Holiday List"
+  },
+  {
+   "description": "Holiday List used for the Unbounded planner (include Weekends AND special days)",
+   "fieldname": "unbounded_holiday_list",
+   "fieldtype": "Link",
+   "label": "Unbounded Holiday List",
+   "options": "Holiday List"
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-06-08 00:00:00.000000",
+ "modified": "2026-06-15 13:56:21.066531",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Optimizer Settings",
@@ -36,10 +52,8 @@
    "create": 1,
    "delete": 1,
    "email": 1,
-   "export": 1,
    "print": 1,
    "read": 1,
-   "report": 1,
    "role": "System Manager",
    "share": 1,
    "write": 1
@@ -51,6 +65,7 @@
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],

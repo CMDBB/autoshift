@@ -6,38 +6,39 @@ needed by model_builder.py.
 from __future__ import annotations
 
 import datetime
+from typing import cast
 
 import frappe
-from frappe.utils import add_days, getdate as _getdate
+import numpy as np
+from frappe.utils import add_days
+from frappe.utils import getdate as _getdate
 
 from .types import DataPackage
 from .types import planning_days as _planning_days
+
+
+def _min_temperature(n, delta, clamp=10.0):
+	num = (n - 1) * (1 + n * delta)
+	den = (n - 1) - n * delta
+	assert den > 0, "delta too large"
+	return (2 * clamp) / np.log(num / den)
+
+
+def _normalized_weights(raw, delta, clamp=10.0):
+	n = len(raw)
+	v = np.clip(raw, -clamp, clamp)
+	T = _min_temperature(n, delta, clamp)
+	v_scaled = v / T
+	v_scaled -= v_scaled.max()  # numerical stability
+	e = np.exp(v_scaled)
+	return e / e.sum()
+
 
 def getdate(*args, **kwargs) -> datetime.date:
 	result = _getdate(*args, **kwargs)
 	if result is None:
 		raise ValueError(f"Invalid Arguments to {_getdate.__name__}, ({args},{kwargs})")
 	return result
-
-# TODO: destroy
-def _exclude_holidays(days: list[datetime.date], employee_holiday_lists: dict) -> set[datetime.date]:
-	"""Return the set of dates that are holidays for ALL employees (global non-working days)."""
-	if not employee_holiday_lists:
-		return set()
-	# Count how many employees have each date as a holiday
-	holiday_counter: dict[datetime.date, int] = {}
-	for hl_name in set(employee_holiday_lists.values()):
-		if not hl_name:
-			continue
-		dates = frappe.get_all(
-			"Holiday",
-			filters={"parent": hl_name, "holiday_date": ["in", [str(d) for d in days]]},
-			pluck="holiday_date",
-		)
-		for d in dates:
-			holiday_counter[getdate(d)] = holiday_counter.get(getdate(d), 0) + 1
-	total = len(employee_holiday_lists)
-	return {d for d, count in holiday_counter.items() if count == total}
 
 
 def load(run_doc) -> DataPackage:
@@ -46,8 +47,8 @@ def load(run_doc) -> DataPackage:
 
 	# ── Optimizer settings ──────────────────────────────────────────────────
 	settings = frappe.get_single("Optimizer Settings")
-	fte_tolerance = float(settings.fte_tolerance_pct or 0.05)
-	turnover_weight = float(settings.turnover_weight or 1.0)
+	fte_tolerance = cast(float, settings.get("fte_tolerance_pct") or 0.05)
+	turnover_weight = cast(float, settings.get("turnover_weight") or 1.0)
 
 	# ── Discipline-Designation-Branch Config ─────────────────────────────────
 	config_rows = frappe.get_all(
@@ -55,7 +56,9 @@ def load(run_doc) -> DataPackage:
 		fields=["discipline", "employee_type", "branch", "max_rooms_for_employee_type", "rooms_num"],
 	)
 	if not config_rows:
-		frappe.throw(frappe._("No Discipline Designation Branch Config records found. Please configure them first."))
+		frappe.throw(
+			frappe._("No Discipline Designation Branch Config records found. Please configure them first.")
+		)
 
 	# Build lookup structures from config
 	branches = sorted({r.branch for r in config_rows if r.branch})
@@ -71,25 +74,12 @@ def load(run_doc) -> DataPackage:
 		key = r.employee_type
 		max_rpe_by_desig[key] = max(max_rpe_by_desig.get(key, 0), int(r.max_rooms_for_employee_type or 1))
 
-	# Determine which designations are "assistant" type (max_rooms == 1 and not a doctor)
-	# We treat any designation with max_rooms_for_employee_type == 1 that appears as an
-	# assistant-level role as an assistant. The caller configures this via rooms_num and
-	# max_rooms — we rely on the discipline config to know which designations cover rooms.
-	# For simplicity: assistant designations are those with max_rooms_per_employee_type == 1
-	# and rooms_num > 0. Doctors supervise multiple rooms.
-	assistant_designations: dict[str, list[str]] = {d: [] for d in disciplines}
-	for r in config_rows:
-		if int(r.max_rooms_for_employee_type or 1) == 1:
-			lst = assistant_designations.setdefault(r.discipline, [])
-			if r.employee_type not in lst:
-				lst.append(r.employee_type)
-
 	# ── Employees ────────────────────────────────────────────────────────────
 	valid_designations = {r.employee_type for r in config_rows}
 	raw_employees = frappe.get_all(
 		"Employee",
 		filters={"status": "Active", "designation": ["in", list(valid_designations)]},
-		fields=["name", "designation", "department", "holiday_list", "employment_type"],
+		fields=["name", "designation", "department"],
 	)
 
 	# Employee Settings: FTE overrides
@@ -97,20 +87,48 @@ def load(run_doc) -> DataPackage:
 		row.employee: row
 		for row in frappe.get_all(
 			"Employee Settings",
-			fields=["employee", "fte"],
+			fields=["*"],
 		)
 	}
 
-	# Shift preferences from Employee Settings child table.
-	# Employee Settings are named by employee (autoname = field:employee),
-	# so parent == employee name in the child rows.
-	shift_pref_rows = frappe.get_all(
-		"Employee Shift Preference",
-		fields=["parent", "shift_type", "weight"],
-	)
+	# ── Shift Types ──────────────────────────────────────────────────────────
+	shift_types = frappe.get_all("Shift Type", pluck="name")
+
+	# ── Shift preferences ─────────────────────────────────────────────────────
+	# 3-layer resolution (highest priority first):
+	#   1. favourite_shift  → maximum allowed weight on that single shift
+	#   2. shift_preferences table → raw weights, normalized if non-compliant
+	#   3. uniform preferences
+	# An employee absent from this dict contributes 0.0 (neutral) in the objective.
 	shift_preferences: dict[str, dict[str, float]] = {}
-	for row in shift_pref_rows:
-		shift_preferences.setdefault(row.parent, {})[row.shift_type] = float(row.weight or 0.0)
+
+	if len(shift_types) > 1:
+		# delta = max absolute deviation from uniform allowed = 50% of uniform weight (1/N)
+		delta = 0.5 / len(shift_types)
+		for emp_name, row in emp_settings.items():
+			favourite = row.get("favourite_shift")
+			pref_rows = frappe.get_all(
+				"Employee Shift Preference",
+				fields=["shift_type", "weight"],
+				filters=[["parent", "=", row.get("name")]],
+			)
+
+			clamp: float = 10.0
+			weights: dict[str, float] | None = None
+			if favourite:
+				raw_arr = np.array([(clamp if s == favourite else -clamp) for s in shift_types])
+			elif pref_rows:
+				raw_arr = np.array(
+					[
+						float(next((r.weight for r in pref_rows if r.shift_type == s), 0.0))
+						for s in shift_types
+					]
+				)
+			else:
+				raw_arr = np.array([0.0 for _ in shift_types])
+
+			weights = dict(zip(shift_types, _normalized_weights(raw_arr, delta).tolist(), strict=True))
+			shift_preferences[emp_name] = weights
 
 	employees = []
 	designation: dict[str, str] = {}
@@ -136,12 +154,7 @@ def load(run_doc) -> DataPackage:
 		# Employment type: treat "Salaried" as salaried, everything else as turnover-paid
 		is_salaried[name] = (emp.employment_type or "").lower() not in ("turnover", "commission", "casual")
 
-		# FTE: prefer Employee Settings, fall back to Employee.custom_fte
-		if name in emp_settings:
-			fte_pct = float(emp_settings[name].fte or 100)
-		else:
-			fte_pct = float(frappe.db.get_value("Employee", name, "custom_fte") or 100)
-
+		fte_pct = cast(float, frappe.db.get_value("Employee", name, "custom_fte")) or 100.0
 		fte_fraction = fte_pct / 100.0
 		# Two shifts per day * number of working days * FTE fraction
 		n_slots = len(all_days) * 2
@@ -149,14 +162,11 @@ def load(run_doc) -> DataPackage:
 
 		max_rpe[name] = max_rpe_by_desig.get(desig, 1)
 
-	if mode == "Unbounded":
-		global_holidays = _exclude_holidays(all_days, employee_holiday_lists)
-		working_days = [d for d in all_days if d not in global_holidays]
-	else:
-		working_days = all_days
-
-	# ── Shift Types ──────────────────────────────────────────────────────────
-	shift_types = frappe.get_all("Shift Type", pluck="name")
+	_holiday_list_name: str = settings.get(f"{'un' if mode == 'Unbounded' else ''}bounded_holiday_list")  # pyright: ignore[reportAssignmentType]
+	_holiday_list_doc = frappe.get_doc("Holiday List", _holiday_list_name)
+	_holiday_doc_list: list = _holiday_list_doc.get("holidays")  # pyright: ignore[reportAssignmentType]
+	holiday_list = [h.get("holiday_date") for h in _holiday_doc_list]
+	working_days = [d for d in all_days if d not in holiday_list]
 
 	# ── Leave blocklist ───────────────────────────────────────────────────────
 	window_start = str(working_days[0]) if working_days else str(start_date)
@@ -205,12 +215,18 @@ def load(run_doc) -> DataPackage:
 			filters={
 				"employee": ["in", employees],
 				"docstatus": 1,
-				"start_date": ["between", [window_start, window_end]],
+				"start_date": ["<=", window_end],
 			},
-			fields=["employee", "shift_type", "start_date", "branch"],
+			fields=["employee", "shift_type", "start_date", "location"],
 		)
 		for sa in existing:
-			forced.add((sa.employee, sa.shift_type, getdate(sa.start_date), sa.branch or ""))
+			# determine branch from substring of shift_type
+			shift_type = sa.shift_type or ""
+			branch = next(
+				(b for b in branches if b.lower() in shift_type.lower()),
+				"default_branch",
+			)
+			forced.add((sa.employee, sa.shift_type, getdate(sa.start_date), branch))
 
 	return DataPackage(
 		employees=employees,
@@ -224,7 +240,6 @@ def load(run_doc) -> DataPackage:
 		max_rpe=max_rpe,
 		rooms=rooms,
 		disciplines=disciplines,
-		assistant_designations=assistant_designations,
 		leave_blocked=leave_blocked,
 		forced=forced,
 		shift_preferences=shift_preferences,

@@ -25,6 +25,9 @@ def dump_dev_data(context, output):
 		"Branch",
 		"Discipline Designation Branch Config",
 		"Shift Type",
+		"Optimizer Settings",
+		"Employee Settings",
+		"Holiday List",
 	]
 
 	for dt in doctypes_to_dump:

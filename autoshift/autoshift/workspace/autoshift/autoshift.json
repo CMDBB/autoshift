@@ -48,7 +48,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "Optimization Data",
-   "link_count": 2,
+   "link_count": 3,
    "link_type": "DocType",
    "onboard": 0,
    "type": "Card Break"
@@ -66,6 +66,16 @@
   {
    "hidden": 0,
    "is_query_report": 0,
+   "label": "Bulk Employee Settings",
+   "link_count": 0,
+   "link_to": "Bulk Employee Settings",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "Discipline Designation Branch Config",
    "link_count": 0,
    "link_to": "Discipline Designation Branch Config",
@@ -74,7 +84,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-06-15 08:52:09.838118",
+ "modified": "2026-06-15 10:56:04.758462",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Autoshift",

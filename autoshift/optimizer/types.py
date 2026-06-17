@@ -24,7 +24,7 @@ class DataPackage:
 	# FTE targets (number of shifts, computed from fte% * horizon length * 2 shifts/day)
 	target_shifts: dict[str, int]
 
-	# max rooms this designation can cover in one slot (e.g. 3 for orthodontists, 1 otherwise)
+	# max rooms this employee can cover in one slot (from Discipline-Designation-Branch Config)
 	max_rpe: dict[str, int]
 
 	# rooms[(discipline, branch)] -> capacity
@@ -33,9 +33,6 @@ class DataPackage:
 	# disciplines that appear in config
 	disciplines: list[str]
 
-	# assistant designations per discipline: discipline -> [designation, ...]
-	assistant_designations: dict[str, list[str]]
-
 	# leave blocklist: (employee, date) pairs that must be unassigned
 	leave_blocked: set[tuple[str, datetime.date]]
 
@@ -43,7 +40,6 @@ class DataPackage:
 	forced: set[tuple[str, str, datetime.date, str]]
 
 	# per-employee shift preference weights: employee -> {shift_type -> weight}
-	# missing entries default to 0.0 (neutral); higher = more preferred
 	shift_preferences: dict[str, dict[str, float]]
 
 	# optimizer policy
