@@ -1,0 +1,145 @@
+{
+ "actions": [],
+ "creation": "2026-06-15 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Tool",
+ "engine": "InnoDB",
+ "field_order": [
+  "section_template",
+  "favourite_shift",
+  "shift_preferences",
+  "section_break_branch_template",
+  "preferred_branch",
+  "section_filters",
+  "company",
+  "column_break_filters",
+  "department",
+  "designation",
+  "quick_filters_section",
+  "filter_list",
+  "advanced_filters_section",
+  "select_employees_section",
+  "employees_html"
+ ],
+ "fields": [
+  {
+   "fieldname": "section_template",
+   "fieldtype": "Section Break",
+   "label": "Settings Template"
+  },
+  {
+   "fieldname": "favourite_shift",
+   "fieldtype": "Link",
+   "label": "Favourite Shift",
+   "options": "Shift Type"
+  },
+  {
+   "fieldname": "shift_preferences",
+   "fieldtype": "Table",
+   "label": "Shift Preferences",
+   "options": "Employee Shift Preference"
+  },
+  {
+   "fieldname": "section_break_branch_template",
+   "fieldtype": "Section Break",
+   "label": "Branch Preferences"
+  },
+  {
+   "fieldname": "preferred_branch",
+   "fieldtype": "Table",
+   "label": "Preferred Branch",
+   "options": "Employee Branch Preference"
+  },
+  {
+   "fieldname": "section_filters",
+   "fieldtype": "Section Break",
+   "label": "Filter Employees"
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_filters",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "department",
+   "fieldtype": "Link",
+   "label": "Department",
+   "options": "Department"
+  },
+  {
+   "fieldname": "designation",
+   "fieldtype": "Link",
+   "label": "Designation",
+   "options": "Designation"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "quick_filters_section",
+   "fieldtype": "Section Break",
+   "label": "Quick Filters"
+  },
+  {
+   "fieldname": "filter_list",
+   "fieldtype": "HTML",
+   "label": "Filter List"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "advanced_filters_section",
+   "fieldtype": "Section Break",
+   "label": "Advanced Filters"
+  },
+  {
+   "fieldname": "select_employees_section",
+   "fieldtype": "Section Break",
+   "label": "Select Employees"
+  },
+  {
+   "fieldname": "employees_html",
+   "fieldtype": "HTML",
+   "label": "Employees"
+  }
+ ],
+ "hide_toolbar": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-06-15 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Autoshift",
+ "name": "Bulk Employee Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "HR Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
