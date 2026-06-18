@@ -12,6 +12,8 @@
   "status",
   "column_break_1",
   "objective_value",
+  "type",
+  "hash",
   "section_break_leaves",
   "leaves_speculations",
   "section_break_solution",
@@ -95,10 +97,28 @@
    "fieldtype": "Long Text",
    "label": "Solver Log",
    "read_only": 1
+  },
+  {
+   "default": "Manual",
+   "description": "Was this run created manually, copied from another run, or was it created automatically by another tool (dynamic auto-calendar)",
+   "fieldname": "type",
+   "fieldtype": "Select",
+   "hidden": 1,
+   "label": "Type",
+   "options": "Manual\nCopy\nAutomatic",
+   "read_only": 1,
+   "set_only_once": 1
+  },
+  {
+   "description": "The hash of the input, to catch/cache duplicate runs.",
+   "fieldname": "hash",
+   "fieldtype": "Read Only",
+   "label": "Input Hash",
+   "read_only": 1
   }
  ],
  "links": [],
- "modified": "2026-06-10 11:36:41.359601",
+ "modified": "2026-06-18 10:40:14.149293",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Optimizer Run",

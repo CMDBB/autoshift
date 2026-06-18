@@ -95,7 +95,7 @@
   {
    "document_type": "Optimizer Run",
    "label": "Optimizer Run",
-   "quick_list_filter": "[]"
+   "quick_list_filter": "[[\"Optimizer Run\",\"type\",\"!=\",\"Automatic\"]]"
   }
  ],
  "roles": [],
