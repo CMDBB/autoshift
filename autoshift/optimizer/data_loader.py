@@ -151,8 +151,11 @@ def load(run_doc) -> DataPackage:
 		department[name] = emp.department or ""
 		employee_holiday_lists[name] = emp.holiday_list or ""
 
-		# Employment type: treat "Salaried" as salaried, everything else as turnover-paid
-		is_salaried[name] = (emp.employment_type or "").lower() not in ("turnover", "commission", "casual")
+		# TODO: Employment Type is a configurable Link doctype, not a fixed enum, so
+		# hardcoded string matching against employment_type misclassifies pay structure for
+		# any practice using different labels. Replace with a configurable name list (e.g.
+		# in Optimizer Settings) once defined. For now, assume everyone is salaried.
+		is_salaried[name] = True
 
 		fte_pct = cast(float, frappe.db.get_value("Employee", name, "custom_fte")) or 100.0
 		fte_fraction = fte_pct / 100.0
@@ -208,8 +211,14 @@ def load(run_doc) -> DataPackage:
 				d += datetime.timedelta(days=1)
 
 	# ── Forced assignments ────────────────────────────────────────────────────
+	if run_doc.disregard_assignments in ("Use", "Weigh"):
+		raise NotImplementedError(
+			f"disregard_assignments = '{run_doc.disregard_assignments}' is not yet implemented; only 'Ignore' is supported"
+		)
+
 	forced: set[tuple[str, str, datetime.date, str]] = set()
 	if run_doc.disregard_assignments == "Use":
+		# unreachable: TODO implement Use and test it
 		existing = frappe.get_all(
 			"Shift Assignment",
 			filters={
@@ -219,13 +228,18 @@ def load(run_doc) -> DataPackage:
 			},
 			fields=["employee", "shift_type", "start_date", "location"],
 		)
-		for sa in existing:
-			# determine branch from substring of shift_type
-			shift_type = sa.shift_type or ""
-			branch = next(
-				(b for b in branches if b.lower() in shift_type.lower()),
-				"default_branch",
+		# MAJOR ISSUE (see CLAUDE.md): Shift Assignment has no reliable source of truth for
+		# branch — Employee.branch doesn't constrain it since employees can move between
+		# branches. Happy-path stopgap: only single-branch practices are supported here.
+		if existing and len(branches) != 1:
+			frappe.throw(
+				frappe._(
+					"Resolving the branch of existing Shift Assignments is only supported "
+					"for single-branch practices right now (found {0} branches)."
+				).format(len(branches))
 			)
+		branch = branches[0] if branches else "default_branch"
+		for sa in existing:
 			forced.add((sa.employee, sa.shift_type, getdate(sa.start_date), branch))
 
 	return DataPackage(

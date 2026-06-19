@@ -4,7 +4,7 @@ Converts an approved Optimizer Run into submitted Shift Assignment records.
 
 from __future__ import annotations
 
-import frappe.defaults
+import frappe
 
 
 def commit(run_name: str) -> None:
@@ -13,35 +13,14 @@ def commit(run_name: str) -> None:
 	if run.status != "Approved":
 		frappe.throw(frappe._("Only Approved runs can be committed."))
 
-	company = frappe.defaults.get_defaults().get("company")
-	if not company:
-		companies = frappe.get_all("Company", pluck="name", limit=1)
-		company = companies[0] if companies else None
-
-	created = []
-	for slot in run.solution_table:
-		sa = frappe.new_doc("Shift Assignment")
-		sa.set("employee", slot.employee)
-		sa.set("shift_type", slot.shift_type)
-		sa.set("start_date", slot.date)
-		sa.set("end_date", slot.date)
-		sa.set("company", company)
-		if slot.get("branch"):
-			sa.set("branch", slot.branch)
-		sa.insert(ignore_permissions=True)
-		sa.submit()
-		created.append(sa.name)
-
-	# Link back to the run via the committed_assignments table
-	# Table MultiSelect stores link values directly
-	run.db_set("status", "Committed")
-	# Re-fetch and attach committed assignment names
-	run.reload()
-	for sa_name in created:
-		run.append("committed_assignments", {"link_doctype": "Shift Assignment", "link_name": sa_name})
-	run.save(ignore_permissions=True)
-
-	frappe.msgprint(
-		frappe._("{0} Shift Assignment(s) created and submitted.").format(len(created)),
-		indicator="green",
+	# `committed_assignments` was removed from Optimizer Run while the run -> Shift
+	# Assignment link-back mechanism is redesigned (see CLAUDE.md "To be implemented").
+	# Fail before creating/submitting anything so a commit attempt can't leave behind
+	# real Shift Assignments with no way to trace them back to this run.
+	frappe.throw(
+		frappe._(
+			"Committing is not yet implemented: the run-to-Shift-Assignment link-back "
+			"mechanism is still being designed. No records have been created."
+		),
+		exc=NotImplementedError,
 	)

@@ -6,7 +6,7 @@ This document describes the design of a Frappe custom app (`autoshift`) that int
 
 As much data as possible is inferred from the Frappe HR / ERPNext instances, with the app itself only containing minimal configuration doctypes for the optimizer runs.
 
-The app is read-only with respect to Frappe HR data during the optimisation phase. It may eventually write back to Frappe HR only when a proposed schedule is explicitly approved, at which point it would bulk-create `Shift Assignment` records. But its main purpose is to generate schedules dynamically for HR to act on manually.
+The app is read-only with respect to Frappe HR data during the optimisation phase. It may eventually write back to Frappe HR only when a proposed schedule is explicitly approved, at which point it would bulk-create `Shift Assignment` records. But its initial purpose is to generate schedules dynamically for HR to act on manually.
 
 ### Practice structure
 
@@ -19,10 +19,6 @@ The app is read-only with respect to Frappe HR data during the optimisation phas
 - **Branches**: two branches with some shared staff and some fixed staff
 
 All of the above are examples and should be inferred from main app data, and then configured by custom app data references. For example, there is a table in the custom app that lets the user specify which departments, shifts, locations and employee groups should be included in the optimizer.
-
-### Room and staffing constraints
-
-Every discipline requires **one assistant per active room**. Orthodontics additionally allows **one orthodontist to supervise up to 3 rooms simultaneously**; all other disciplines have a 1:1 doctor-to-room ratio.
 
 ---
 
@@ -81,9 +77,8 @@ The rows are added in user space.
 | --- | --- | --- |
 | `employee` | Link → Employee | One row per employee |
 | `fte` | Float, 0–100 | Full time equivalent (percentage) |
-| `favourite_shift` | Link → Shift Type | Single most-preferred shift. If set, this layer takes priority over the table and algorithm fields. |
+| `favourite_shift` | Link → Shift Type | Single most-preferred shift. If set, this layer takes priority over the table. |
 | `shift_preferences` | Table → `Employee Shift Preference` | Per-shift preference weights. Used when `favourite_shift` is empty; normalized if non-compliant (see §3.2.1). |
-| `shift_algorithm` | Code (Python) | Python snippet that produces a `weights` dict keyed by shift name. Used when both fields above are empty; normalized if non-compliant (see §3.2.1). `shifts` (list of shift names) is injected into the execution namespace. |
 | `preferred_branch` | Table → `Employee Branch Preference` | Per-branch preference weights, summing to 1 across branches (default: 1/\|B\| each). |
 
 #### §3.2.1 Preference resolution and normalization
@@ -92,9 +87,7 @@ Preference weights are resolved in three layers, highest priority first:
 
 1. **`favourite_shift`** — the named shift receives the maximum allowed weight; all other shifts share the remainder equally.
 2. **`shift_preferences` table** — raw per-shift weights are read and normalized (see below). Missing shifts default to 0 before normalization.
-3. **`shift_algorithm` code** — the snippet is executed with `shifts` in scope; the resulting `weights` dict is normalized (see below). Execution errors fall through to neutral weights.
-
-If none of the three layers is populated, the employee contributes 0.0 on all shifts (neutral — no shift preference in the objective).
+3. **Uniform preference** — neutral weights.
 
 **Normalization principle:** all resolved weights must satisfy:
 - Sum = 1 across all shift types.
@@ -290,22 +283,20 @@ shift_optimizer/
 ### 5.4 Docker considerations
 
 - The app is installed as a standard Frappe app alongside HRMS in the existing Docker Compose stack.
-- The `custom_field.json` fixture is applied automatically on `bench migrate` — no manual UI steps.
-- The CBC solver binary ships inside the PuLP Python package and requires no additional system packages.
-- Background solve jobs use Frappe's existing Redis + RQ worker stack; no additional infrastructure needed.
+- The CBC solver binary ships inside the PuLP Python package
+- Background solve jobs use Frappe's existing Redis + RQ worker stack
 
 ---
 
 ## 6. Assumptions and Open Questions
 
 | # | Item | Assumption made | Revisit if... |
-| --- | --- | --- |
-| 1 | Assistants are discipline-specific | Each assistant is assigned to one department | Cross-trained assistants exist |
-| 2 | Turnover doctors have no upper shift bound | Only a minimum is enforced | Doctors request a maximum |
-| 3 | AM/PM fairness is global, not per discipline | Single fairness term in objective | Disciplines need separate fairness tracking |
-| 4 | Room count is fixed per month | `Discipline-Designation-Branch Config` is static | Rooms are taken offline for periods |
-| 5 | Leave is the only day-level blocker | No other day-level constraints | On-call or external commitments need modelling |
-| 6 | No minimum rest gap between shifts | One shift per day maximum makes this moot | Night shifts or extended hours are introduced |
+| --- | --- | --- | --- |
+| 1 | Turnover doctors have no upper shift bound | Only a minimum is enforced | Doctors request a maximum |
+| 2 | AM/PM fairness is global, not per discipline | Single fairness term in objective | Disciplines need separate fairness tracking |
+| 3 | Room count is fixed per month | `Discipline-Designation-Branch Config` is static | Rooms are taken offline for periods |
+| 4 | Leave is the only day-level blocker | No other day-level constraints | On-call or external commitments need modelling |
+| 5 | No minimum rest gap between shifts | One shift per day maximum makes this moot | Night shifts or extended hours are introduced |
 
 ---
 
