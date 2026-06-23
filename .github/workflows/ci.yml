@@ -89,6 +89,8 @@ jobs:
         working-directory: /home/runner/frappe-bench
         run: |
           set -xeuo pipefail
+          bench get-app erpnext $GITHUB_WORKSPACE
+          bench get-app hrms $GITHUB_WORKSPACE
           bench get-app autoshift $GITHUB_WORKSPACE
           bench setup requirements --dev
           bench new-site --db-root-password root --admin-password admin test_site
