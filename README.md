@@ -110,21 +110,10 @@ Click **Commit**. Autoshift creates and submits one **Shift Assignment** record 
 
 ```mermaid
 flowchart LR
-  subgraph one[Original]
-    direction TB
-    A(((Draft))) -->|Solve| B[Solving]
-    B --> F[Failed] & C[Solved]
-    C -->|Approve| D[Approved]
-    D -->|Commit| E[Committed]
-  end
-  one -->|Duplicate| two
-  subgraph two[Copy]
-    direction TB
-    A'(((Draft))) -->|Solve| B'[Solving]
-    B' --> F'[Failed] & C'[Solved]
-    C' -->|Approve| D'[Approved]
-    D' -->|Commit| E'[Committed]
-  end
+  A(((Draft))) -->|Solve| B[Solving]
+  B --> F[Failed] & C[Solved]
+  C -->|Approve| D[Approved]
+  D -->|Commit| E[Committed]
 ```
 
 | Status | Meaning |

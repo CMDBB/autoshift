@@ -53,7 +53,7 @@ def load(run_doc) -> DataPackage:
 	# ── Discipline-Designation-Branch Config ─────────────────────────────────
 	config_rows = frappe.get_all(
 		"Discipline Designation Branch Config",
-		fields=["discipline", "employee_type", "branch", "max_rooms_for_employee_type", "rooms_num"],
+		fields=["name", "discipline", "employee_type", "branch", "max_rooms_for_employee_type", "rooms_num"],
 	)
 	if not config_rows:
 		frappe.throw(
@@ -79,10 +79,10 @@ def load(run_doc) -> DataPackage:
 	raw_employees = frappe.get_all(
 		"Employee",
 		filters={"status": "Active", "designation": ["in", list(valid_designations)]},
-		fields=["name", "designation", "department"],
+		fields=["name", "designation", "department", "custom_fte"],
 	)
 
-	# Employee Settings: FTE overrides
+	# Employee Settings
 	emp_settings = {
 		row.employee: row
 		for row in frappe.get_all(
@@ -92,7 +92,42 @@ def load(run_doc) -> DataPackage:
 	}
 
 	# ── Shift Types ──────────────────────────────────────────────────────────
-	shift_types = frappe.get_all("Shift Type", pluck="name")
+	# Shift Type scope is config-driven via Discipline Designation Branch Config.shift_types
+	# (a Table MultiSelect, backed by the "Discipline Designation Branch Config Shift Type"
+	# child doctype): a Shift Type is in scope if any DDBC row lists it. Excludes non-clinical
+	# variants (design doc §2.2) without needing a field on Shift Type itself.
+	ddbc_shift_type_rows = frappe.get_all(
+		"Discipline Designation Branch Config Shift Type",
+		filters={"parent": ["in", [r.name for r in config_rows]]},
+		fields=["parent", "shift_type"],
+	)
+	shift_types_by_ddbc: dict[str, set[str]] = {}
+	for row in ddbc_shift_type_rows:
+		shift_types_by_ddbc.setdefault(row.parent, set()).add(row.shift_type)
+
+	shift_types = sorted({st for sts in shift_types_by_ddbc.values() for st in sts})
+
+	# TODO: the same Shift Type selection has to be re-entered on every DDBC row of a given
+	# discipline (one per designation x branch), so nothing stops two rows of the *same*
+	# discipline from listing different Shift Types. Detect and warn rather than silently
+	# unioning across a drifted config - the optimizer's idea of "what shifts exist for
+	# Endo" shouldn't depend on which row happened to define them.
+	shift_type_variants_by_discipline: dict[str, set[frozenset[str]]] = {}
+	for r in config_rows:
+		shift_type_variants_by_discipline.setdefault(r.discipline, set()).add(
+			frozenset(shift_types_by_ddbc.get(r.name, set()))
+		)
+	for discipline, variants in shift_type_variants_by_discipline.items():
+		if len(variants) > 1:
+			frappe.log_error(
+				title="Inconsistent Shift Types across Discipline Designation Branch Config rows",
+				message=(
+					f"Discipline {discipline!r} has Discipline Designation Branch Config rows "
+					f"with differing Shift Types selections: {[sorted(v) for v in variants]}. "
+					"The optimizer uses the union of all selections for this discipline; "
+					"align the rows to avoid surprises."
+				),
+			)
 
 	# ── Shift preferences ─────────────────────────────────────────────────────
 	# 3-layer resolution (highest priority first):
@@ -151,13 +186,11 @@ def load(run_doc) -> DataPackage:
 		department[name] = emp.department or ""
 		employee_holiday_lists[name] = emp.holiday_list or ""
 
-		# TODO: Employment Type is a configurable Link doctype, not a fixed enum, so
-		# hardcoded string matching against employment_type misclassifies pay structure for
-		# any practice using different labels. Replace with a configurable name list (e.g.
+		# TODO: Employment Type is a configurable Link doctype. Replace with a configurable name list (e.g.
 		# in Optimizer Settings) once defined. For now, assume everyone is salaried.
 		is_salaried[name] = True
 
-		fte_pct = cast(float, frappe.db.get_value("Employee", name, "custom_fte")) or 100.0
+		fte_pct = cast(float, emp.custom_fte) or 100.0
 		fte_fraction = fte_pct / 100.0
 		# Two shifts per day * number of working days * FTE fraction
 		n_slots = len(all_days) * 2
@@ -183,6 +216,8 @@ def load(run_doc) -> DataPackage:
 		filters={
 			"employee": ["in", employees],
 			"status": "Approved",
+		},
+		or_filters={
 			"from_date": ["<=", window_end],
 			"to_date": [">=", window_start],
 		},
@@ -226,20 +261,27 @@ def load(run_doc) -> DataPackage:
 				"docstatus": 1,
 				"start_date": ["<=", window_end],
 			},
-			fields=["employee", "shift_type", "start_date", "location"],
+			fields=["employee", "shift_type", "start_date", "shift_location"],
 		)
-		# MAJOR ISSUE (see CLAUDE.md): Shift Assignment has no reliable source of truth for
-		# branch — Employee.branch doesn't constrain it since employees can move between
-		# branches. Happy-path stopgap: only single-branch practices are supported here.
-		if existing and len(branches) != 1:
-			frappe.throw(
-				frappe._(
-					"Resolving the branch of existing Shift Assignments is only supported "
-					"for single-branch practices right now (found {0} branches)."
-				).format(len(branches))
+		# Source of truth for branch: Shift Assignment -> Shift Location ->
+		# Shift Location.custom_branch (Link to Branch).
+		location_branch = {
+			row.name: row.custom_branch
+			for row in frappe.get_all(
+				"Shift Location",
+				filters={"name": ["in", list({sa.shift_location for sa in existing if sa.shift_location})]},
+				fields=["name", "custom_branch"],
 			)
-		branch = branches[0] if branches else "default_branch"
+		}
 		for sa in existing:
+			branch = location_branch.get(sa.shift_location)
+			if not branch:
+				frappe.throw(
+					frappe._(
+						"Shift Assignment {0} has no Shift Location with a Branch set; cannot "
+						"resolve which branch it belongs to."
+					).format(sa.name)
+				)
 			forced.add((sa.employee, sa.shift_type, getdate(sa.start_date), branch))
 
 	return DataPackage(

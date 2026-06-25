@@ -7,8 +7,11 @@ Assignment from Frappe HR; combines with app-specific config; produces a schedul
 reviews, approves, and commits into real `Shift Assignment` records.
 
 **This is an early-stage, single-developer WIP**, not a finished product. Expect missing
-features, incomplete migrations, and rough edges — see the three lists below before assuming
-something is "broken" vs. simply not built yet.
+features, incomplete migrations, and rough edges — see the lists below before assuming
+something is "broken" vs. simply not built yet. 
+
+**IMPORTANT**: Ask the user for clarification early and
+often on any design intentions.
 
 Design intent: `shift_optimizer_design.md`. User docs: `README.md`.
 
@@ -43,8 +46,17 @@ Optimizer engine (`autoshift/optimizer/`, pure-Python where possible for testabi
    **The run→Shift-Assignment link-back is mid-redesign and not finished — see To Be
    Implemented.**
 
-Two custom fields on stock doctypes (`autoshift/fixtures/custom_field.json`):
-`Shift Location.custom_discipline`, `Employee.custom_fte`.
+Custom fields on stock doctypes (`autoshift/fixtures/custom_field.json`):
+`Shift Location.custom_discipline`, `Shift Location.custom_branch` (Link to `Branch` — source
+of truth for a `Shift Assignment`'s branch via its `shift_location`), `Employee.custom_fte`.
+
+`Discipline Designation Branch Config.shift_types` (Table MultiSelect, backed by the
+`Discipline Designation Branch Config Shift Type` child doctype) determines which `Shift
+Type`s are in scope for the optimizer — a Shift Type not listed on any config row is treated
+as a non-clinical variant and excluded. This duplicates the shift-type list across every
+(discipline, designation, branch) row rather than tagging Shift Type itself, so
+`data_loader.py` warns (`frappe.log_error`) if rows sharing the same discipline list
+different Shift Types — see the TODO at [data_loader.py:94](autoshift/optimizer/data_loader.py#L94).
 
 CLI (`autoshift/commands.py`): `dump-dev-data` / `seed-dev-data` for snapshotting/seeding a
 dev site.
@@ -53,23 +65,6 @@ dev site.
 
 1. Minor: `solver.py` only persists the input hash inside the `try`, so a run that fails
    before/during hashing gets cached as `Failed` with no hash — defeats the cache on retry.
-
-## Major issues (need design work, not a quick fix)
-
-- **No source of truth for branch on an existing `Shift Assignment`, and no filter on which
-  `Shift Type`s the optimizer even considers.** [data_loader.py:95](autoshift/optimizer/data_loader.py#L95)
-  loads every `Shift Type` unconditionally — design doc §2.2 anticipates "non-clinical
-  variants" existing among Shift Types, but nothing excludes them from the optimizer, and
-  there's no config doctype that says which shifts are in scope. This compounds the branch
-  problem: when resolving forced assignments from existing `Shift Assignment` records
-  (`disregard_assignments = "Use"`), there is no reliable doctype-level link to derive a
-  branch from — `Employee.branch` doesn't constrain it, since employees move freely between
-  branches. The previous attempt was a fragile substring guess against the shift type name.
-  Stopgap fix in place: [data_loader.py:219-233](autoshift/optimizer/data_loader.py#L219-L233)
-  now assumes a single configured branch and throws if more than one exists. Multi-branch
-  practices need either an explicit shift-assignment-level branch field or a different
-  source of truth before `"Use"` mode can be wired in for real — open design question, not
-  yet resolved.
 
 ## To be implemented (scaffolding exists; feature path is incomplete, not "broken")
 
