@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(frozen=True)
 class DataPackage:
 	# Index sets
 	employees: list[str]
@@ -72,6 +72,59 @@ class DataPackage:
 		payload = {f.name: normalize(getattr(self, f.name)) for f in dataclasses.fields(self)}
 		blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 		return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+	def dumps(self) -> str:
+		"""Serialize to a JSON string. `datetime.date`s become ISO strings; round-trips via `loads`."""
+		payload = {
+			"employees": self.employees,
+			"shift_types": self.shift_types,
+			"working_days": [d.isoformat() for d in self.working_days],
+			"branches": self.branches,
+			"designation": self.designation,
+			"department": self.department,
+			"target_shifts": self.target_shifts,
+			"max_rpe": self.max_rpe,
+			"rooms": [
+				[discipline, branch, capacity] for (discipline, branch), capacity in self.rooms.items()
+			],
+			"disciplines": self.disciplines,
+			"leave_blocked": [[employee, date.isoformat()] for employee, date in self.leave_blocked],
+			"forced": [
+				[employee, shift_type, date.isoformat(), branch]
+				for employee, shift_type, date, branch in self.forced
+			],
+			"shift_preferences": self.shift_preferences,
+			"fte_tolerance": self.fte_tolerance,
+			"turnover_weight": self.turnover_weight,
+		}
+		return json.dumps(payload)
+
+	@classmethod
+	def loads(cls, raw: str) -> "DataPackage":
+		"""Deserialize a JSON string produced by `dumps`."""
+		payload = json.loads(raw)
+		return cls(
+			employees=payload["employees"],
+			shift_types=payload["shift_types"],
+			working_days=[datetime.date.fromisoformat(d) for d in payload["working_days"]],
+			branches=payload["branches"],
+			designation=payload["designation"],
+			department=payload["department"],
+			target_shifts=payload["target_shifts"],
+			max_rpe=payload["max_rpe"],
+			rooms={(discipline, branch): capacity for discipline, branch, capacity in payload["rooms"]},
+			disciplines=payload["disciplines"],
+			leave_blocked={
+				(employee, datetime.date.fromisoformat(date)) for employee, date in payload["leave_blocked"]
+			},
+			forced={
+				(employee, shift_type, datetime.date.fromisoformat(date), branch)
+				for employee, shift_type, date, branch in payload["forced"]
+			},
+			shift_preferences=payload["shift_preferences"],
+			fte_tolerance=payload["fte_tolerance"],
+			turnover_weight=payload["turnover_weight"],
+		)
 
 
 def planning_days(start_date: datetime.date, mode: str) -> list[datetime.date]:

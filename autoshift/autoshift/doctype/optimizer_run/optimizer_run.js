@@ -9,30 +9,23 @@ frappe.ui.form.on("Optimizer Run", {
 
 		if (frm.doc.status === "Draft") {
 			frm.add_custom_button(__("Solve"), () => {
-				frappe.confirm(
-					__(
-						"Run the optimizer? Large problems that don't finish quickly will automatically continue in the background."
-					),
-					() => {
-						frm.call("solve").then((r) => {
-							const cached_run = r.message && r.message.cached_run;
-							if (cached_run) {
-								const link = frappe.utils.get_form_link(
-									"Optimizer Run",
-									cached_run,
-									true
-								);
-								frappe.confirm(
-									__(
-										"Identical run detected: {0} already solved this exact input. This Draft was left untouched so you can solve it again if the underlying data changes. View the existing run instead?",
-										[link]
-									),
-									() => frappe.set_route("Form", "Optimizer Run", cached_run)
-								);
-							} else {
-								frm.reload_doc();
+				frm.call("check_duplicates").then(
+					({ message: { n: cache_hits_n, cached_runs_list_link: link } }) => {
+						frappe.confirm(
+							cache_hits_n == 0
+								? __(
+										"Run the optimizer? Large problems that don't finish quickly will automatically continue in the background."
+								  )
+								: __(
+										"Identical run detected: {0} {1}s already solved this exact input. Run the optimizer anyway?",
+										[cache_hits_n, link]
+								  ),
+							() => {
+								frm.call("solve").then((r) => {
+									frm.reload_doc();
+								});
 							}
-						});
+						);
 					}
 				);
 			}).addClass("btn-primary");
