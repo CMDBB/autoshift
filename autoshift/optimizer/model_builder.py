@@ -117,24 +117,12 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 	for e in E:
 		target = data.target_shifts.get(e, 0)
 		total_assigned = pulp.lpSum(x[(e, s, d, b)] for s in S for d in D for b in B)
-		if data.is_salaried.get(e, True):
-			# Salaried: two-sided bound
-			if target > 0:
-				prob += (
-					total_assigned >= (1 - tol) * target,
-					f"fte_min_{e}".replace("-", "_").replace(" ", "_"),
-				)
-				prob += (
-					total_assigned <= (1 + tol) * target,
-					f"fte_max_{e}".replace("-", "_").replace(" ", "_"),
-				)
-		else:
-			# Turnover-paid: minimum only
-			if target > 0:
-				prob += (
-					total_assigned >= (1 - tol) * target,
-					f"fte_min_{e}".replace("-", "_").replace(" ", "_"),
-				)
+		if target > 0:
+			# upper bound only: employee utilization will come from objective function
+			prob += (
+				total_assigned <= (1 + tol) * target,
+				f"fte_max_{e}".replace("-", "_").replace(" ", "_"),
+			)
 
 	# ── Objective ─────────────────────────────────────────────────────────────
 
