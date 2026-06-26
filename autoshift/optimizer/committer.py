@@ -10,7 +10,7 @@ import frappe
 def commit(run_name: str) -> None:
 	run = frappe.get_doc("Optimizer Run", run_name)
 
-	if run.status != "Approved":
+	if run.status != "Approved":  # pyright: ignore[reportAttributeAccessIssue]
 		frappe.throw(frappe._("Only Approved runs can be committed."))
 
 	# `committed_assignments` was removed from Optimizer Run while the run -> Shift
