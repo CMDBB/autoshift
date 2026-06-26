@@ -18,17 +18,17 @@ from . import model_builder
 CACHEABLE_STATUSES = ("Solved", "Failed", "Approved", "Committed")
 
 
-def find_cached_run(input_hash: str, exclude_name: str | None = None) -> str | None:
+def find_cached_runs(input_hash: str, exclude_name: str | None = None) -> list[str]:
 	"""
-	Look up an existing Optimizer Run that already solved this exact input.
+	Look up existing Optimizer Runs that already solved this exact input.
 
-	An identical input always solves to the same result status, so a match means
-	re-solving would be redundant (for now). Returns the matching run's name, or None.
+	An identical input normally solves to the same result status, so a match means
+	re-solving could be redundant. Returns a list of the matching run's names.
 	"""
 	filters: dict = {"hash": input_hash, "status": ["in", CACHEABLE_STATUSES]}
 	if exclude_name:
 		filters["name"] = ["!=", exclude_name]
-	return frappe.db.get_value("Optimizer Run", filters, "name", order_by="creation asc")
+	return frappe.get_all("Optimizer Run", filters, order_by="creation asc")
 
 
 def run_solve(run_name: str, data, time_limit: int = 3600) -> str | None:

@@ -1,7 +1,9 @@
-import frappe
+import json
+
+import frappe.utils
 from frappe.model.document import Document
 
-from autoshift.optimizer import data_loader
+from autoshift.optimizer import data_loader, types
 
 # Time given to the synchronous attempt before falling back to a background job.
 SYNC_TIME_LIMIT = 5
@@ -14,38 +16,46 @@ class OptimizerRun(Document):
 		if not self.type:
 			self.type = "Manual"
 
+	def memoize_datapackage(self):
+		dataS = frappe.cache.get(f"DataPackage:{self.name}")
+		if dataS is not None:
+			return types.DataPackage.loads(dataS)
+		data = data_loader.load(self)
+		frappe.cache.set(f"DataPackage:{self.name}", data.dumps())
+		return data
+
+	@frappe.whitelist()
+	def check_duplicates(self):
+		"""Checks whether another run already solved this exact input.
+
+		Returns the underlying duplicates
+		"""
+		from autoshift.optimizer.solver import find_cached_runs
+
+		data = self.memoize_datapackage()
+
+		cached_names = find_cached_runs(data.input_hash(), exclude_name=self.name)
+
+		return {
+			"n": len(cached_names),
+			"cached_runs_list_link": frappe.utils.get_filtered_list_link,
+		}
+
 	@frappe.whitelist()
 	def solve(self):
 		"""Solve the run.
 
-		First checks whether another run already solved this exact input. If
-		so, nothing is solved or persisted here. This Draft is left untouched
-		(its hash stays unset) so it can still be solved later if the
-		underlying data changes. The caller is told which run to look at
-		instead. The hash is only recorded once a real solve attempt
-		runs (see solver.run_solve).
-
-		Otherwise attempts to solve synchronously within SYNC_TIME_LIMIT seconds.
+		Attempts to solve synchronously within SYNC_TIME_LIMIT seconds.
 		If CBC doesn't conclude within that window, the same data is re-queued as a
 		background job with the full timeout.
-
-		Returns {"status": ..., "cached_run": <name>|None}.
 		"""
 		if self.status != "Draft":
 			frappe.throw(frappe._("Only Draft runs can be solved."))
-		from autoshift.optimizer.solver import find_cached_run, run_solve
+		from autoshift.optimizer.solver import run_solve
 
-		data = data_loader.load(self)
-
-		if not frappe.conf.get("developer_mode"):
-			cached_name = find_cached_run(data.input_hash(), exclude_name=self.name)
-			if cached_name:
-				return {"status": self.status, "cached_run": cached_name}
-
-		self.db_set("status", "Solving")
-
-		result = run_solve(self.name, data, time_limit=SYNC_TIME_LIMIT)
-
+		data = self.memoize_datapackage()
+		self.set("status", "Solving")
+		result = run_solve(self.name, self.memoize_datapackage(), time_limit=SYNC_TIME_LIMIT)
 		if result == "TimedOut":
 			frappe.enqueue(
 				"autoshift.optimizer.solver.run_solve",
@@ -55,10 +65,11 @@ class OptimizerRun(Document):
 				queue="long",
 				timeout=3600,
 			)
-			return {"status": "Solving", "cached_run": None}
+			self.save()
+			return "Solving"
 
 		self.reload()
-		return {"status": self.status, "cached_run": None}
+		return self.status
 
 	@frappe.whitelist()
 	def duplicate(self):

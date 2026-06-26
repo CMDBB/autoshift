@@ -324,6 +324,46 @@ def test_two_employees_both_meet_fte_targets():
 	assert assigned(x, employee="E2") == 3
 
 
+# ── DataPackage dumps/loads round-trip ────────────────────────────────────────
+
+
+def test_dumps_loads_round_trips_to_equal_package():
+	data = pkg(
+		employees=["E1", "E2"],
+		designation={"E1": "Doctor", "E2": "Nurse"},
+		department={"E1": "Omni", "E2": "Omni"},
+		leave_blocked={("E1", MON)},
+		forced={("E2", "AM", MON, "B1")},
+	)
+	restored = DataPackage.loads(data.dumps())
+	assert restored == data
+
+
+def test_dumps_loads_preserves_dates_and_collection_types():
+	data = pkg(leave_blocked={("E1", MON)}, forced={("E1", "AM", MON, "B1")})
+	restored = DataPackage.loads(data.dumps())
+
+	(_e, leave_date) = next(iter(restored.leave_blocked))
+	assert isinstance(leave_date, datetime.date)
+	assert leave_date == MON
+
+	(_e, _s, forced_date, _b) = next(iter(restored.forced))
+	assert isinstance(forced_date, datetime.date)
+	assert forced_date == MON
+
+	assert isinstance(restored.working_days[0], datetime.date)
+	assert isinstance(restored.rooms, dict)
+	assert isinstance(next(iter(restored.rooms)), tuple)
+	assert isinstance(restored.leave_blocked, set)
+	assert isinstance(restored.forced, set)
+
+
+def test_dumps_loads_round_trip_preserves_input_hash():
+	data = pkg(leave_blocked={("E1", MON)}, forced={("E1", "AM", MON, "B1")})
+	restored = DataPackage.loads(data.dumps())
+	assert restored.input_hash() == data.input_hash()
+
+
 def test_leave_does_not_block_other_employees():
 	"""E1 on leave; E2 should still be assigned normally."""
 	disc, b = "Omni", "B1"
