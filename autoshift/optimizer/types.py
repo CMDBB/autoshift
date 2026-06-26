@@ -22,7 +22,6 @@ class DataPackage:
 	# Employee attributes
 	designation: dict[str, str]  # employee -> designation name
 	department: dict[str, str]  # employee -> department (discipline) name
-	is_salaried: dict[str, bool]
 
 	# FTE targets (number of shifts, computed from fte% * horizon length * 2 shifts/day)
 	target_shifts: dict[str, int]

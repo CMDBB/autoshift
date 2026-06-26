@@ -29,6 +29,7 @@ wheels = [
 name = "autoshift"
 source = { editable = "." }
 dependencies = [
+    { name = "numpy" },
     { name = "pulp", extra = ["cbc"] },
 ]
 
@@ -41,7 +42,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pulp", extras = ["cbc"] }]
+requires-dist = [
+    { name = "numpy" },
+    { name = "pulp", extras = ["cbc"] },
+]
 
 [package.metadata.requires-dev]
 dev = [

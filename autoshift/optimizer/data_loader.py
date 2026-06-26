@@ -291,7 +291,6 @@ def load(run_doc) -> DataPackage:
 		branches=branches,
 		designation=designation,
 		department=department,
-		is_salaried=is_salaried,
 		target_shifts=target_shifts,
 		max_rpe=max_rpe,
 		rooms=rooms,

@@ -39,7 +39,6 @@ def pkg(**overrides) -> DataPackage:
 		branches=[b],
 		designation={"E1": "Doctor"},
 		department={"E1": disc},
-		is_salaried={"E1": True},
 		target_shifts={"E1": 1},
 		max_rpe={"E1": 1},
 		rooms={(disc, b): 1},
@@ -115,11 +114,25 @@ def test_raises_on_empty():
 
 def test_infeasible_when_fte_impossible():
 	"""
-	Salaried employee requires exactly 2 shifts but only 1 slot exists.
-	With zero tolerance the FTE lower bound can't be met.
+	Salaried employee requires exactly 1 shifts but 2 slot exists.
+	With zero tolerance, full utilization is impossible.
 	"""
-	prob, _x, _ = solve(pkg(target_shifts={"E1": 2}, fte_tolerance=0.0))
-	assert status(prob) == "Infeasible"
+	prob1, _x, _ = solve(
+		pkg(
+			target_shifts={"E1": 1},
+			fte_tolerance=0.0,
+		)
+	)
+	prob2, _x, _ = solve(
+		pkg(
+			working_days=days_from(2),
+			target_shifts={"E1": 1},
+			fte_tolerance=0.0,
+		)
+	)
+	assert status(prob1) == "Optimal"
+	assert status(prob2) == "Optimal"
+	assert prob1.objective == prob2.objective
 
 
 # ── single-employee optimal cases ─────────────────────────────────────────────
@@ -135,8 +148,7 @@ def test_employee_on_leave_is_not_assigned():
 	prob, x, _ = solve(
 		pkg(
 			leave_blocked={("E1", MON)},
-			is_salaried={"E1": False},
-			target_shifts={"E1": 0},
+			target_shifts={"E1": 1},
 		)
 	)
 	assert status(prob) == "Optimal"
@@ -157,7 +169,7 @@ def test_at_most_one_shift_per_employee_per_day():
 	prob, x, _ = solve(
 		pkg(
 			shift_types=["AM", "PM"],
-			target_shifts={"E1": 1},
+			target_shifts={"E1": 2},
 			fte_tolerance=0.0,
 		)
 	)
@@ -170,7 +182,7 @@ def test_at_most_one_shift_per_employee_per_day():
 # ── FTE constraints ───────────────────────────────────────────────────────────
 
 
-def test_salaried_meets_exact_target():
+def test_employee_meets_exact_target():
 	D = days_from(4)
 	prob, x, _ = solve(
 		pkg(
@@ -183,25 +195,7 @@ def test_salaried_meets_exact_target():
 	assert assigned(x, employee="E1") == 2
 
 
-def test_turnover_meets_minimum_but_may_exceed():
-	"""
-	Turnover employee has only a lower bound. With room-utilization driving
-	assignments and sufficient capacity, they should work at least target shifts.
-	"""
-	D = days_from(4)
-	prob, x, _ = solve(
-		pkg(
-			working_days=D,
-			is_salaried={"E1": False},
-			target_shifts={"E1": 2},
-			fte_tolerance=0.0,
-		)
-	)
-	assert status(prob) == "Optimal"
-	assert assigned(x, employee="E1") >= 2
-
-
-def test_salaried_does_not_exceed_upper_bound():
+def test_employee_does_not_exceed_upper_bound():
 	"""
 	Salaried employee with target=2 and zero tolerance must work exactly 2 shifts
 	even when more slots are available.
@@ -270,6 +264,8 @@ def test_fairness_equalizes_unfairness_not_individual_balance():
 	minimizes |unfairness(E1) - unfairness(E2)|, so it steers E2 toward an
 	equally skewed schedule (2 AM *or* 2 PM, unfairness=2, |4-2|=2) rather than
 	a personally balanced one (1 AM + 1 PM, unfairness=0, |4-0|=4).
+
+	TODO: adapt this to preference-based fairness
 	"""
 	D = days_from(4)
 	disc, b = "Omni", "B1"
@@ -281,7 +277,6 @@ def test_fairness_equalizes_unfairness_not_individual_balance():
 		working_days=D,
 		designation={"E1": "Nurse", "E2": "Nurse"},
 		department={"E1": disc, "E2": disc},
-		is_salaried={"E1": False, "E2": True},
 		target_shifts={"E1": 4, "E2": 2},
 		max_rpe={"E1": 1, "E2": 1},
 		rooms={(disc, b): 2},
@@ -318,7 +313,6 @@ def test_two_employees_both_meet_fte_targets():
 		working_days=D,
 		designation={"E1": "Doctor", "E2": "Doctor"},
 		department={"E1": disc, "E2": disc},
-		is_salaried={"E1": True, "E2": True},
 		target_shifts={"E1": 2, "E2": 3},
 		max_rpe={"E1": 1, "E2": 1},
 		rooms={(disc, b): 2},
@@ -337,7 +331,6 @@ def test_leave_does_not_block_other_employees():
 		employees=["E1", "E2"],
 		designation={"E1": "Doctor", "E2": "Doctor"},
 		department={"E1": disc, "E2": disc},
-		is_salaried={"E1": False, "E2": True},
 		target_shifts={"E1": 0, "E2": 1},
 		max_rpe={"E1": 1, "E2": 1},
 		rooms={(disc, b): 1},
