@@ -282,7 +282,7 @@ def load(run_doc) -> DataPackage:
 						"resolve which branch it belongs to."
 					).format(sa.name)
 				)
-			forced.add((sa.employee, sa.shift_type, getdate(sa.start_date), branch))
+			forced.add((sa.employee, sa.shift_type, getdate(sa.start_date), str(branch)))
 
 	return DataPackage(
 		employees=employees,

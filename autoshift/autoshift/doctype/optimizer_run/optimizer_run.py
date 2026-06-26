@@ -1,5 +1,3 @@
-import json
-
 import frappe.utils
 from frappe.model.document import Document
 
@@ -17,11 +15,16 @@ class OptimizerRun(Document):
 			self.type = "Manual"
 
 	def memoize_datapackage(self):
-		dataS = frappe.cache.get(f"DataPackage:{self.name}")
+		cache = frappe.cache
+		if cache is None:
+			return data_loader.load(self)
+
+		dataS = cache.get_value(f"DataPackage:{self.name}")
 		if dataS is not None:
 			return types.DataPackage.loads(dataS)
 		data = data_loader.load(self)
-		frappe.cache.set(f"DataPackage:{self.name}", data.dumps())
+		cache.set_value(f"DataPackage:{self.name}", data.dumps())
+
 		return data
 
 	@frappe.whitelist()
@@ -55,7 +58,7 @@ class OptimizerRun(Document):
 
 		data = self.memoize_datapackage()
 		self.set("status", "Solving")
-		result = run_solve(self.name, self.memoize_datapackage(), time_limit=SYNC_TIME_LIMIT)
+		result = run_solve(str(self.name), self.memoize_datapackage(), time_limit=SYNC_TIME_LIMIT)
 		if result == "TimedOut":
 			frappe.enqueue(
 				"autoshift.optimizer.solver.run_solve",
@@ -79,9 +82,9 @@ class OptimizerRun(Document):
 		create a duplicate, the original stays untouched as a record.
 		"""
 		new_run = frappe.new_doc("Optimizer Run")
-		new_run.set("mode", self.mode)
-		new_run.set("date", self.date)
-		new_run.set("disregard_assignments", self.disregard_assignments)
+		new_run.set("mode", self.mode)  # pyright: ignore[reportAttributeAccessIssue]
+		new_run.set("date", self.date)  # pyright: ignore[reportAttributeAccessIssue]
+		new_run.set("disregard_assignments", self.disregard_assignments)  # pyright: ignore[reportAttributeAccessIssue]
 		new_run.set("type", "Copy")
 		for row in self.get("leaves_speculations") or []:
 			new_run.append("leaves_speculations", {"leave_application": row.leave_application})
