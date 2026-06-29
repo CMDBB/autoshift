@@ -7,7 +7,9 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import hashlib
+import itertools
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 
@@ -51,11 +53,8 @@ class DataPackage:
 	def input_hash(self) -> str:
 		"""
 		Stable hash of every field that influences the MILP solution.
-		Used to detect that two Optimizer Runs would solve to the same result,
-		so a re-solve can be served from a previous run instead of re-run.
-		Two runs sharing this hash are only guaranteed equivalent if the
-		optimizer code itself hasn't changed in between (see developer_mode
-		bypass at the call site).
+		Used to detect that a new Optimizer Run would solve on the same input
+		as a previous one.
 		"""
 
 		def normalize(value):
@@ -127,9 +126,17 @@ class DataPackage:
 		)
 
 
-def planning_days(start_date: datetime.date, mode: str) -> list[datetime.date]:
-	"""Return the ordered list of working days for the given planning horizon."""
-	weeks = {"1-week": 1, "2-week": 2, "4-week": 4}
+def planning_days(start_date: datetime.date, mode: str) -> Iterable[datetime.date]:
+	"""Return the ordered list of days for the given planning horizon."""
+	weeks = {
+		"1-week": 1,
+		"2-week": 2,
+		"4-week": 4,
+		"UnboundedTODO": None,
+	}  # TODO: implement Unbounded planning horizon
 	if mode not in weeks:
 		raise NotImplementedError(f"Planning mode '{mode}' not yet implemented")
-	return [start_date + datetime.timedelta(days=i) for i in range(weeks[mode] * 7)]
+	weeks = weeks[mode]
+	if weeks is None:  # Unbounded: infinite iterator -> let the caller decide how many days to take
+		return (start_date + datetime.timedelta(days=i) for i in itertools.count())
+	return [start_date + datetime.timedelta(days=i) for i in range(weeks * 7)]

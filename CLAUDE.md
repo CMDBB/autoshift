@@ -41,7 +41,7 @@ Optimizer engine (`autoshift/optimizer/`, pure-Python where possible for testabi
    utilization + Σ preference·assignment`.
 4. `solver.py` — runs CBC (5s sync, escalates to 3600s background job via
    `frappe.enqueue(queue="long")` on timeout); caches by input hash against prior runs in
-   `{Solved, Failed, Approved, Committed}` (skipped in `developer_mode`).
+   `{Solved, Failed, Approved, Committed}`.
 5. `committer.py` — converts an Approved run into submitted `Shift Assignment` records.
    **The run→Shift-Assignment link-back is mid-redesign and not finished — see To Be
    Implemented.**
@@ -128,5 +128,5 @@ dev site.
 ```bash
 cd apps/autoshift && python -m pytest tests/ -v   # pure-Python optimizer tests, no site needed
 pre-commit install                                 # ruff, eslint, prettier, pyupgrade
-bench --site YOUR_SITE run-command autoshift.autoshift.commands.seed_dev_data --input ./dev_data
+bench --site YOUR_SITE seed-dev-data --input ./dev_data
 ```
