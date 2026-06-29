@@ -82,9 +82,9 @@ class OptimizerRun(Document):
 		create a duplicate, the original stays untouched as a record.
 		"""
 		new_run = frappe.new_doc("Optimizer Run")
-		new_run.set("mode", self.mode)  # pyright: ignore[reportAttributeAccessIssue]
-		new_run.set("date", self.date)  # pyright: ignore[reportAttributeAccessIssue]
-		new_run.set("disregard_assignments", self.disregard_assignments)  # pyright: ignore[reportAttributeAccessIssue]
+		new_run.set("mode", self.mode)  # ty:ignore[unresolved-attribute]
+		new_run.set("date", self.date)  # ty:ignore[unresolved-attribute]
+		new_run.set("disregard_assignments", self.disregard_assignments)  # ty:ignore[unresolved-attribute]
 		new_run.set("type", "Copy")
 		for row in self.get("leaves_speculations") or []:
 			new_run.append("leaves_speculations", {"leave_application": row.leave_application})

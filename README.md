@@ -57,7 +57,7 @@ At least one record is required; the optimiser will throw if none are found.
 | Employee | Link to Employee |
 | Favourite Shift | If set, the optimiser strongly prefers this shift for the employee |
 | Shift Preferences | Table of (shift type, weight) pairs; normalised automatically |
-| Branch Preferences | Table of preferred branches |
+| Branch Preferences | Table of preferred branches. *Not yet read by the optimiser — set this field has no effect on a run today.* |
 
 Employees without an Employee Settings record use a uniform shift preference and their `custom_fte` field value (set directly on the Employee doctype) for the FTE target.
 
@@ -81,6 +81,10 @@ On each **Employee** record, fill in the **FTE %** field (0–100). This determi
 | Pending Leaves to Treat as Approved | Optional: select pending Leave Applications to block as if approved |
 
 Save the document. Status is **Draft**.
+
+> **Not yet usable:** `Unbounded` planning mode and the `Use`/`Weigh` settings for Existing
+> Shift Assignments are selectable in the UI but raise `NotImplementedError` when you try to
+> solve — only `1-week`/`2-week`/`4-week` modes and `Ignore` are implemented today.
 
 ### Step 2 — Solve
 
@@ -144,8 +148,6 @@ Clicking **Solve** first fingerprints the run's input (employees, leaves, FTE ta
 
 The Input Hash is only ever recorded on a run that actually went through a real solve attempt, which is also how matches are found for *future* runs.
 
-This check is skipped when the site is in `developer_mode`, since the optimizer code itself may have changed since the matched run — two runs could share an input hash but should no longer be assumed to solve the same way.
-
 ---
 
 ## How the Optimiser Works
@@ -159,15 +161,46 @@ The MILP model is built with [PuLP](https://coin-or.github.io/pulp/) and solved 
 **Constraints**
 1. At most one shift per employee per day
 2. Approved and speculated leaves block assignments
-3. Forced assignments (from existing Shift Assignments when mode = `Use`) are fixed to 1
+3. Forced assignments — code path exists for `Use` mode but is not yet wired in (raises
+   `NotImplementedError`); only `Ignore` works today
 4. Max rooms per employee per slot (from Discipline Designation Branch Config)
 5. Room coverage: staff headcount must support the number of active rooms
-6. FTE targets for salaried employees (two-sided: min ≤ shifts ≤ max within tolerance)
-7. FTE targets for turnover/casual employees (one-sided minimum)
+6. FTE target: assigned shifts ≤ (1 + tolerance) × target, for every employee. This is an
+   upper bound only — there's currently no lower bound, and no distinction between salaried
+   and turnover-paid staff (that split is planned but not implemented; see `is_salaried` in
+   CLAUDE.md). Staying near the target today comes from the objective's preference term
+   pulling assignments up, not from a hard minimum.
 
 **Objective (maximise)**
 - Room utilisation: `turnover_weight × Σ active_rooms`
 - Shift preferences: `Σ pref[employee, shift] × x[employee, shift, day, branch]`
+
+---
+
+## Limitations & Out of Scope
+
+Current modelling limitations (revisit if the underlying assumption stops holding):
+
+- **No AM/PM fairness term.** The objective only optimises room utilisation and shift
+  preference; nothing currently balances how AM vs. PM shifts are distributed across
+  employees.
+- **Room counts are static for the whole planning period.** Discipline Designation Branch
+  Config doesn't support rooms going offline for part of a run (e.g. maintenance, partial
+  closures).
+- **Leave Application is the only day-level blocker.** There's no modelling for on-call
+  duty or other external commitments that should also block a slot.
+- **No specific-room assignment.** `Shift Location` exists on `Optimizer Run Slot` as
+  scaffolding, but the model only tracks an aggregate room *count* per discipline/slot/branch
+  — it doesn't pick which physical room an employee works in.
+- **No minimum rest gap between shifts.** Moot today since each employee gets at most one
+  shift per day; would need revisiting if night shifts or extended hours are introduced.
+
+Out of scope for this app — handled elsewhere in the Frappe HR / ERPNext stack:
+
+- Payroll calculation (ERPNext salary structures)
+- Revenue/turnover tracking per doctor per shift (ERPNext Healthcare or Invoicing)
+- Patient appointment scheduling (separate system)
+- Real-time attendance tracking (Frappe HR check-ins)
 
 ---
 
@@ -193,8 +226,10 @@ Configured hooks: **ruff** (lint + format), **eslint**, **prettier**, **pyupgrad
 ### Adding dev data
 
 ```bash
-bench --site YOUR_SITE run-command autoshift.autoshift.commands.seed
+bench --site YOUR_SITE seed-dev-data --input ./dev_data
 ```
+
+(`dump-dev-data` is the inverse, for snapshotting an existing site's data.)
 
 ---
 
