@@ -17,7 +17,7 @@ frappe.ui.form.on("Optimizer Run", {
 										"Run the optimizer? Large problems that don't finish quickly will automatically continue in the background."
 								  )
 								: __(
-										"Identical run detected: {0} {1}s already solved this exact input. Run the optimizer anyway?",
+										"Identical run detected: {0} {1} already solved this exact input. Run the optimizer anyway?",
 										[cache_hits_n, link]
 								  ),
 							() => {
