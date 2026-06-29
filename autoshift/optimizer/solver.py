@@ -31,7 +31,7 @@ def find_cached_runs(input_hash: str, exclude_name: str | None = None) -> list[s
 	return frappe.get_all("Optimizer Run", filters, order_by="creation asc")
 
 
-def run_solve(run_name: str, data, time_limit: int = 3600) -> str | None:
+def run_solve(run_name: str, data, time_limit: int = 3600) -> bool | None:
 	"""
 	Build and solve the MILP, then persist the solution onto the Optimizer Run.
 
@@ -47,7 +47,7 @@ def run_solve(run_name: str, data, time_limit: int = 3600) -> str | None:
 	run's hash unset so the same Draft can be solved again later if the
 	underlying data changes.
 
-	Returns "Solved", "Failed", or "TimedOut".
+	Returns True if timed out, Falsy otherwise
 	"""
 	run = frappe.get_doc("Optimizer Run", run_name)
 	try:
@@ -68,7 +68,7 @@ def run_solve(run_name: str, data, time_limit: int = 3600) -> str | None:
 		if lp_status == "Not Solved":
 			# Time limit hit before CBC reached a conclusive result; let the
 			# caller decide whether to escalate rather than recording a failure.
-			return "TimedOut"
+			return True
 
 		run.set("solver_log", solver_log)
 
@@ -91,22 +91,14 @@ def run_solve(run_name: str, data, time_limit: int = 3600) -> str | None:
 						},
 					)
 
-			run.db_set("status", "Solved")
-			run.save(ignore_permissions=True)
-			return "Solved"
+			run.set("status", "Solved")
 		else:
-			run.set("solver_log", solver_log + f"\n\nSolver status: {lp_status}")
-			run.db_set("status", "Failed")
-			run.save(ignore_permissions=True)
-			return "Failed"
-
+			run.set("solver_log", f"Solver status: {lp_status}\n\n{solver_log}")
+			run.set("status", "Failed")
 	except Exception:
 		tb = traceback.format_exc()
 		frappe.log_error(tb, f"Optimizer Run failed: {run_name}")
-		try:
-			run.set("solver_log", (str(run.get("solver_log")) or "") + f"\n\nException:\n{tb}")
-			run.db_set("status", "Failed")
-			run.save(ignore_permissions=True)
-		except Exception:
-			pass
-		return "Failed"
+		run.set("solver_log", f"{(str(run.get('solver_log')) or '')}\n\nException:\n{tb}")
+		run.set("status", "Failed")
+	finally:
+		run.save(ignore_permissions=True)

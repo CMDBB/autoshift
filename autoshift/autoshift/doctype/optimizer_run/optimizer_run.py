@@ -41,7 +41,7 @@ class OptimizerRun(Document):
 
 		return {
 			"n": len(cached_names),
-			"cached_runs_list_link": frappe.utils.get_filtered_list_link,
+			"cached_runs_list_link": frappe.utils.get_filtered_list_link("Optimizer Run", cached_names),
 		}
 
 	@frappe.whitelist()
@@ -58,8 +58,8 @@ class OptimizerRun(Document):
 
 		data = self.memoize_datapackage()
 		self.set("status", "Solving")
-		result = run_solve(str(self.name), self.memoize_datapackage(), time_limit=SYNC_TIME_LIMIT)
-		if result == "TimedOut":
+		timed_out = run_solve(str(self.name), self.memoize_datapackage(), time_limit=SYNC_TIME_LIMIT)
+		if timed_out:
 			frappe.enqueue(
 				"autoshift.optimizer.solver.run_solve",
 				run_name=self.name,
