@@ -105,7 +105,8 @@ dev site.
   change via the Frappe Desk UI in developer mode (`bench set-config developer_mode 1`, then
   edit/create the DocType in the browser) — saving there auto-exports the JSON correctly.
   Enforced by a `PreToolUse` hook in `.claude/settings.json` that denies Edit/Write on these
-  paths. Controller `.py`/`.js` files for the same doctype are not affected.
+  paths. Controller `.py`/`.js` files for the same doctype are not affected. NOTE: do feel
+  free to design doctype modifications, this is simply about the "how"
 
 ## Process / repo notes
 
