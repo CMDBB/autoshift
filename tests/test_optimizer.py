@@ -84,12 +84,12 @@ def assigned(x, employee=None, shift=None) -> int:
 
 
 def test_planning_days():
-	d = planning_days(MON, "1-week")
+	d = list(planning_days(MON, "1-week"))
 	assert len(d) == 7
 	assert d[0] == MON
 	assert d[-1] == MON + datetime.timedelta(days=6)
-	assert len(planning_days(MON, "2-week")) == 14
-	assert len(planning_days(MON, "4-week")) == 28
+	assert len(list(planning_days(MON, "2-week"))) == 14
+	assert len(list(planning_days(MON, "4-week"))) == 28
 
 
 def test_unbounded_nyi():
