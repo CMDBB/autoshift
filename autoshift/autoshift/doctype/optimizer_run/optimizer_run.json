@@ -19,7 +19,9 @@
   "section_break_solution",
   "solution_table",
   "section_break_log",
-  "solver_log"
+  "solver_log",
+  "schedule_tab",
+  "schedule_view_html"
  ],
  "fields": [
   {
@@ -105,7 +107,7 @@
    "fieldtype": "Select",
    "hidden": 1,
    "label": "Type",
-   "options": "Manual\nCopy\nAutomatic",
+   "options": "Manual\nCopy\nAutomatic\nTest",
    "read_only": 1,
    "set_only_once": 1
   },
@@ -115,10 +117,19 @@
    "fieldtype": "Read Only",
    "label": "Input Hash",
    "read_only": 1
+  },
+  {
+   "fieldname": "schedule_tab",
+   "fieldtype": "Tab Break",
+   "label": "Schedule View"
+  },
+  {
+   "fieldname": "schedule_view_html",
+   "fieldtype": "HTML"
   }
  ],
  "links": [],
- "modified": "2026-06-18 10:40:14.149293",
+ "modified": "2026-06-29 13:45:12.063104",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Optimizer Run",

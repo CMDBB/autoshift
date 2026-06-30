@@ -1,0 +1,7 @@
+[["Optimizer Run"]]
+name = "test"
+mode = "1-week"
+date = "2026-06-22"
+status = "Draft"
+disregard_assignments = "Ignore"
+type = "Test"
