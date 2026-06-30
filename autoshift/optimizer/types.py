@@ -126,8 +126,16 @@ class DataPackage:
 		)
 
 
-def planning_days(start_date: datetime.date, mode: str) -> Iterable[datetime.date]:
+def planning_days(start_date_raw: datetime.date, mode: str) -> Iterable[datetime.date]:
 	"""Return the ordered list of days for the given planning horizon."""
+	if isinstance(start_date_raw, str):
+		try:
+			start_date = datetime.date.fromisoformat(start_date_raw)
+		except ValueError:
+			start_date = datetime.datetime.strptime(start_date_raw, "%Y-%m-%d").date()
+	else:
+		start_date = start_date_raw
+
 	weeks = {
 		"1-week": 1,
 		"2-week": 2,

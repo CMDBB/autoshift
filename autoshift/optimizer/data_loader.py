@@ -6,6 +6,7 @@ needed by model_builder.py.
 from __future__ import annotations
 
 import datetime
+import itertools
 from typing import cast
 
 import frappe
@@ -173,7 +174,7 @@ def load(run_doc) -> DataPackage:
 	max_rpe: dict[str, int] = {}
 	employee_holiday_lists: dict[str, str] = {}
 
-	all_days = _planning_days(start_date, mode)
+	all_days = list(itertools.islice(_planning_days(start_date, mode), 100))
 
 	for emp in raw_employees:
 		name = emp.name
