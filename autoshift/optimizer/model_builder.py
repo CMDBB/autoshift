@@ -15,13 +15,14 @@ Objective (maximize)
 --------------------
 1. Room utilization:  turnover_weight * Σ active_rooms[k,s,d,b]
 2. Shift preferences: Σ_{e,s,d,b} pref[e,s] * x[e,s,d,b]
-   pref[e,s] comes from Employee Settings → shift_preferences child table.
-   Missing entries are 0.0 (neutral).
+	 pref[e,s] comes from Employee Settings → shift_preferences child table.
+	 Missing entries are 0.0 (neutral).
 """
 
 from __future__ import annotations
 
 import itertools
+from typing import Any
 
 import pulp
 
@@ -44,22 +45,23 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 		raise ValueError("No working days in planning horizon.")
 
 	# ── Decision variables ────────────────────────────────────────────────────
-	x: dict[tuple, pulp.LpVariable] = {}
-	for e, s, d, b in itertools.product(E, S, D, B):
-		x[(e, s, d, b)] = prob.add_variable(
-			f"x_{e}_{s}_{d}_{b}".replace("-", "_").replace(" ", "_"),
-			cat="Binary",
-		)
+	x: dict[tuple, pulp.LpVariable] = prob.add_variable_dict(
+		"x",
+		(E, S, D, B),
+		cat=pulp.LpBinary,
+	)
 
-	active_rooms: dict[tuple, pulp.LpVariable] = {}
-	for k, s, d, b in itertools.product(data.disciplines, S, D, B):
-		cap = data.rooms.get((k, b), 0)
-		active_rooms[(k, s, d, b)] = prob.add_variable(
-			f"ar_{k}_{s}_{d}_{b}".replace("-", "_").replace(" ", "_"),
+	active_rooms: dict[tuple, pulp.LpVariable] = {
+		key: variable
+		for k, b in itertools.product(data.disciplines, B)
+		for key, variable in prob.add_variable_dict(
+			"ar",
+			([k], S, D, [b]),
 			lowBound=0,
-			upBound=cap,
-			cat="Integer",
-		)
+			upBound=data.rooms.get((k, b), 0),
+			cat=pulp.LpInteger,
+		).items()
+	}
 
 	# ── Constraints ───────────────────────────────────────────────────────────
 
@@ -74,19 +76,19 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 	for e, d in data.leave_blocked:
 		if e not in E or d not in set(D):
 			continue
-		prob += (
-			pulp.lpSum(x[(e, s, d, b)] for s in S for b in B) == 0,
-			f"leave_{e}_{d}".replace("-", "_").replace(" ", "_"),
-		)
+		for s in S:
+			for b in B:
+				x[(e, s, d, b)].setInitialValue(0)
+				x[(e, s, d, b)].fixValue()
 
 	# 3. Forced assignments
-	for e, s, d, b in data.forced:
-		if e not in E or s not in S or d not in set(D) or b not in B:
-			continue
-		prob += (
-			x[(e, s, d, b)] == 1,
-			f"forced_{e}_{s}_{d}_{b}".replace("-", "_").replace(" ", "_"),
-		)
+	if data.forced:
+		for comb in itertools.product(E, S, D, B):
+			if comb in data.forced:
+				x[comb].setInitialValue(1)
+				x[comb].fixValue()
+			else:
+				x[comb].setInitialValue(0)
 
 	# 4. Max rooms per employee per slot (each shift+day combination)
 	for e, s, d in itertools.product(E, S, D):
@@ -108,7 +110,7 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 		else:
 			prob += (
 				pulp.lpSum(data.max_rpe.get(e, 1) * x[(e, s, d, b)] for e in employees_in_discipline)
-				>= active_rooms[(k, s, d, b)],
+				== active_rooms[(k, s, d, b)],
 				f"room_coverage_{k}_{s}_{d}_{b}".replace("-", "_").replace(" ", "_"),
 			)
 
@@ -134,7 +136,7 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 	# Term 2: employee shift preferences (simple dot product)
 	# Complexity is handled on the user side
 	pref_sum = pulp.lpSum(
-		data.shift_preferences.get(e, {}).get(s, 0.0) * x[(e, s, d, b)]
+		(-1 + data.shift_preferences.get(e, {}).get(s, 0.0)) * x[(e, s, d, b)]
 		for e, s, d, b in itertools.product(E, S, D, B)
 	)
 

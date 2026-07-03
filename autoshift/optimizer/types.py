@@ -141,7 +141,7 @@ def planning_days(start_date_raw: datetime.date, mode: str) -> Iterable[datetime
 		"2-week": 2,
 		"4-week": 4,
 		"UnboundedTODO": None,
-	}  # TODO: implement Unbounded planning horizon
+	}
 	if mode not in weeks:
 		raise NotImplementedError(f"Planning mode '{mode}' not yet implemented")
 	weeks = weeks[mode]

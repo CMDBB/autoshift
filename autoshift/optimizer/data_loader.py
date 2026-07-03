@@ -108,11 +108,9 @@ def load(run_doc) -> DataPackage:
 
 	shift_types = sorted({st for sts in shift_types_by_ddbc.values() for st in sts})
 
-	# TODO: the same Shift Type selection has to be re-entered on every DDBC row of a given
+	# the same Shift Type selection has to be re-entered on every DDBC row of a given
 	# discipline (one per designation x branch), so nothing stops two rows of the *same*
-	# discipline from listing different Shift Types. Detect and warn rather than silently
-	# unioning across a drifted config - the optimizer's idea of "what shifts exist for
-	# Endo" shouldn't depend on which row happened to define them.
+	# discipline from listing different Shift Types. Detect and warn
 	shift_type_variants_by_discipline: dict[str, set[frozenset[str]]] = {}
 	for r in config_rows:
 		shift_type_variants_by_discipline.setdefault(r.discipline, set()).add(

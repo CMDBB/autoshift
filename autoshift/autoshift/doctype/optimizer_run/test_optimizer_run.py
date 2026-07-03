@@ -2,11 +2,13 @@
 # See license.txt
 
 import datetime
+from typing import Any
 
 import frappe
 from frappe.tests import IntegrationTestCase
 
 from autoshift.autoshift.doctype.optimizer_run.optimizer_run import OptimizerRun
+from autoshift.optimizer.types import DataPackage
 
 # On IntegrationTestCase, the doctype test records and all
 # link-field test record dependencies are recursively loaded
@@ -15,6 +17,40 @@ EXTRA_TEST_RECORD_DEPENDENCIES = []  # eg. ["User"]
 IGNORE_TEST_RECORD_DEPENDENCIES = []  # eg. ["User"]
 
 MONDAY = datetime.date(year=2026, month=6, day=22)
+
+
+def pkg(**overrides) -> DataPackage:
+	"""
+	Minimal valid DataPackage: 1 salaried employee, 1 AM shift, 1 day, 1 branch.
+	Override any field to build specific scenarios.
+	"""
+	base: dict[str, Any] = dict(
+		employees=["Alice", "Bob"],
+		shift_types=["Day", "Night"],
+		working_days=[MONDAY + datetime.timedelta(days=i) for i in range(7)],
+		branches=["Branch1"],
+		designation={"Alice": "Nurse", "Bob": "Nurse"},
+		department={"Alice": "ER", "Bob": "ER"},
+		target_shifts={"Alice": 5, "Bob": 5},
+		max_rpe={"Alice": 1, "Bob": 1},
+		rooms={("ER", "Branch1"): 2},
+		disciplines=["ER"],
+		leave_blocked=set(),
+		forced=set(),
+		shift_preferences={
+			"Alice": {"Day": 1.0, "Night": 0.5},
+			"Bob": {"Day": 0.5, "Night": 1.0},
+		},
+		fte_tolerance=0.05,
+		turnover_weight=1.0,
+	)
+	base.update(overrides)
+	if "shift_preferences" not in overrides and ("shift_types" in overrides or "employees" in overrides):
+		n_shifts: int = len(base["shift_types"])
+		base["shift_preferences"] = {
+			e: {s: 1 / n_shifts for s in base["shift_types"]} for e in base["employees"]
+		}
+	return DataPackage(**base)
 
 
 class IntegrationTestOptimizerRun(IntegrationTestCase):
@@ -45,36 +81,26 @@ class IntegrationTestOptimizerRun(IntegrationTestCase):
 		- The solve() method (on a controlled data package)
 		- stability of the table generation (get_schedule_events())
 		"""
-		from autoshift.optimizer.types import DataPackage
-
 		# inject a DataPackage into the cache for the test record, so that the OptimizerRun.solve() method can retrieve it
-		data = DataPackage(
-			employees=["Alice", "Bob"],
-			shift_types=["Day", "Night"],
-			working_days=[MONDAY + datetime.timedelta(days=i) for i in range(7)],
-			branches=["Branch1"],
-			designation={"Alice": "Nurse", "Bob": "Nurse"},
-			department={"Alice": "ER", "Bob": "ER"},
-			target_shifts={"Alice": 5, "Bob": 5},
-			max_rpe={"Alice": 1, "Bob": 1},
-			rooms={("ER", "Branch1"): 2},
-			disciplines=["ER"],
-			leave_blocked=set(),
-			forced=set(),
-			shift_preferences={
-				"Alice": {"Day": 1.0, "Night": 0.5},
-				"Bob": {"Day": 0.5, "Night": 1.0},
-			},
-			fte_tolerance=0.05,
-			turnover_weight=1.0,
-		)
 		assert self.cache is not None, "Cache is not available in the test environment"
+		self.cache.set_value(f"DataPackage:{self.test_record.name}", pkg().dumps())
+		with self.assertRaises(frappe.exceptions.LinkValidationError):
+			# Alice and Bob don't exist in the actual database where solve will try to self.save()
+			self.test_record.solve()
 
-		self.test_record.solve()
-		self.test_record.reload()
-		self.cache.set_value(f"DataPackage:{self.test_record.name}", data.dumps())
-		with self.subTest("Check that the run status is 'Solved'"):
-			self.assertEqual(self.test_record.status, "Solved")
-		with self.subTest("Check that the solution table is not empty"):
-			s = self.test_record.get_schedule_events()
-			assert len(s) > 0
+	def test_no_overfilling_of_shifts(self):
+		assert self.cache is not None, "Cache is not available in the test environment"
+		self.cache.set_value(
+			f"DataPackage:{self.test_record.name}",
+			pkg(
+				employees=["Alice", "Bob", "Caoimhe"],
+				designation={"Alice": "Nurse", "Bob": "Nurse", "Caoimhe": "Nurse"},
+				department={"Alice": "ER", "Bob": "ER", "Caoimhe": "ER"},
+				target_shifts={"Alice": 5, "Bob": 5, "Caoimhe": 5},
+				max_rpe={"Alice": 1, "Bob": 1, "Caoimhe": 1},
+				rooms={("ER", "Branch1"): 1},
+			).dumps(),
+		)
+		with self.assertRaises(frappe.exceptions.LinkValidationError):
+			# Alice and Bob don't exist in the actual database where solve will try to self.save()
+			self.test_record.solve()

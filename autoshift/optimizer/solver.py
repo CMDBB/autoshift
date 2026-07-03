@@ -12,6 +12,8 @@ import traceback
 import frappe
 import pulp
 
+from autoshift.optimizer.types import DataPackage
+
 from . import model_builder
 
 # Statuses whose result can be safely reused for an identical input hash.
@@ -31,23 +33,20 @@ def find_cached_runs(input_hash: str, exclude_name: str | None = None) -> list[s
 	return frappe.get_all("Optimizer Run", filters, order_by="creation asc")
 
 
-def run_solve(run_name: str, data, time_limit: int = 3600) -> bool | None:
+def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool | None:
 	"""
 	Build and solve the MILP, then persist the solution onto the Optimizer Run.
 
-	time_limit: seconds passed straight to CBC's own timeLimit. If CBC stops
-	without reaching a conclusive status (LpStatus "Not Solved"), nothing is
-	persisted and "TimedOut" is returned so the caller can escalate (e.g. to
-	a background job with a longer time_limit) instead of treating it as a
-	failed solve.
+	:param str run_name: we use the name, not the object (or a reference to it) because we want
+		run_solve's arguments to be serializable
+	:param DataPackage data: (see DataPackage)
+	:param int time_limit: seconds passed straight to CBC's own timeLimit. If CBC stops
+		without reaching a conclusive status (LpStatus "Not Solved"), nothing is
+		persisted and "TimedOut" is returned so the caller can escalate (e.g. to
+		a background job with a longer time_limit) instead of treating it as a
+		failed solve.
 
-	The input hash is only known once the DataPackage exists (here), so it is
-	computed and persisted as part of an actual solve attempt, not on the
-	preemptive cache check in OptimizerRun.solve(), which must leave a Draft
-	run's hash unset so the same Draft can be solved again later if the
-	underlying data changes.
-
-	Returns True if timed out, Falsy otherwise
+	:returns: True if timed out, Falsy otherwise
 	"""
 	run = frappe.get_doc("Optimizer Run", run_name)
 	try:

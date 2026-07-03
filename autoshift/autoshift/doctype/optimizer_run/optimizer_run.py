@@ -110,7 +110,7 @@ class OptimizerRun(Document):
 
 		data = self.memoize_datapackage()
 		self.set("status", "Solving")
-		timed_out = run_solve(str(self.name), self.memoize_datapackage(), time_limit=SYNC_TIME_LIMIT)
+		timed_out = run_solve(str(self.name), data, time_limit=SYNC_TIME_LIMIT)
 		if timed_out:
 			frappe.enqueue(
 				"autoshift.optimizer.solver.run_solve",

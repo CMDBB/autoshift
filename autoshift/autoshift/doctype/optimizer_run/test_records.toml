@@ -5,3 +5,47 @@ date = "2026-06-22"
 status = "Draft"
 disregard_assignments = "Ignore"
 type = "Test"
+
+# [[Company]]
+# company_name = "CompanyName"
+# default_currency = "CHF"
+
+# [[Designation]]
+# name = "Nurse"
+# designation_name = "Nurse"
+
+# [[Employee]]
+# name = "Alice"
+# custom_fte = 100.0
+# designation_name = "Nurse"
+# first_name = "Alice"
+# gender = "Other"
+# date_of_birth = "2000-01-01"
+# date_of_joining = "2000-01-01"
+# status = "Active"
+# company = "CompanyName"
+
+# [[Employee]]
+# name = "Bob"
+# custom_fte = 100.0
+# designation_name = "Nurse"
+# first_name = "Bob"
+# gender = "Other"
+# date_of_birth = "2000-01-01"
+# date_of_joining = "2000-01-01"
+# status = "Active"
+# company = "CompanyName"
+
+# [["Shift Type"]]
+# name = "Day"
+# start_time = "09:00:00"
+# end_time = "17:00:00"
+
+# [["Shift Type"]]
+# name = "Night"
+# start_time = "17:00:00"
+# end_time = "09:00:00"
+
+# [[Branch]]
+# branch = "Branch1"
+# company = "CompanyName"

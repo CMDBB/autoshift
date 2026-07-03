@@ -61,11 +61,6 @@ different Shift Types — see the TODO at [data_loader.py:94](autoshift/optimize
 CLI (`autoshift/commands.py`): `dump-dev-data` / `seed-dev-data` for snapshotting/seeding a
 dev site.
 
-## Known bugs (verified against source — real defects in existing, supposedly-working code)
-
-1. Minor: `solver.py` only persists the input hash inside the `try`, so a run that fails
-   before/during hashing gets cached as `Failed` with no hash — defeats the cache on retry.
-
 ## To be implemented (scaffolding exists; feature path is incomplete, not "broken")
 
 - **Run → `Shift Assignment` link-back after commit.** `73e98fa` ("start online
@@ -73,61 +68,47 @@ dev site.
   first step of an in-progress redesign of how a committed run stays linked to the records it
   created. Plan: re-add it as a table on `Optimizer Run`, unless a better mechanism is found.
   `committer.py` raises `NotImplementedError` unconditionally until this lands.
-- **`is_salaried` hardcodes a stub.** [data_loader.py:154-158](autoshift/optimizer/data_loader.py#L154-L158)
-  currently assumes every employee is salaried (`is_salaried[name] = True`) as a placeholder —
-  the previous string-matching logic against `employment_type` ("turnover"/"commission"/
-  "casual") misclassified pay structure whenever a practice used different `Employment Type`
-  labels, since it's a configurable Link doctype, not a fixed enum. Planned fix: a
-  configurable name list (e.g. in Optimizer Settings) rather than hardcoded matching.
 - **`disregard_assignments` = Use / Weigh.** Selectable in the UI; `data_loader.py` only
   handles `"Ignore"` and raises `NotImplementedError` for the others. `"Use"` forces existing
   Shift Assignments as hard constraints (code present, not yet wired in). `"Weigh"` is
   intended as a soft preference — existing assignments bias the objective like a shift
   preference weight, but the solver can still move them.
-- **`Unbounded` planning mode.** Selectable, but `planning_days()` raises
-  `NotImplementedError` immediately. Backlog — intended for future tools like automatic
+- **`Unbounded` planning mode.** Selectable, `planning_days()` returns infinite days, but
+  the model builder truncates it to 100 days. Backlog — intended for future tools like automatic
   dynamic calendar speculation; no near-term design work planned.
 - **Room-level assignment.** `Optimizer Run Slot.shift_location` and
   `Shift Location.custom_discipline` exist as scaffolding, but `model_builder.py` only tracks
   an aggregate room *count* per discipline/slot — nothing assigns a specific room yet.
   Backlog, same as `Unbounded` mode.
 
-## Dropped (described in `shift_optimizer_design.md`; zero code today)
-
-- **`shift_algorithm`** — the design doc's 3rd preference layer: a per-employee Python
-  snippet, executed at solve time, that produces a `weights` dict. No field, no execution
-  path, no sandboxing exists in the codebase. Feature was dropped due to low utility and
-  high security risk.
-
 ## Working conventions
 
-- **Don't hand-edit DocType JSON files** (`autoshift/autoshift/doctype/**/*.json`). Make the
-  change via the Frappe Desk UI in developer mode (`bench set-config developer_mode 1`, then
-  edit/create the DocType in the browser) — saving there auto-exports the JSON correctly.
-  Enforced by a `PreToolUse` hook in `.claude/settings.json` that denies Edit/Write on these
-  paths. Controller `.py`/`.js` files for the same doctype are not affected. NOTE: do feel
-  free to design doctype modifications, this is simply about the "how"
+- **Don't hand-edit DocType JSON files** (`autoshift/autoshift/doctype/**/*.json`). Instead, 
+  direct the user to make the change via the Frappe Desk UI in developer mode 
+  (`bench set-config developer_mode 1`, then edit/create the DocType in the browser) — saving
+  there auto-exports the JSON correctly. Enforced by a `PreToolUse` hook in
+  `.claude/settings.json` that denies Edit/Write on these paths. Controller `.py`/`.js` files
+  for the same doctype are not affected.
 
 ## Process / repo notes
 
-- Single branch `version-16`, tracks `upstream/version-16` at `github.com/CMDBB/autoshift`.
-  No `main`/`master`. Branch name is coupled to the targeted Frappe version.
+- `developement` branch is the main branch, tracks `upstream/developement` at 
+  `github.com/CMDBB/autoshift`. There is a `version-16` branch which development merges into
+  by PR.
 - CI (`.github/workflows/ci.yml`) runs the real test suite against MariaDB+Redis on push/PR.
   `linter.yml` runs pre-commit, Frappe's Semgrep correctness rules, and `pip-audit`, gated on
-  PRs. Both exist and pass today — but see the commit link-back item under To Be Implemented
-  for what passing CI does *not* guarantee (zero Frappe-level integration coverage on the
-  commit path).
-- `tests/test_optimizer.py` is a solid pure-Python unit suite (no Frappe context) covering
-  planning-day generation, hashing, every MILP constraint group. The three doctype-level
-  `IntegrationTestCase` stubs (`optimizer_run`, `employee_settings`, `optimizer_settings`) are
-  empty — zero Frappe-level integration coverage.
-- `hooks.py`'s `app_description` still says "WIP (... natural language constraints and
-  preference, explainable decisions)" — both are aspirational, no code exists for either.
+  PRs. They however cannot be run locally, and don't cover everything.
+- `tests/test_optimizer.py` is a pure-Python unit suite (no Frappe context) covering
+  planning-day generation, hashing, every MILP constraint group. The doctype-level
+  `IntegrationTestCase` stubs (`employee_settings`, `optimizer_settings`) are
+  left as autogenerated by frappe, except for `test_optimizer_run.py`.
+- `hooks.py`'s `app_description` says "WIP (... natural language constraints and
+  preference, explainable decisions)" — these are aspirational, no code exists yet for either.
 
 ## Dev commands
 
 ```bash
-cd apps/autoshift && python -m pytest tests/ -v   # pure-Python optimizer tests, no site needed
-pre-commit install                                 # ruff, eslint, prettier, pyupgrade
-bench --site YOUR_SITE seed-dev-data --input ./dev_data
+uv run pytest tests/ # unit tests of the optimizer
+pre-commit install # ruff, eslint, prettier, pyupgrade
+bench --site development.localhost seed-dev-data --input /path/to/dev_data
 ```
