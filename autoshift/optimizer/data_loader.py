@@ -65,6 +65,7 @@ def load(run_doc) -> DataPackage:
 	branches = sorted({r.branch for r in config_rows if r.branch})
 	disciplines = sorted({r.discipline for r in config_rows if r.discipline})
 
+	flags: set[DataPackage.FLAG] = set()
 	rooms: dict[tuple[str, str], int] = {}
 	for r in config_rows:
 		rooms[(r.discipline, r.branch)] = int(r.rooms_num or 0)
@@ -133,7 +134,6 @@ def load(run_doc) -> DataPackage:
 	#   1. favourite_shift  → maximum allowed weight on that single shift
 	#   2. shift_preferences table → raw weights, normalized if non-compliant
 	#   3. uniform preferences
-	# An employee absent from this dict contributes 0.0 (neutral) in the objective.
 	shift_preferences: dict[str, dict[str, float]] = {}
 
 	if len(shift_types) > 1:
@@ -167,7 +167,6 @@ def load(run_doc) -> DataPackage:
 	employees = []
 	designation: dict[str, str] = {}
 	department: dict[str, str] = {}
-	is_salaried: dict[str, bool] = {}
 	target_shifts: dict[str, int] = {}
 	max_rpe: dict[str, int] = {}
 	employee_holiday_lists: dict[str, str] = {}
@@ -184,10 +183,6 @@ def load(run_doc) -> DataPackage:
 		designation[name] = desig
 		department[name] = emp.department or ""
 		employee_holiday_lists[name] = emp.holiday_list or ""
-
-		# TODO: Employment Type is a configurable Link doctype. Replace with a configurable name list (e.g.
-		# in Optimizer Settings) once defined. For now, assume everyone is salaried.
-		is_salaried[name] = True
 
 		fte_pct = cast(float, emp.custom_fte) or 100.0
 		fte_fraction = fte_pct / 100.0
@@ -245,45 +240,42 @@ def load(run_doc) -> DataPackage:
 				d += datetime.timedelta(days=1)
 
 	# ── Forced assignments ────────────────────────────────────────────────────
-	if run_doc.disregard_assignments in ("Use", "Weigh"):
-		raise NotImplementedError(
-			f"disregard_assignments = '{run_doc.disregard_assignments}' is not yet implemented; only 'Ignore' is supported"
-		)
+	if run_doc.disregard_assignments == "Weigh":
+		flags.add(DataPackage.WEIGH_ASSIGNMENTS)
 
 	forced: set[tuple[str, str, datetime.date, str]] = set()
-	if run_doc.disregard_assignments == "Use":
-		# unreachable: TODO implement Use and test it
-		existing = frappe.get_all(
-			"Shift Assignment",
-			filters={
-				"employee": ["in", employees],
-				"docstatus": 1,
-				"start_date": ["<=", window_end],
-			},
-			fields=["employee", "shift_type", "start_date", "shift_location"],
+	existing = frappe.get_all(
+		"Shift Assignment",
+		filters={
+			"employee": ["in", employees],
+			"docstatus": 1,
+			"start_date": ["<=", window_end],
+		},
+		fields=["employee", "shift_type", "start_date", "shift_location"],
+	)
+	# Source of truth for branch: Shift Assignment -> Shift Location ->
+	# Shift Location.custom_branch (Link to Branch).
+	location_branch = {
+		row.name: row.custom_branch
+		for row in frappe.get_all(
+			"Shift Location",
+			filters={"name": ["in", list({sa.shift_location for sa in existing if sa.shift_location})]},
+			fields=["name", "custom_branch"],
 		)
-		# Source of truth for branch: Shift Assignment -> Shift Location ->
-		# Shift Location.custom_branch (Link to Branch).
-		location_branch = {
-			row.name: row.custom_branch
-			for row in frappe.get_all(
-				"Shift Location",
-				filters={"name": ["in", list({sa.shift_location for sa in existing if sa.shift_location})]},
-				fields=["name", "custom_branch"],
+	}
+	for sa in existing:
+		branch = location_branch.get(sa.shift_location)
+		if not branch:
+			frappe.throw(
+				frappe._(
+					"Shift Assignment {0} has no Shift Location with a Branch set; cannot "
+					"resolve which branch it belongs to."
+				).format(sa.name)
 			)
-		}
-		for sa in existing:
-			branch = location_branch.get(sa.shift_location)
-			if not branch:
-				frappe.throw(
-					frappe._(
-						"Shift Assignment {0} has no Shift Location with a Branch set; cannot "
-						"resolve which branch it belongs to."
-					).format(sa.name)
-				)
-			forced.add((sa.employee, sa.shift_type, getdate(sa.start_date), str(branch)))
+		forced.add((sa.employee, sa.shift_type, getdate(sa.start_date), str(branch)))
 
 	return DataPackage(
+		flags=flags,
 		employees=employees,
 		shift_types=shift_types,
 		working_days=working_days,

@@ -144,7 +144,7 @@ The new run is created with **Type = Copy**, distinguishing it from a manually c
 
 ### Detecting identical inputs
 
-Clicking **Solve** first fingerprints the run's input (employees, leaves, FTE targets, preferences, etc.) and checks whether another run already solved that exact same input. If a match is found, nothing is solved: you get an **"Identical run detected"** prompt linking to the existing run, and this Draft is left completely untouched — including its **Input Hash**, which stays unset. That matters because the hash can only be known once you actually attempt to solve, and a Draft you don't solve right now might see different underlying data (a new leave application, a changed FTE, etc.) the next time you do try — so it must stay re-solvable rather than being silently filled in with someone else's result.
+Clicking **Solve** first fingerprints the run's input (employees, leaves, FTE targets, preferences, etc.) and checks whether another run already solved that exact same input. If a match is found, you get an **"Identical run detected"** prompt linking to the existing run, but you can press `yes` to re-run anyway.
 
 The Input Hash is only ever recorded on a run that actually went through a real solve attempt, which is also how matches are found for *future* runs.
 
@@ -166,9 +166,7 @@ The MILP model is built with [PuLP](https://coin-or.github.io/pulp/) and solved 
 4. Max rooms per employee per slot (from Discipline Designation Branch Config)
 5. Room coverage: staff headcount must support the number of active rooms
 6. FTE target: assigned shifts ≤ (1 + tolerance) × target, for every employee. This is an
-   upper bound only — there's currently no lower bound, and no distinction between salaried
-   and turnover-paid staff (that split is planned but not implemented; see `is_salaried` in
-   CLAUDE.md). Staying near the target today comes from the objective's preference term
+   upper bound only. Staying near the target today comes from the objective's preference term
    pulling assignments up, not from a hard minimum.
 
 **Objective (maximise)**

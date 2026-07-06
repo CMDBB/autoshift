@@ -82,13 +82,13 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 				x[(e, s, d, b)].fixValue()
 
 	# 3. Forced assignments
-	if data.forced:
+	for comb in itertools.product(E, S, D, B):
+		x[comb].setInitialValue(1 if comb in data.forced else 0)
+	if data.WEIGH_ASSIGNMENTS not in data.flags:
+		# this is the 'Use'/'Ignore' mode
 		for comb in itertools.product(E, S, D, B):
 			if comb in data.forced:
-				x[comb].setInitialValue(1)
 				x[comb].fixValue()
-			else:
-				x[comb].setInitialValue(0)
 
 	# 4. Max rooms per employee per slot (each shift+day combination)
 	for e, s, d in itertools.product(E, S, D):

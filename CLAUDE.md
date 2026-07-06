@@ -13,7 +13,7 @@ something is "broken" vs. simply not built yet.
 **IMPORTANT**: Ask the user for clarification early and
 often on any design intentions.
 
-Design intent: `shift_optimizer_design.md`. User docs: `README.md`.
+User docs: `README.md`.
 
 ## Architecture
 
@@ -56,27 +56,22 @@ Type`s are in scope for the optimizer — a Shift Type not listed on any config 
 as a non-clinical variant and excluded. This duplicates the shift-type list across every
 (discipline, designation, branch) row rather than tagging Shift Type itself, so
 `data_loader.py` warns (`frappe.log_error`) if rows sharing the same discipline list
-different Shift Types — see the TODO at [data_loader.py:94](autoshift/optimizer/data_loader.py#L94).
+different Shift Types.
 
 CLI (`autoshift/commands.py`): `dump-dev-data` / `seed-dev-data` for snapshotting/seeding a
 dev site.
 
 ## To be implemented (scaffolding exists; feature path is incomplete, not "broken")
 
-- **Run → `Shift Assignment` link-back after commit.** `73e98fa` ("start online
+- gh issue #5 **Run → `Shift Assignment` link-back after commit.** `73e98fa` ("start online
   modifications") removed the `committed_assignments` field from `optimizer_run.json` as the
   first step of an in-progress redesign of how a committed run stays linked to the records it
   created. Plan: re-add it as a table on `Optimizer Run`, unless a better mechanism is found.
   `committer.py` raises `NotImplementedError` unconditionally until this lands.
-- **`disregard_assignments` = Use / Weigh.** Selectable in the UI; `data_loader.py` only
-  handles `"Ignore"` and raises `NotImplementedError` for the others. `"Use"` forces existing
-  Shift Assignments as hard constraints (code present, not yet wired in). `"Weigh"` is
-  intended as a soft preference — existing assignments bias the objective like a shift
-  preference weight, but the solver can still move them.
-- **`Unbounded` planning mode.** Selectable, `planning_days()` returns infinite days, but
+- gh issue #8 **`Unbounded` planning mode.** Selectable, `planning_days()` returns infinite days, but
   the model builder truncates it to 100 days. Backlog — intended for future tools like automatic
   dynamic calendar speculation; no near-term design work planned.
-- **Room-level assignment.** `Optimizer Run Slot.shift_location` and
+- gh issue #9 **Room-level assignment.** `Optimizer Run Slot.shift_location` and
   `Shift Location.custom_discipline` exist as scaffolding, but `model_builder.py` only tracks
   an aggregate room *count* per discipline/slot — nothing assigns a specific room yet.
   Backlog, same as `Unbounded` mode.
@@ -109,6 +104,6 @@ dev site.
 
 ```bash
 uv run pytest tests/ # unit tests of the optimizer
-pre-commit install # ruff, eslint, prettier, pyupgrade
+pre-commit # ruff, eslint, prettier, pyupgrade
 bench --site development.localhost seed-dev-data --input /path/to/dev_data
 ```
