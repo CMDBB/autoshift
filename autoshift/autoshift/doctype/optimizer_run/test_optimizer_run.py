@@ -25,6 +25,7 @@ def pkg(**overrides) -> DataPackage:
 	Override any field to build specific scenarios.
 	"""
 	base: dict[str, Any] = dict(
+		flags=set(),
 		employees=["Alice", "Bob"],
 		shift_types=["Day", "Night"],
 		working_days=[MONDAY + datetime.timedelta(days=i) for i in range(7)],
