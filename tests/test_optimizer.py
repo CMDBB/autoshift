@@ -33,6 +33,7 @@ def pkg(**overrides) -> DataPackage:
 	disc = "Omni"
 	b = "B1"
 	base: dict[str, Any] = dict(
+		flags=set(),
 		employees=["E1"],
 		shift_types=["AM"],
 		working_days=[MON],
@@ -159,6 +160,52 @@ def test_forced_assignment_is_honored():
 	prob, x, _ = solve(pkg(forced={("E1", "AM", MON, "B1")}))
 	assert status(prob) == "Optimal"
 	assert (pulp.value(x[("E1", "AM", MON, "B1")]) or 0) > 0.5
+
+
+def test_weigh_mode_allows_overriding_forced_assignment():
+	"""
+	In 'Weigh' mode, a forced (already-assigned) shift is only a soft warm-start,
+	not a hard constraint: if another shift is clearly preferred, the solver moves
+	the employee off the forced slot. Contrast with the default ('Use'/'Ignore')
+	mode exercised in test_forced_assignment_is_honored, where forced is fixed.
+	"""
+	prob, x, _ = solve(
+		pkg(
+			flags={DataPackage.WEIGH_ASSIGNMENTS},
+			shift_types=["AM", "PM"],
+			forced={("E1", "AM", MON, "B1")},
+			shift_preferences={"E1": {"AM": 0.0, "PM": 1.0}},
+		)
+	)
+	assert status(prob) == "Optimal"
+	assert (pulp.value(x[("E1", "PM", MON, "B1")]) or 0) > 0.5
+	assert (pulp.value(x[("E1", "AM", MON, "B1")]) or 0) < 0.5
+
+
+def test_weigh_mode_breaks_ties_toward_existing_assignment():
+	"""
+	With one open slot and two equally-preferred employees, only one can be
+	assigned and both choices score identically under the objective. 'Weigh'
+	mode's warm-start should steer the solver to keep the one already assigned
+	(E1) rather than switching to the tied alternative (E2).
+	"""
+	disc, b = "Omni", "B1"
+	prob, x, _ = solve(
+		pkg(
+			flags={DataPackage.WEIGH_ASSIGNMENTS},
+			employees=["E1", "E2"],
+			designation={"E1": "Doctor", "E2": "Doctor"},
+			department={"E1": disc, "E2": disc},
+			target_shifts={"E1": 1, "E2": 1},
+			max_rpe={"E1": 1, "E2": 1},
+			rooms={(disc, b): 1},
+			forced={("E1", "AM", MON, b)},
+			shift_preferences={"E1": {"AM": 0.5}, "E2": {"AM": 0.5}},
+		)
+	)
+	assert status(prob) == "Optimal"
+	assert (pulp.value(x[("E1", "AM", MON, b)]) or 0) > 0.5
+	assert (pulp.value(x[("E2", "AM", MON, b)]) or 0) < 0.5
 
 
 # ── one-shift-per-day constraint ──────────────────────────────────────────────

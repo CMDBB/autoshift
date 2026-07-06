@@ -9,12 +9,20 @@ import datetime
 import hashlib
 import itertools
 import json
+import typing
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class DataPackage:
+	FLAG = str
+	IGNORE_ASSIGNMENTS: typing.ClassVar[FLAG] = "ignore"  # same as using an empty ``forced``
+	WEIGH_ASSIGNMENTS: typing.ClassVar[FLAG] = "weigh"  # use ``forced`` as a soft initialization
+	USE_ASSIGNMENTS: typing.ClassVar[FLAG] = "use"  # use ``forced`` as constraint
+
+	flags: set[FLAG]
+
 	# Index sets
 	employees: list[str]
 	shift_types: list[str]
@@ -75,6 +83,7 @@ class DataPackage:
 	def dumps(self) -> str:
 		"""Serialize to a JSON string. `datetime.date`s become ISO strings; round-trips via `loads`."""
 		payload = {
+			"flags": [flag for flag in self.flags],
 			"employees": self.employees,
 			"shift_types": self.shift_types,
 			"working_days": [d.isoformat() for d in self.working_days],
@@ -103,6 +112,7 @@ class DataPackage:
 		"""Deserialize a JSON string produced by `dumps`."""
 		payload = json.loads(raw)
 		return cls(
+			flags={flag for flag in payload["flags"]},
 			employees=payload["employees"],
 			shift_types=payload["shift_types"],
 			working_days=[datetime.date.fromisoformat(d) for d in payload["working_days"]],
