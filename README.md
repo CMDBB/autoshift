@@ -65,6 +65,32 @@ Employees without an Employee Settings record use a uniform shift preference and
 
 On each **Employee** record, fill in the **FTE %** field (0–100). This determines the target number of shifts for the planning period. Employees default to 100 % FTE if the field is blank.
 
+### 5. Optimization Rules & Rulesets
+
+The constraints a run enforces are documents, not hardcoded behaviour.
+
+**Autoshift → Optimization Rule** — one document per rule. Each rule has a natural-language
+**Description** and an optional implementation:
+
+| Implementation Type | Meaning |
+|---|---|
+| `Not Implemented` | The rule exists only as its description — a backlog item for a developer (or an LLM, pending developer validation) to implement later |
+| `Built-in` | Points at a rule shipped in the app code via **Built-in Key** (registry in `autoshift/optimizer/rules.py`) |
+| `Custom Code` | Python on the document defining `apply(ctx)`; it only runs after a developer checks **Validated by Developer** (editing the code clears the flag) |
+
+Only implemented rules can be used in a solve. Because writing and validating rules takes
+time, rules are bundled into an **Optimization Ruleset** (**Autoshift → Optimization
+Ruleset**) — a reusable, ordered list of rules that every Optimizer Run points to.
+
+Migration seeds one Optimization Rule per built-in constraint (one shift per day, leave
+blocklist, existing assignments, max rooms per slot, room coverage, FTE ceiling) and a
+**Standard Ruleset** containing all of them, which is the default for new runs. Unimplemented
+rules may sit in a ruleset as a draft, but a run using that ruleset refuses to solve until
+they are implemented.
+
+> **Security note:** Custom Code rules execute as ordinary Python at solve time, so only
+> **System Manager** can create or edit Optimization Rules; HR Manager has read access.
+
 ---
 
 ## Running the Optimiser
@@ -78,6 +104,7 @@ On each **Employee** record, fill in the **FTE %** field (0–100). This determi
 | Planning Mode | `1-week`, `2-week`, `4-week`, or `Unbounded` |
 | Start Date | First Monday of the planning period (any day for Unbounded) |
 | Existing Shift Assignments | `Use` = fix already-submitted assignments; `Ignore` = start fresh; `Weigh` = treat as soft preference |
+| Optimization Ruleset | Which rules constrain this run; defaults to **Standard Ruleset** (all built-in rules) |
 | Pending Leaves to Treat as Approved | Optional: select pending Leave Applications to block as if approved |
 
 Save the document. Status is **Draft**.

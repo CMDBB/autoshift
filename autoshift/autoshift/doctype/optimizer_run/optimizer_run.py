@@ -71,11 +71,12 @@ class OptimizerRun(Document):
 		if cache is None:
 			return data_loader.load(self)
 
-		dataS = cache.get_value(f"DataPackage:{self.name}")
+		# v2: packages cached before the rules field existed deserialize without it
+		dataS = cache.get_value(f"DataPackage:v2:{self.name}")
 		if dataS is not None:
 			return types.DataPackage.loads(dataS)
 		data = data_loader.load(self)
-		cache.set_value(f"DataPackage:{self.name}", data.dumps())
+		cache.set_value(f"DataPackage:v2:{self.name}", data.dumps())
 
 		return data
 
@@ -137,6 +138,7 @@ class OptimizerRun(Document):
 		new_run.set("mode", self.mode)  # ty:ignore[unresolved-attribute]
 		new_run.set("date", self.date)  # ty:ignore[unresolved-attribute]
 		new_run.set("disregard_assignments", self.disregard_assignments)  # ty:ignore[unresolved-attribute]
+		new_run.set("ruleset", self.ruleset)  # ty:ignore[unresolved-attribute]
 		new_run.set("type", "Copy")
 		for row in self.get("leaves_speculations") or []:
 			new_run.append("leaves_speculations", {"leave_application": row.leave_application})

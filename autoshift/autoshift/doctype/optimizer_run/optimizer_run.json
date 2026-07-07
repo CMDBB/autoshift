@@ -9,6 +9,7 @@
   "mode",
   "date",
   "disregard_assignments",
+  "ruleset",
   "status",
   "column_break_1",
   "objective_value",
@@ -46,6 +47,15 @@
    "fieldtype": "Select",
    "label": "Existing Shift Assignments",
    "options": "Use\nIgnore\nWeigh"
+  },
+  {
+   "default": "Standard Ruleset",
+   "description": "The Optimization Ruleset whose rules constrain this run.",
+   "fieldname": "ruleset",
+   "fieldtype": "Link",
+   "label": "Optimization Ruleset",
+   "options": "Optimization Ruleset",
+   "reqd": 1
   },
   {
    "default": "Draft",
@@ -129,7 +139,7 @@
   }
  ],
  "links": [],
- "modified": "2026-06-29 13:45:12.063104",
+ "modified": "2026-07-06 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Optimizer Run",

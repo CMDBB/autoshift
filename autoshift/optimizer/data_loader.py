@@ -14,6 +14,7 @@ import numpy as np
 from frappe.utils import add_days
 from frappe.utils import getdate as _getdate
 
+from .rules import BUILTIN_RULES
 from .types import DataPackage
 from .types import planning_days as _planning_days
 
@@ -42,9 +43,61 @@ def getdate(*args, **kwargs) -> datetime.date:
 	return result
 
 
+def _load_rules(run_doc) -> tuple[tuple[str, str, str], ...]:
+	"""
+	Resolve the run's Optimization Ruleset into (rule_name, builtin_key, custom_code)
+	triples for the DataPackage. Only implemented rules can be used: Built-in rules
+	whose key is registered in code, or Custom Code rules a developer has validated.
+	Sorted by rule name so two rulesets with the same rules hash identically.
+	"""
+	ruleset = run_doc.get("ruleset")
+	if not ruleset:
+		frappe.throw(frappe._("This Optimizer Run has no Optimization Ruleset set."))
+
+	rule_names = [
+		row.rule
+		for row in frappe.get_all(
+			"Optimization Ruleset Rule",
+			filters={"parent": ruleset, "parenttype": "Optimization Ruleset"},
+			fields=["rule"],
+			order_by="idx",
+		)
+	]
+	if not rule_names:
+		frappe.throw(frappe._("Optimization Ruleset {0} contains no rules.").format(frappe.bold(ruleset)))
+
+	rules = frappe.get_all(
+		"Optimization Rule",
+		filters={"name": ["in", rule_names]},
+		fields=["name", "implementation_type", "builtin_key", "implementation_code", "validated"],
+	)
+
+	specs: list[tuple[str, str, str]] = []
+	unusable: list[str] = []
+	for rule in sorted(rules, key=lambda r: r.name):
+		if rule.implementation_type == "Built-in" and rule.builtin_key in BUILTIN_RULES:
+			specs.append((rule.name, rule.builtin_key, ""))
+		elif rule.implementation_type == "Custom Code" and rule.implementation_code and rule.validated:
+			specs.append((rule.name, "", rule.implementation_code))
+		else:
+			unusable.append(rule.name)
+
+	if unusable:
+		frappe.throw(
+			frappe._(
+				"Optimization Ruleset {0} contains rules that are not implemented (or not yet "
+				"validated by a developer) and cannot be used: {1}"
+			).format(frappe.bold(ruleset), ", ".join(frappe.bold(name) for name in unusable))
+		)
+
+	return tuple(specs)
+
+
 def load(run_doc) -> DataPackage:
 	start_date = getdate(run_doc.date)
 	mode = run_doc.mode
+
+	rules = _load_rules(run_doc)
 
 	# ── Optimizer settings ──────────────────────────────────────────────────
 	settings = frappe.get_single("Optimizer Settings")
@@ -291,4 +344,5 @@ def load(run_doc) -> DataPackage:
 		shift_preferences=shift_preferences,
 		fte_tolerance=fte_tolerance,
 		turnover_weight=turnover_weight,
+		rules=rules,
 	)
