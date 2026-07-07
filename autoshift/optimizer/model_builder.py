@@ -6,10 +6,11 @@ Decision variables
 x[e, s, d, b]              Binary  - employee e works shift s on day d at branch b
 active_rooms[k, s, d, b]   Integer - rooms staffed in discipline k, shift s, day d, branch b
 
-Room coverage
--------------
-Every employee in a discipline contributes max_rpe[e] room-slots per assigned shift.
-The weighted sum must be >= active_rooms for that discipline/slot/branch.
+Constraints
+-----------
+Constraints come from named rules (see rules.py): the DataPackage's ``rules``
+selection — loaded from the run's Optimization Ruleset — decides which apply.
+An empty selection applies every built-in rule.
 
 Objective (maximize)
 --------------------
@@ -22,10 +23,10 @@ Objective (maximize)
 from __future__ import annotations
 
 import itertools
-from typing import Any
 
 import pulp
 
+from .rules import RuleContext, apply_rules
 from .types import DataPackage
 
 
@@ -63,68 +64,8 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 		).items()
 	}
 
-	# ── Constraints ───────────────────────────────────────────────────────────
-
-	# 1. One shift per employee per day (across all shifts and branches)
-	for e, d in itertools.product(E, D):
-		prob += (
-			pulp.lpSum(x[(e, s, d, b)] for s in S for b in B) <= 1,
-			f"one_shift_{e}_{d}".replace("-", "_").replace(" ", "_"),
-		)
-
-	# 2. Leave blocklist
-	for e, d in data.leave_blocked:
-		if e not in E or d not in set(D):
-			continue
-		for s in S:
-			for b in B:
-				x[(e, s, d, b)].setInitialValue(0)
-				x[(e, s, d, b)].fixValue()
-
-	# 3. Forced assignments
-	for comb in itertools.product(E, S, D, B):
-		x[comb].setInitialValue(1 if comb in data.forced else 0)
-	if data.WEIGH_ASSIGNMENTS not in data.flags:
-		# this is the 'Use'/'Ignore' mode
-		for comb in itertools.product(E, S, D, B):
-			if comb in data.forced:
-				x[comb].fixValue()
-
-	# 4. Max rooms per employee per slot (each shift+day combination)
-	for e, s, d in itertools.product(E, S, D):
-		limit = data.max_rpe.get(e, 1)
-		prob += (
-			pulp.lpSum(x[(e, s, d, b)] for b in B) <= limit,
-			f"max_rpe_{e}_{s}_{d}".replace("-", "_").replace(" ", "_"),
-		)
-
-	# 5. Room coverage: weighted sum of all employees in discipline ≥ active_rooms
-	#    Each employee contributes max_rpe[e] rooms per slot assigned.
-	for k, s, d, b in itertools.product(data.disciplines, S, D, B):
-		employees_in_discipline = [e for e in E if data.department.get(e) == k]
-		if not employees_in_discipline:
-			prob += (
-				active_rooms[(k, s, d, b)] == 0,
-				f"no_employees_{k}_{s}_{d}_{b}".replace("-", "_").replace(" ", "_"),
-			)
-		else:
-			prob += (
-				pulp.lpSum(data.max_rpe.get(e, 1) * x[(e, s, d, b)] for e in employees_in_discipline)
-				== active_rooms[(k, s, d, b)],
-				f"room_coverage_{k}_{s}_{d}_{b}".replace("-", "_").replace(" ", "_"),
-			)
-
-	# 6 & 7. FTE targets
-	tol = data.fte_tolerance
-	for e in E:
-		target = data.target_shifts.get(e, 0)
-		total_assigned = pulp.lpSum(x[(e, s, d, b)] for s in S for d in D for b in B)
-		if target > 0:
-			# upper bound only: employee utilization will come from objective function
-			prob += (
-				total_assigned <= (1 + tol) * target,
-				f"fte_max_{e}".replace("-", "_").replace(" ", "_"),
-			)
+	# ── Constraints (selected rules) ──────────────────────────────────────────
+	apply_rules(RuleContext(prob=prob, x=x, active_rooms=active_rooms, data=data))
 
 	# ── Objective ─────────────────────────────────────────────────────────────
 

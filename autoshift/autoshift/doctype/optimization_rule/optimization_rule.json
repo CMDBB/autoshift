@@ -1,0 +1,131 @@
+{
+ "actions": [],
+ "autoname": "field:rule_name",
+ "creation": "2026-07-06 00:00:00",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "rule_name",
+  "implementation_type",
+  "column_break_status",
+  "implemented",
+  "validated",
+  "section_break_description",
+  "description",
+  "section_break_implementation",
+  "builtin_key",
+  "implementation_code"
+ ],
+ "fields": [
+  {
+   "fieldname": "rule_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Rule Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "default": "Not Implemented",
+   "fieldname": "implementation_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Implementation Type",
+   "options": "Not Implemented\nBuilt-in\nCustom Code",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_status",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "description": "Set automatically. Only implemented rules can be used in an Optimization Ruleset at solve time.",
+   "fieldname": "implemented",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Implemented",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.implementation_type==\"Custom Code\"",
+   "description": "A developer has reviewed this implementation (e.g. after LLM generation). Custom code only runs once validated; editing the code clears this flag.",
+   "fieldname": "validated",
+   "fieldtype": "Check",
+   "label": "Validated by Developer"
+  },
+  {
+   "fieldname": "section_break_description",
+   "fieldtype": "Section Break",
+   "label": "Description"
+  },
+  {
+   "description": "Natural-language statement of the rule, precise enough for a developer (or LLM) to implement it later.",
+   "fieldname": "description",
+   "fieldtype": "Text",
+   "label": "Description (Natural Language)",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.implementation_type!==\"Not Implemented\"",
+   "fieldname": "section_break_implementation",
+   "fieldtype": "Section Break",
+   "label": "Implementation"
+  },
+  {
+   "depends_on": "eval:doc.implementation_type==\"Built-in\"",
+   "description": "Key of a rule registered in autoshift.optimizer.rules.BUILTIN_RULES (rule ships in the app code).",
+   "fieldname": "builtin_key",
+   "fieldtype": "Data",
+   "label": "Built-in Key",
+   "mandatory_depends_on": "eval:doc.implementation_type==\"Built-in\""
+  },
+  {
+   "depends_on": "eval:doc.implementation_type==\"Custom Code\"",
+   "description": "Python source defining apply(ctx). ctx is autoshift.optimizer.rules.RuleContext with prob (pulp.LpProblem), x (binary vars keyed by (employee, shift, day, branch)), active_rooms (integer vars keyed by (discipline, shift, day, branch)) and data (DataPackage). pulp and itertools are pre-imported.",
+   "fieldname": "implementation_code",
+   "fieldtype": "Code",
+   "label": "Implementation Code",
+   "mandatory_depends_on": "eval:doc.implementation_type==\"Custom Code\"",
+   "options": "Python"
+  }
+ ],
+ "links": [],
+ "modified": "2026-07-06 00:00:00",
+ "modified_by": "Administrator",
+ "module": "Autoshift",
+ "name": "Optimization Rule",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "HR Manager",
+   "share": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

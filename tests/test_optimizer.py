@@ -14,6 +14,7 @@ import pulp
 import pytest
 
 from autoshift.optimizer.model_builder import build
+from autoshift.optimizer.rules import BUILTIN_RULES
 from autoshift.optimizer.types import DataPackage, planning_days
 
 # ── constants & helpers ───────────────────────────────────────────────────────
@@ -56,6 +57,11 @@ def pkg(**overrides) -> DataPackage:
 			e: {s: 1 / n_shifts for s in base["shift_types"]} for e in base["employees"]
 		}
 	return DataPackage(**base)
+
+
+def builtin_specs(*keys: str) -> tuple[tuple[str, str, str], ...]:
+	"""Rule spec triples selecting the given built-in rules (doc name = key)."""
+	return tuple((k, k, "") for k in keys)
 
 
 def solve(data: DataPackage):
@@ -347,6 +353,83 @@ def test_fairness_equalizes_unfairness_not_individual_balance():
 	e2_pm = assigned(x, employee="E2", shift="PM")
 	assert max(e2_am, e2_pm) == 2
 	assert min(e2_am, e2_pm) == 0
+
+
+# ── rule selection ────────────────────────────────────────────────────────────
+
+ALL_BUT_LEAVE = builtin_specs(
+	"one_shift_per_day",
+	"existing_assignments",
+	"max_rooms_per_slot",
+	"room_coverage",
+	"fte_ceiling",
+)
+
+
+def test_excluded_rule_is_not_applied():
+	"""Same leave-blocked scenario as test_employee_on_leave_is_not_assigned, but
+	with the leave rule left out of the selection: the leave no longer blocks."""
+	prob, x, _ = solve(
+		pkg(
+			leave_blocked={("E1", MON)},
+			rules=ALL_BUT_LEAVE,
+		)
+	)
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 1
+
+
+def test_explicitly_selected_rules_match_default_behavior():
+	prob, x, _ = solve(
+		pkg(
+			leave_blocked={("E1", MON)},
+			rules=ALL_BUT_LEAVE + builtin_specs("leave_blocklist"),
+		)
+	)
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 0
+
+
+def test_custom_code_rule_is_applied():
+	code = (
+		"def apply(ctx):\n"
+		"    for (e, s, d, b), var in ctx.x.items():\n"
+		"        if e == 'E1':\n"
+		"            name = f'never_e1_{s}_{d}_{b}'.replace('-', '_').replace(' ', '_')\n"
+		"            ctx.prob += (var <= 0, name)\n"
+	)
+	rules = (*builtin_specs(*BUILTIN_RULES), ("Never E1", "", code))
+	prob, x, _ = solve(pkg(rules=rules))
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 0
+
+
+def test_unknown_builtin_key_raises():
+	with pytest.raises(ValueError, match="unknown built-in key"):
+		build(pkg(rules=(("Mystery Rule", "no_such_rule", ""),)))
+
+
+def test_rule_without_implementation_raises():
+	with pytest.raises(ValueError, match="no implementation"):
+		build(pkg(rules=(("Someday Rule", "", ""),)))
+
+
+def test_custom_code_without_apply_raises():
+	with pytest.raises(ValueError, match="apply"):
+		build(pkg(rules=(("Broken Rule", "", "x = 1\n"),)))
+
+
+def test_rules_selection_changes_input_hash():
+	assert pkg().input_hash() != pkg(rules=ALL_BUT_LEAVE).input_hash()
+	assert pkg(rules=ALL_BUT_LEAVE).input_hash() == pkg(rules=ALL_BUT_LEAVE).input_hash()
+
+
+def test_dumps_loads_round_trips_rules():
+	code = "def apply(ctx):\n    pass\n"
+	data = pkg(rules=(*builtin_specs("one_shift_per_day"), ("Custom", "", code)))
+	restored = DataPackage.loads(data.dumps())
+	assert restored == data
+	assert restored.input_hash() == data.input_hash()
 
 
 # ── multi-employee integration ────────────────────────────────────────────────

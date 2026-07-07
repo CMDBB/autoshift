@@ -58,6 +58,12 @@ class DataPackage:
 	fte_tolerance: float  # e.g. 0.05 = ±5%
 	turnover_weight: float
 
+	# rules selected for this run, as (rule_document_name, builtin_key, custom_code)
+	# triples from the run's Optimization Ruleset. Exactly one of builtin_key/custom_code
+	# is non-empty per triple. Empty tuple = apply every built-in rule (pre-ruleset
+	# behaviour, kept for tests and cached packages serialized before rulesets existed).
+	rules: tuple[tuple[str, str, str], ...] = ()
+
 	def input_hash(self) -> str:
 		"""
 		Stable hash of every field that influences the MILP solution.
@@ -104,6 +110,7 @@ class DataPackage:
 			"shift_preferences": self.shift_preferences,
 			"fte_tolerance": self.fte_tolerance,
 			"turnover_weight": self.turnover_weight,
+			"rules": [list(rule) for rule in self.rules],
 		}
 		return json.dumps(payload)
 
@@ -133,6 +140,7 @@ class DataPackage:
 			shift_preferences=payload["shift_preferences"],
 			fte_tolerance=payload["fte_tolerance"],
 			turnover_weight=payload["turnover_weight"],
+			rules=tuple(tuple(rule) for rule in payload.get("rules", [])),
 		)
 
 
