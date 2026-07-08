@@ -7,6 +7,7 @@ Called directly (sync, short time limit) or via Frappe's background job queue
 from __future__ import annotations
 
 import os
+import tempfile
 import traceback
 
 import frappe
@@ -54,13 +55,18 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 
 		prob, x, _active_rooms = model_builder.build(data)
 
-		logPath = "coin_run.log"
-		solver = pulp.COIN_CMD(timeLimit=time_limit, logPath=logPath)
-		prob.solve(solver)
+		# CBC runs as a subprocess, so the only sane way to capture output is through a file
+		fd, log_path = tempfile.mkstemp(prefix="cbc_", suffix=".log")
+		os.close(fd)
+		try:
+			solver = pulp.COIN_CMD(timeLimit=time_limit, logPath=log_path)
+			prob.solve(solver)
 
-		with open(logPath) as f:
-			solver_log = f.read()
-		os.remove(logPath)
+			# nosemgrep: frappe-semgrep-rules.rules.security.frappe-security-file-traversal (is a tempfile -> safe)
+			with open(log_path) as f:
+				solver_log = f.read()
+		finally:
+			os.unlink(log_path)
 
 		lp_status = pulp.LpStatus[prob.status]
 

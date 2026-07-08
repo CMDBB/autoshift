@@ -4,8 +4,9 @@ Autoshift is a Frappe app that automatically assigns employees to shifts using M
 
 ## Prerequisites
 
-- Frappe v16 with Frappe HR installed
-- PuLP Python package (`pip install pulp[cbc]`) — ships with the COIN-OR CBC solver binary
+- A Frappe v16 bench. Frappe HR (`hrms`) is a required app and is installed automatically
+  with autoshift; Python dependencies (`pulp[cbc]` — ships the COIN-OR CBC solver binary —
+  and `numpy`) are installed by bench from `pyproject.toml`.
 - Redis (required by Frappe for background jobs)
 
 ## Installation
@@ -14,8 +15,10 @@ Autoshift is a Frappe app that automatically assigns employees to shifts using M
 cd $PATH_TO_YOUR_BENCH
 bench get-app $URL_OF_THIS_REPO --branch version-16
 bench install-app autoshift
-bench migrate
 ```
+
+Installing seeds the built-in **Optimization Rule** documents and the **Standard Ruleset**
+(see below). When updating an already-installed site, run `bench migrate` as usual.
 
 ---
 
@@ -88,8 +91,14 @@ blocklist, existing assignments, max rooms per slot, room coverage, FTE ceiling)
 rules may sit in a ruleset as a draft, but a run using that ruleset refuses to solve until
 they are implemented.
 
-> **Security note:** Custom Code rules execute as ordinary Python at solve time, so only
-> **System Manager** can create or edit Optimization Rules; HR Manager has read access.
+> **Security note:** Custom Code rules execute as ordinary Python at solve time, so
+> implementing and validating rules is developer-only. **HR Manager** can create and edit
+> rules, but only the name and NL description: the implementation fields (Implementation
+> Type, Built-in Key, Implementation Code, Validated by Developer) are read-only for
+> everyone except **System Manager** (field permission level 1). The server enforces this
+> independently of the UI — a non-developer's attempted implementation change is cleaned
+> up with a warning (new rules are forced to `Not Implemented`), and setting *Validated by
+> Developer* is refused outright.
 
 ---
 
@@ -109,9 +118,11 @@ they are implemented.
 
 Save the document. Status is **Draft**.
 
-> **Not yet usable:** `Unbounded` planning mode and the `Use`/`Weigh` settings for Existing
-> Shift Assignments are selectable in the UI but raise `NotImplementedError` when you try to
-> solve — only `1-week`/`2-week`/`4-week` modes and `Ignore` are implemented today.
+> **Not yet usable:** `Unbounded` planning mode is selectable in the UI but raises
+> `NotImplementedError` when you try to solve — only `1-week`/`2-week`/`4-week` are
+> implemented today. All three Existing Shift Assignments modes work: `Use` fixes existing
+> assignments as hard constraints, `Weigh` uses them as a soft warm-start the solver may
+> override, `Ignore` disregards them.
 
 ### Step 2 — Solve
 
@@ -134,6 +145,11 @@ Click **Approve**. This locks the solution. Status becomes **Approved**.
 ### Step 5 — Commit
 
 Click **Commit**. Autoshift creates and submits one **Shift Assignment** record per slot. Status becomes **Committed**.
+
+> **Currently not functional:** how a committed run stays linked to the Shift Assignments it
+> creates is being redesigned ([#5](https://github.com/CMDBB/autoshift/issues/5)), and until
+> that lands Commit raises `NotImplementedError` — the run stays **Approved** and no records
+> are created.
 
 ---
 
@@ -171,7 +187,7 @@ The new run is created with **Type = Copy**, distinguishing it from a manually c
 
 ### Detecting identical inputs
 
-Clicking **Solve** first fingerprints the run's input (employees, leaves, FTE targets, preferences, etc.) and checks whether another run already solved that exact same input. If a match is found, you get an **"Identical run detected"** prompt linking to the existing run, but you can press `yes` to re-run anyway.
+Clicking **Solve** first fingerprints the run's input (employees, leaves, FTE targets, preferences, the resolved ruleset, etc.) and checks whether another run already solved that exact same input. If a match is found, you get an **"Identical run detected"** prompt linking to the existing run, but you can press `yes` to re-run anyway.
 
 The Input Hash is only ever recorded on a run that actually went through a real solve attempt, which is also how matches are found for *future* runs.
 
@@ -185,16 +201,20 @@ The MILP model is built with [PuLP](https://coin-or.github.io/pulp/) and solved 
 - `x[employee, shift, day, branch]` ∈ {0, 1} — whether an employee is assigned to a shift on a day at a branch
 - `active_rooms[discipline, shift, day, branch]` ∈ ℤ≥0 — rooms staffed in each slot
 
-**Constraints**
+**Constraints** — supplied by the run's Optimization Ruleset (see [One-time Setup §5](#5-optimization-rules--rulesets)),
+one Optimization Rule document per constraint group. The built-in rules:
+
 1. At most one shift per employee per day
 2. Approved and speculated leaves block assignments
-3. Forced assignments — code path exists for `Use` mode but is not yet wired in (raises
-   `NotImplementedError`); only `Ignore` works today
+3. Existing Shift Assignments honored per the run's mode: fixed (`Use`), soft warm-start
+   (`Weigh`), or disregarded (`Ignore`)
 4. Max rooms per employee per slot (from Discipline Designation Branch Config)
 5. Room coverage: staff headcount must support the number of active rooms
-6. FTE target: assigned shifts ≤ (1 + tolerance) × target, for every employee. This is an
+6. FTE ceiling: assigned shifts ≤ (1 + tolerance) × target, for every employee. This is an
    upper bound only. Staying near the target today comes from the objective's preference term
    pulling assignments up, not from a hard minimum.
+
+Validated Custom Code rules add further constraints on top of (or instead of) these.
 
 **Objective (maximise)**
 - Room utilisation: `turnover_weight × Σ active_rooms`
@@ -219,6 +239,9 @@ Current modelling limitations (revisit if the underlying assumption stops holdin
   — it doesn't pick which physical room an employee works in.
 - **No minimum rest gap between shifts.** Moot today since each employee gets at most one
   shift per day; would need revisiting if night shifts or extended hours are introduced.
+- **Rules control constraints only.** The objective (room utilisation + shift preferences)
+  is still hardcoded in the model builder; Custom Code rules cannot add or reweight
+  objective terms.
 
 Out of scope for this app — handled elsewhere in the Frappe HR / ERPNext stack:
 
@@ -231,22 +254,61 @@ Out of scope for this app — handled elsewhere in the Frappe HR / ERPNext stack
 
 ## Development
 
-### Running tests
+Python tooling runs through [uv](https://docs.astral.sh/uv/) using the app's `pyproject.toml`
+dev dependency group (`uv sync` once to create `.venv`).
+
+### Unit tests (pure Python, no site needed)
+
+The optimizer engine (`autoshift/optimizer/`, minus `data_loader`) has no Frappe imports and
+is covered by a fast pytest suite: planning-day generation, input hashing, every built-in
+rule, rule selection, custom-code rules, and multi-employee integration scenarios.
 
 ```bash
 cd apps/autoshift
-python -m pytest tests/ -v
+uv run pytest tests/
 ```
 
-Tests are pure Python (no Frappe context required) and cover planning-day generation, leave blocking, forced assignments, FTE constraints, and multi-employee integration.
+### Integration tests (need a Frappe site)
 
-### Pre-commit hooks
+Doctype-level tests (solve lifecycle and caching, the developer-only rule
+implementation/validation gate) run with bench, the same way CI does. Run them only against
+a **disposable, never-served test site** — never against a site whose state you care about.
+They must pass on a freshly created site; if a test needs records, seed them in the test
+itself rather than relying on site state (and prune Frappe's recursive test-record
+generation with `IGNORE_TEST_RECORD_DEPENDENCIES` — see `test_optimizer_run.py`).
 
 ```bash
-pre-commit install
+bench new-site dev.test.localhost --db-root-password <pw> --admin-password <pw>
+bench --site dev.test.localhost install-app autoshift
+bench --site dev.test.localhost set-config allow_tests true
+
+# full suite, as CI runs it:
+bench --site dev.test.localhost run-tests --app autoshift
+# or a single module:
+bench --site dev.test.localhost run-tests --module autoshift.autoshift.doctype.optimizer_run.test_optimizer_run
 ```
 
-Configured hooks: **ruff** (lint + format), **eslint**, **prettier**, **pyupgrade**.
+Note: creating a new site can steal `default_site` in `common_site_config.json` — point it
+back at your development site so the test site is never served.
+
+### Linting
+
+```bash
+pre-commit install # once
+pre-commit # then
+```
+
+Configured hooks: **ruff** (lint + format), **eslint**, **prettier**, **pyupgrade** — run on
+every commit and by CI on PRs.
+
+CI additionally runs Frappe's Semgrep correctness rules, pinned via the
+`frappe-semgrep-rules` git submodule. To reproduce locally, initialise the submodule once,
+then scan:
+
+```bash
+git submodule update --init frappe-semgrep-rules
+uv run semgrep scan --config ./frappe-semgrep-rules/rules --config r/python.lang.correctness
+```
 
 ### Adding dev data
 
@@ -254,7 +316,8 @@ Configured hooks: **ruff** (lint + format), **eslint**, **prettier**, **pyupgrad
 bench --site YOUR_SITE seed-dev-data --input ./dev_data
 ```
 
-(`dump-dev-data` is the inverse, for snapshotting an existing site's data.)
+(`dump-dev-data` is the inverse, for snapshotting an existing site's data.) Don't seed dev
+data into the test site — keep it pristine.
 
 ---
 

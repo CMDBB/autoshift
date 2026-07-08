@@ -93,7 +93,7 @@ commands = "autoshift.commands"
 # ------------
 
 # before_install = "autoshift.install.before_install"
-# after_install = "autoshift.install.after_install"
+after_install = "autoshift.install.after_install"
 
 # Uninstallation
 # ------------

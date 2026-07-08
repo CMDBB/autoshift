@@ -3,6 +3,10 @@ Seed one Optimization Rule document per built-in rule registered in
 autoshift.optimizer.rules, bundle them into the "Standard Ruleset" (the default
 of Optimizer Run.ruleset), and backfill the ruleset onto existing runs — those
 were solved with exactly these hardcoded rules.
+
+Runs as a patch on migrate (sites installed before this existed) AND from the
+after_install hook (fresh installs mark patches as completed without running
+them) — hence everything here must stay idempotent.
 """
 
 import frappe

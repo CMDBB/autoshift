@@ -33,6 +33,9 @@ def dump_dev_data(context, output):
 	for dt in doctypes_to_dump:
 		records = frappe.get_all(dt, fields=["*"])
 		path = os.path.join(output, f"{dt}.json")
+		# developer-run bench command writing to a developer-supplied local path;
+		# no web/user input involved
+		# nosemgrep: frappe-semgrep-rules.rules.security.frappe-security-file-traversal
 		with open(path, "w") as f:
 			json.dump(records, f, indent=2, default=str)
 		click.echo(f"  Exported {len(records): >3} {dt: <40} records to {path}")
@@ -68,6 +71,9 @@ def seed_dev_data(context, input_dir, overwrite, clobber_designations):
 
 	if has_designations_file and clobber_designations:
 		frappe.db.sql("DELETE FROM `tabDesignation`")
+		# CLI script outside the request/transaction lifecycle; the destructive
+		# clobber is committed before the import starts touching other doctypes
+		# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 		frappe.db.commit()
 		click.echo("  Cleared existing Designation records before import")
 
@@ -76,6 +82,9 @@ def seed_dev_data(context, input_dir, overwrite, clobber_designations):
 			continue
 		dt = filename.replace(".json", "")
 		path = os.path.join(input_dir, filename)
+		# developer-run bench command reading a developer-supplied local path;
+		# no web/user input involved
+		# nosemgrep: frappe-semgrep-rules.rules.security.frappe-security-file-traversal
 		with open(path) as f:
 			records = json.load(f)
 
@@ -89,6 +98,9 @@ def seed_dev_data(context, input_dir, overwrite, clobber_designations):
 				doc = frappe.get_doc({"doctype": dt, **record})
 				doc.insert()
 
+		# CLI script outside the request/transaction lifecycle; checkpoint per
+		# doctype so a failing file doesn't roll back everything imported so far
+		# nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 		frappe.db.commit()
 		click.echo(f"  Imported {len(records): >3} {dt: <40} records from {filename}")
 
