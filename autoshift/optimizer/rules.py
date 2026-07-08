@@ -200,6 +200,9 @@ def compile_custom_rule(rule_name: str, code: str) -> Callable[[RuleContext], No
 	"""
 	namespace: dict = {"pulp": pulp, "itertools": itertools}
 	try:
+		# source: ../autoshift/doctype/optimization_rule/optimization_rule.json
+		# developer must ensure that no unauthorized user can add/edit/validate rules
+		# nosemgrep: frappe-semgrep-rules.rules.security.frappe-codeinjection-eval
 		exec(compile(code, f"<Optimization Rule: {rule_name}>", "exec"), namespace)
 	except Exception as exc:
 		raise ValueError(f"Optimization Rule {rule_name!r}: implementation failed to load: {exc}") from exc

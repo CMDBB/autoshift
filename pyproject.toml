@@ -31,6 +31,7 @@ dev = [
     "ipykernel>=7.3.0",
     "pandas>=3.0.3",
     "pytest>=9.0.3",
+    "semgrep>=1.168.0",
 ]
 
 [tool.ruff]

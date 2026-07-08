@@ -7,14 +7,30 @@ from typing import Any
 import frappe
 from frappe.tests import IntegrationTestCase
 
-from autoshift.autoshift.doctype.optimizer_run.optimizer_run import OptimizerRun
+from autoshift.autoshift.doctype.optimizer_run.optimizer_run import (
+	OptimizerRun,
+	datapackage_cache_key,
+)
 from autoshift.optimizer.types import DataPackage
 
 # On IntegrationTestCase, the doctype test records and all
 # link-field test record dependencies are recursively loaded
 # Use these module variables to add/remove to/from that list
 EXTRA_TEST_RECORD_DEPENDENCIES = []  # eg. ["User"]
-IGNORE_TEST_RECORD_DEPENDENCIES = []  # eg. ["User"]
+# These tests inject a synthetic DataPackage into the cache and never touch real
+# HR records (they *rely* on Alice/Bob not existing — see the LinkValidationError
+# asserts). Pruning these links from the recursive test-record walk matters: the
+# Leave Application subtree alone drags in the whole hrms/erpnext graph, whose
+# generation only ever worked on sites with warmed-up state (e.g. frappe's own
+# "Test ToDo" workflow tries to email a wkhtmltopdf print of every new ToDo and
+# dies on a pristine, unserved site).
+IGNORE_TEST_RECORD_DEPENDENCIES = [
+	"Leave Application",
+	"Employee",
+	"Shift Type",
+	"Shift Location",
+	"Branch",
+]
 
 MONDAY = datetime.date(year=2026, month=6, day=22)
 
@@ -84,7 +100,7 @@ class IntegrationTestOptimizerRun(IntegrationTestCase):
 		"""
 		# inject a DataPackage into the cache for the test record, so that the OptimizerRun.solve() method can retrieve it
 		assert self.cache is not None, "Cache is not available in the test environment"
-		self.cache.set_value(f"DataPackage:{self.test_record.name}", pkg().dumps())
+		self.cache.set_value(datapackage_cache_key(self.test_record.name), pkg().dumps())
 		with self.assertRaises(frappe.exceptions.LinkValidationError):
 			# Alice and Bob don't exist in the actual database where solve will try to self.save()
 			self.test_record.solve()
@@ -92,7 +108,7 @@ class IntegrationTestOptimizerRun(IntegrationTestCase):
 	def test_no_overfilling_of_shifts(self):
 		assert self.cache is not None, "Cache is not available in the test environment"
 		self.cache.set_value(
-			f"DataPackage:{self.test_record.name}",
+			datapackage_cache_key(self.test_record.name),
 			pkg(
 				employees=["Alice", "Bob", "Caoimhe"],
 				designation={"Alice": "Nurse", "Bob": "Nurse", "Caoimhe": "Nurse"},

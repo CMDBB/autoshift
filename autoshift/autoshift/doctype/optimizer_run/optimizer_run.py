@@ -9,6 +9,12 @@ from autoshift.optimizer import data_loader, types
 # Time given to the synchronous attempt before falling back to a background job.
 SYNC_TIME_LIMIT = 5
 
+
+def datapackage_cache_key(run_name) -> str:
+	# v2: packages cached before DataPackage.rules existed deserialize without it
+	return f"DataPackage:v2:{run_name}"
+
+
 # Approximate hue (HSV degrees) of each named "Roster Color" on Shift Type, so a
 # Shift Type that already has one anchors the auto-generated palette around it.
 _NAMED_COLOR_HUE = {
@@ -71,12 +77,11 @@ class OptimizerRun(Document):
 		if cache is None:
 			return data_loader.load(self)
 
-		# v2: packages cached before the rules field existed deserialize without it
-		dataS = cache.get_value(f"DataPackage:v2:{self.name}")
+		dataS = cache.get_value(datapackage_cache_key(self.name))
 		if dataS is not None:
 			return types.DataPackage.loads(dataS)
 		data = data_loader.load(self)
-		cache.set_value(f"DataPackage:v2:{self.name}", data.dumps())
+		cache.set_value(datapackage_cache_key(self.name), data.dumps())
 
 		return data
 
