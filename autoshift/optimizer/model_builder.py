@@ -6,18 +6,15 @@ Decision variables
 x[e, s, d, b]              Binary  - employee e works shift s on day d at branch b
 active_rooms[k, s, d, b]   Integer - rooms staffed in discipline k, shift s, day d, branch b
 
-Constraints
------------
-Constraints come from named rules (see rules.py): the DataPackage's ``rules``
-selection — loaded from the run's Optimization Ruleset — decides which apply.
-An empty selection applies every built-in rule.
-
-Objective (maximize)
---------------------
-1. Room utilization:  turnover_weight * Σ active_rooms[k,s,d,b]
-2. Shift preferences: Σ_{e,s,d,b} pref[e,s] * x[e,s,d,b]
-	 pref[e,s] comes from Employee Settings → shift_preferences child table.
-	 Missing entries are 0.0 (neutral).
+Constraints and objective
+-------------------------
+Both come from named rules (see rules.py): the DataPackage's ``rules`` selection
+— loaded from the run's Optimization Ruleset — decides which apply. Constraint
+rules add constraints; objective rules contribute terms via
+``ctx.add_objective``, each scaled by its ruleset row weight, and the maximized
+objective is their sum. An empty selection applies every built-in rule at
+weight 1.0. No objective rules selected = constant-zero objective (a pure
+feasibility problem).
 """
 
 from __future__ import annotations
@@ -30,7 +27,7 @@ from .rules import RuleContext, apply_rules
 from .types import DataPackage
 
 
-def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
+def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict, str]:
 	prob = pulp.LpProblem("shift_optimizer", pulp.LpMaximize)
 
 	E = data.employees
@@ -64,23 +61,10 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict]:
 		).items()
 	}
 
-	# ── Constraints (selected rules) ──────────────────────────────────────────
-	apply_rules(RuleContext(prob=prob, x=x, active_rooms=active_rooms, data=data))
+	# ── Constraints and objective terms (selected rules) ─────────────────────
+	ctx = RuleContext(prob=prob, x=x, active_rooms=active_rooms, data=data)
+	logs = apply_rules(ctx)
 
-	# ── Objective ─────────────────────────────────────────────────────────────
+	prob += pulp.lpSum(ctx.objective_terms)
 
-	# Term 1: room utilization (weighted by turnover_weight from Optimizer Settings)
-	room_util = pulp.lpSum(
-		active_rooms[(k, s, d, b)] for k, s, d, b in itertools.product(data.disciplines, S, D, B)
-	)
-
-	# Term 2: employee shift preferences (simple dot product)
-	# Complexity is handled on the user side
-	pref_sum = pulp.lpSum(
-		(-1 + data.shift_preferences.get(e, {}).get(s, 0.0)) * x[(e, s, d, b)]
-		for e, s, d, b in itertools.product(E, S, D, B)
-	)
-
-	prob += data.turnover_weight * room_util + pref_sum
-
-	return prob, x, active_rooms
+	return prob, x, active_rooms, logs

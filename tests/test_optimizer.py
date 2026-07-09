@@ -8,6 +8,7 @@ Run with:  pytest autoshift/tests/test_optimizer.py
 from __future__ import annotations
 
 import datetime
+import json
 from typing import Any
 
 import pulp
@@ -48,7 +49,6 @@ def pkg(**overrides) -> DataPackage:
 		leave_blocked=set(),
 		forced=set(),
 		fte_tolerance=0.0,
-		turnover_weight=1.0,
 	)
 	base.update(overrides)
 	if "shift_preferences" not in base:
@@ -59,13 +59,13 @@ def pkg(**overrides) -> DataPackage:
 	return DataPackage(**base)
 
 
-def builtin_specs(*keys: str) -> tuple[tuple[str, str, str], ...]:
-	"""Rule spec triples selecting the given built-in rules (doc name = key)."""
-	return tuple((k, k, "") for k in keys)
+def builtin_specs(*keys: str, weight: float = 1.0) -> tuple[tuple[str, str, str, float], ...]:
+	"""Rule specs selecting the given built-in rules (doc name = key)."""
+	return tuple((k, k, "", weight) for k in keys)
 
 
 def solve(data: DataPackage):
-	prob, x, ar = build(data)
+	prob, x, ar, _ = build(data)
 	prob.solve(pulp.COIN_CMD(msg=False))
 	return prob, x, ar
 
@@ -335,7 +335,6 @@ def test_fairness_equalizes_unfairness_not_individual_balance():
 		rooms={(disc, b): 2},
 		forced=forced_e1,
 		fte_tolerance=0.0,
-		turnover_weight=1.0,
 	)
 	prob, x, _ = solve(data)
 	assert status(prob) == "Optimal"
@@ -363,6 +362,8 @@ ALL_BUT_LEAVE = builtin_specs(
 	"max_rooms_per_slot",
 	"room_coverage",
 	"fte_ceiling",
+	"room_utilization_objective",
+	"shift_preference_objective",
 )
 
 
@@ -398,7 +399,7 @@ def test_custom_code_rule_is_applied():
 		"            name = f'never_e1_{s}_{d}_{b}'.replace('-', '_').replace(' ', '_')\n"
 		"            ctx.prob += (var <= 0, name)\n"
 	)
-	rules = (*builtin_specs(*BUILTIN_RULES), ("Never E1", "", code))
+	rules = (*builtin_specs(*BUILTIN_RULES), ("Never E1", "", code, 1.0))
 	prob, x, _ = solve(pkg(rules=rules))
 	assert status(prob) == "Optimal"
 	assert assigned(x, employee="E1") == 0
@@ -406,17 +407,17 @@ def test_custom_code_rule_is_applied():
 
 def test_unknown_builtin_key_raises():
 	with pytest.raises(ValueError, match="unknown built-in key"):
-		build(pkg(rules=(("Mystery Rule", "no_such_rule", ""),)))
+		build(pkg(rules=(("Mystery Rule", "no_such_rule", "", 1.0),)))
 
 
 def test_rule_without_implementation_raises():
 	with pytest.raises(ValueError, match="no implementation"):
-		build(pkg(rules=(("Someday Rule", "", ""),)))
+		build(pkg(rules=(("Someday Rule", "", "", 1.0),)))
 
 
 def test_custom_code_without_apply_raises():
 	with pytest.raises(ValueError, match="apply"):
-		build(pkg(rules=(("Broken Rule", "", "x = 1\n"),)))
+		build(pkg(rules=(("Broken Rule", "", "x = 1\n", 1.0),)))
 
 
 def test_rules_selection_changes_input_hash():
@@ -426,10 +427,95 @@ def test_rules_selection_changes_input_hash():
 
 def test_dumps_loads_round_trips_rules():
 	code = "def apply(ctx):\n    pass\n"
-	data = pkg(rules=(*builtin_specs("one_shift_per_day"), ("Custom", "", code)))
+	data = pkg(rules=(*builtin_specs("one_shift_per_day"), ("Custom", "", code, 2.5)))
 	restored = DataPackage.loads(data.dumps())
 	assert restored == data
 	assert restored.input_hash() == data.input_hash()
+
+
+def test_loads_pads_legacy_rule_triples_with_weight():
+	"""Packages cached before the weight element existed still deserialize."""
+	data = pkg(rules=builtin_specs("one_shift_per_day"))
+	payload = json.loads(data.dumps())
+	payload["rules"] = [spec[:3] for spec in payload["rules"]]  # pre-weight format
+	restored = DataPackage.loads(json.dumps(payload))
+	assert restored.rules == (("one_shift_per_day", "one_shift_per_day", "", 1.0),)
+
+
+# ── objective rules ───────────────────────────────────────────────────────────
+
+CONSTRAINTS_ONLY = builtin_specs(
+	"one_shift_per_day",
+	"existing_assignments",
+	"max_rooms_per_slot",
+	"room_coverage",
+	"fte_ceiling",
+)
+
+
+def test_objective_less_ruleset_assigns_nobody():
+	"""Constraint rules only: constant-zero objective, the solver has no reason to
+	assign anyone. This is the documented semantics of an objective-less ruleset."""
+	prob, x, _ = solve(pkg(rules=CONSTRAINTS_ONLY))
+	assert status(prob) == "Optimal"
+	assert assigned(x) == 0
+	assert (pulp.value(prob.objective) or 0) == 0
+
+
+def test_explicit_all_builtins_matches_default_selection():
+	"""Selecting every built-in explicitly (weight 1) is the pre-ruleset behaviour."""
+	default_prob, _, _ = solve(pkg())
+	explicit_prob, _, _ = solve(pkg(rules=builtin_specs(*BUILTIN_RULES)))
+	assert pulp.value(default_prob.objective) == pytest.approx(pulp.value(explicit_prob.objective))
+
+
+def test_objective_weight_scales_term():
+	"""Doubling the room-utilization row weight adds exactly one extra unit of
+	objective for the single staffed room; the assignment itself is unchanged."""
+	weighted = tuple(
+		(name, key, code, 2.0 if key == "room_utilization_objective" else w)
+		for name, key, code, w in builtin_specs(*BUILTIN_RULES)
+	)
+	prob1, x1, _ = solve(pkg(rules=builtin_specs(*BUILTIN_RULES)))
+	prob2, x2, _ = solve(pkg(rules=weighted))
+	assert assigned(x1) == assigned(x2) == 1
+	assert pulp.value(prob2.objective) == pytest.approx(pulp.value(prob1.objective) + 1.0)
+
+
+def test_weight_on_constraint_rule_is_a_noop():
+	prob1, x1, _ = solve(pkg(rules=builtin_specs(*BUILTIN_RULES)))
+	reweighted = tuple(
+		(name, key, code, 5.0 if key == "one_shift_per_day" else w)
+		for name, key, code, w in builtin_specs(*BUILTIN_RULES)
+	)
+	prob2, x2, _ = solve(pkg(rules=reweighted))
+	assert pulp.value(prob1.objective) == pytest.approx(pulp.value(prob2.objective))
+	assert assigned(x1) == assigned(x2)
+
+
+def test_custom_objective_rule_steers_solution():
+	"""A custom rule contributes objective terms via ctx.add_objective: penalizing
+	E1's assignments makes the solver give the single room slot to E2."""
+	code = (
+		"def apply(ctx):\n"
+		"    ctx.add_objective(\n"
+		"        pulp.lpSum(-var for (e, s, d, b), var in ctx.x.items() if e == 'E1')\n"
+		"    )\n"
+	)
+	disc, b = "Omni", "B1"
+	data = pkg(
+		employees=["E1", "E2"],
+		designation={"E1": "Doctor", "E2": "Doctor"},
+		department={"E1": disc, "E2": disc},
+		target_shifts={"E1": 1, "E2": 1},
+		max_rpe={"E1": 1, "E2": 1},
+		rooms={(disc, b): 1},
+		rules=(*builtin_specs(*BUILTIN_RULES), ("Avoid E1", "", code, 1.0)),
+	)
+	prob, x, _ = solve(data)
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 0
+	assert assigned(x, employee="E2") == 1
 
 
 # ── multi-employee integration ────────────────────────────────────────────────

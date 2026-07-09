@@ -8,13 +8,15 @@ from autoshift.optimizer.rules import BUILTIN_RULES
 # checks below are the authoritative guard (they also cover API writes).
 DEVELOPER_ROLE = "System Manager"
 
-IMPLEMENTATION_FIELDS = ("implementation_type", "builtin_key", "implementation_code")
+IMPLEMENTATION_FIELDS = ("implementation_type", "builtin_key", "implementation_code", "rule_kind")
 
 
 class OptimizationRule(Document):
 	def validate(self):
 		if self.implementation_type == "Built-in":
-			self._validate_builtin_key()
+			builtin = self._validate_builtin_key()
+			# kind is defined by the registered implementation, not the document
+			self.rule_kind = builtin.kind.title()
 		elif self.implementation_type == "Custom Code":
 			self._validate_custom_code()
 		self.implemented = 1 if self.is_implemented() else 0
@@ -100,12 +102,14 @@ class OptimizationRule(Document):
 		return False
 
 	def _validate_builtin_key(self):
-		if self.builtin_key not in BUILTIN_RULES:
+		builtin = BUILTIN_RULES.get(self.builtin_key or "")
+		if builtin is None:
 			frappe.throw(
 				frappe._("Built-in key {0} is not registered in code. Registered keys: {1}").format(
 					frappe.bold(self.builtin_key or ""), ", ".join(sorted(BUILTIN_RULES))
 				)
 			)
+		return builtin
 
 	def _validate_custom_code(self):
 		# Syntax-only check: compile() does not execute the code. Unvalidated

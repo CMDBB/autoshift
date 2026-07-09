@@ -25,19 +25,29 @@ Doctypes (`autoshift/autoshift/doctype/`):
   implementation. `implementation_type` = `Not Implemented` (description-only backlog item),
   `Built-in` (`builtin_key` into the `optimizer/rules.py` registry), or `Custom Code`
   (Python defining `apply(ctx)`, runs only after a developer checks `validated`; editing code
-  clears the flag). Custom code executes at solve time, so implementation fields
-  (`implementation_type`, `builtin_key`, `implementation_code`, `validated`) are permlevel 1
+  clears the flag). `rule_kind` (Constraint/Objective/Mixed) is synced from the registry for
+  built-ins, developer-declared for custom code — dashboard-ready metadata. Custom code
+  executes at solve time, so implementation fields
+  (`implementation_type`, `builtin_key`, `implementation_code`, `validated`, `rule_kind`)
+  are permlevel 1
   (System Manager write only); HR Manager may create/edit name + NL description only. The
   controller overrides `validate_higher_perm_levels` (which Frappe runs *before* `validate`,
   silently resetting permlevel-protected fields) to also warn/clean non-developer
   implementation edits and hard-refuse `validated` flips.
 - **Optimization Ruleset** (+ child `Optimization Ruleset Rule`) — reusable bundle of rules
-  (compiling/validating rules is slow, rulesets are not). Unimplemented rules may be drafted
-  into a ruleset (save warns) but `data_loader._load_rules` throws at solve time. The patch
-  `create_standard_optimization_rules` seeds one rule doc per built-in + the Standard Ruleset,
-  and backfills `ruleset` on pre-existing runs.
+  (compiling/validating rules is slow, rulesets are not). Each row has a `weight` that scales
+  the rule's objective contribution (no-op on constraint rules; save warns). Unimplemented
+  rules may be drafted into a ruleset (save warns) but `data_loader._load_rules` throws at
+  solve time; a ruleset without an Objective/Mixed rule warns on save but solves (constant-0
+  objective = feasibility check). The shared seeding in `create_standard_optimization_rules`
+  (patch + `after_install` + re-invoked by the `add_objective_rules` patch) creates one rule
+  doc per built-in, keeps the Standard Ruleset's rows in sync with the registry, backfills
+  `ruleset` on pre-existing runs, and carries the removed `turnover_weight` setting over as
+  the Standard Ruleset room-utilization row weight (**breaking**: non-Standard rulesets are
+  not upgraded).
 - **Optimizer Run Slot** — child; one row per assigned shift in a solution.
-- **Optimizer Settings** — singleton: `fte_tolerance_pct`, `turnover_weight`, holiday lists.
+- **Optimizer Settings** — singleton: `fte_tolerance_pct`, holiday lists. (`turnover_weight`
+  was removed — objective weighting now lives on Optimization Ruleset rows.)
 - **Discipline Designation Branch Config** — per (discipline, designation, branch): room
   counts + max-rooms-per-employee.
 - **Employee Settings** (+ children `Employee Shift Preference`, `Employee Branch Preference`)
@@ -50,18 +60,20 @@ Doctypes (`autoshift/autoshift/doctype/`):
 Optimizer engine (`autoshift/optimizer/`, pure-Python where possible for testability):
 1. `types.py` — `DataPackage` dataclass (engine's only input shape), SHA256 `input_hash()`
    for caching, `planning_days()` (raises `NotImplementedError` for `"Unbounded"` mode).
-2. `rules.py` — the constraint groups as named rules: `BUILTIN_RULES` registry (six rules,
-   formerly hardcoded in `model_builder`), `compile_custom_rule()` (exec's Custom Code rule
-   source, expects `apply(ctx)`), `apply_rules()` (applies `DataPackage.rules` selection;
-   empty selection = all built-ins, the pre-ruleset behaviour unit tests rely on).
+2. `rules.py` — constraint groups AND objective terms as named rules: `BUILTIN_RULES`
+   registry (six constraint + two objective rules, each with a `kind`), `compile_custom_rule()`
+   (exec's Custom Code rule source, expects `apply(ctx)`), `apply_rules()` (applies
+   `DataPackage.rules` selection; empty selection = all built-ins at weight 1.0, the
+   pre-ruleset behaviour unit tests rely on). Objective rules call `ctx.add_objective(expr)`;
+   the term is scaled by the ruleset row weight.
 3. `data_loader.py` — `load(run_doc)` hydrates a `DataPackage` from the Frappe DB; resolves
-   the run's ruleset into `(rule_name, builtin_key, custom_code)` triples (throws on
+   the run's ruleset into `(rule_name, builtin_key, custom_code, weight)` tuples (throws on
    unimplemented/unvalidated rules; sorted by name for hash stability); normalizes
    preferences via temperature-scaled softmax (no weight deviates >50% from uniform).
 4. `model_builder.py` — builds the PuLP MILP. Vars: `x[employee,shift,day,branch]`,
-   `active_rooms[discipline,shift,day,branch]`. Constraints via `rules.apply_rules`.
-   Objective (still hardcoded) = `turnover_weight × room utilization + Σ
-   preference·assignment`.
+   `active_rooms[discipline,shift,day,branch]`. Constraints and objective both via
+   `rules.apply_rules`; the maximized objective is the sum of the accumulated
+   `ctx.objective_terms` (empty = constant 0, pure feasibility).
 5. `solver.py` — runs CBC (5s sync, escalates to 3600s background job via
    `frappe.enqueue(queue="long")` on timeout); caches by input hash against prior runs in
    `{Solved, Failed, Approved, Committed}`.

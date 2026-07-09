@@ -8,6 +8,7 @@
  "field_order": [
   "rule_name",
   "implementation_type",
+  "rule_kind",
   "column_break_status",
   "implemented",
   "validated",
@@ -34,6 +35,18 @@
    "in_standard_filter": 1,
    "label": "Implementation Type",
    "options": "Not Implemented\nBuilt-in\nCustom Code",
+   "permlevel": 1,
+   "reqd": 1
+  },
+  {
+   "default": "Constraint",
+   "description": "Whether the implementation adds constraints, contributes objective terms, or both. Synced from code for Built-in rules; declared by the developer for Custom Code.",
+   "fieldname": "rule_kind",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Rule Kind",
+   "options": "Constraint\nObjective\nMixed",
    "permlevel": 1,
    "reqd": 1
   },
@@ -88,7 +101,7 @@
   },
   {
    "depends_on": "eval:doc.implementation_type==\"Custom Code\"",
-   "description": "Python source defining apply(ctx). ctx is autoshift.optimizer.rules.RuleContext with prob (pulp.LpProblem), x (binary vars keyed by (employee, shift, day, branch)), active_rooms (integer vars keyed by (discipline, shift, day, branch)) and data (DataPackage). pulp and itertools are pre-imported.",
+   "description": "Python source defining apply(ctx). ctx is autoshift.optimizer.rules.RuleContext with prob (pulp.LpProblem), x (binary vars keyed by (employee, shift, day, branch)), active_rooms (integer vars keyed by (discipline, shift, day, branch)) and data (DataPackage). Add constraints to ctx.prob and/or contribute maximized objective terms via ctx.add_objective(expr) (scaled by the ruleset row weight). pulp and itertools are pre-imported.",
    "fieldname": "implementation_code",
    "fieldtype": "Code",
    "label": "Implementation Code",
@@ -98,7 +111,7 @@
   }
  ],
  "links": [],
- "modified": "2026-07-08 00:00:00",
+ "modified": "2026-07-08 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Optimization Rule",

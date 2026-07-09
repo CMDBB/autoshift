@@ -59,7 +59,6 @@ def pkg(**overrides) -> DataPackage:
 			"Bob": {"Day": 0.5, "Night": 1.0},
 		},
 		fte_tolerance=0.05,
-		turnover_weight=1.0,
 	)
 	base.update(overrides)
 	if "shift_preferences" not in overrides and ("shift_types" in overrides or "employees" in overrides):

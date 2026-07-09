@@ -1,10 +1,12 @@
 """
-Optimization rule registry: the MILP constraint groups, as selectable named rules.
+Optimization rule registry: the MILP constraint groups and objective terms,
+as selectable named rules.
 
 Pure Python (no Frappe imports) — safe to use in tests.
 
-Each built-in rule is a function taking a :class:`RuleContext` and adding
-constraints (or fixing variables) on the PuLP problem. Rules are registered in
+Each built-in rule is a function taking a :class:`RuleContext` and either adding
+constraints (or fixing variables) on the PuLP problem, or contributing objective
+terms via :meth:`RuleContext.add_objective`. Rules are registered in
 ``BUILTIN_RULES`` under a stable key; an ``Optimization Rule`` document with
 ``implementation_type = "Built-in"`` points at one of these keys.
 
@@ -14,16 +16,21 @@ Custom rules live as Python source on an ``Optimization Rule`` document
 document. It is compiled here at solve time via :func:`compile_custom_rule`.
 
 Which rules apply to a given solve comes from ``DataPackage.rules`` — the
-``(rule_document_name, builtin_key, custom_code)`` triples loaded from the
-run's ``Optimization Ruleset``. An empty ``rules`` tuple means "apply every
-built-in rule" (the pre-ruleset behaviour, still used by the unit tests).
+``(rule_document_name, builtin_key, custom_code, weight)`` tuples loaded from
+the run's ``Optimization Ruleset``. ``weight`` scales the rule's objective
+contribution (it has no effect on constraint rules). An empty ``rules`` tuple
+means "apply every built-in rule at weight 1.0" (the pre-ruleset behaviour,
+still used by the unit tests).
 """
 
 from __future__ import annotations
 
+import contextlib
+import datetime
+import io
 import itertools
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import pulp
@@ -31,15 +38,28 @@ import pulp
 if TYPE_CHECKING:
 	from .types import DataPackage
 
+KIND_CONSTRAINT = "constraint"
+KIND_OBJECTIVE = "objective"
+
 
 @dataclass
 class RuleContext:
-	"""Everything a rule may constrain: the problem, its variables, and the input data."""
+	"""Everything a rule may act on: the problem, its variables, and the input data."""
 
 	prob: pulp.LpProblem
 	x: dict[tuple, pulp.LpVariable]  # x[employee, shift, day, branch] binary
 	active_rooms: dict[tuple, pulp.LpVariable]  # ar[discipline, shift, day, branch] integer
 	data: DataPackage
+
+	# objective terms accumulated by the applied rules; model_builder sums these
+	# into the problem's (maximized) objective after all rules have run
+	objective_terms: list = field(default_factory=list)
+	# ruleset row weight of the rule currently being applied (set by apply_rules)
+	_current_weight: float = 1.0
+
+	def add_objective(self, term) -> None:
+		"""Contribute a term to the maximized objective, scaled by the rule's ruleset weight."""
+		self.objective_terms.append(self._current_weight * term)
 
 
 @dataclass(frozen=True)
@@ -48,16 +68,17 @@ class BuiltinRule:
 	title: str
 	description: str
 	apply: Callable[[RuleContext], None]
+	kind: str = KIND_CONSTRAINT
 
 
 BUILTIN_RULES: dict[str, BuiltinRule] = {}
 
 
-def builtin_rule(key: str, title: str, description: str):
+def builtin_rule(key: str, title: str, description: str, kind: str = KIND_CONSTRAINT):
 	"""Register a function as a built-in optimization rule."""
 
 	def register(fn: Callable[[RuleContext], None]):
-		BUILTIN_RULES[key] = BuiltinRule(key=key, title=title, description=description, apply=fn)
+		BUILTIN_RULES[key] = BuiltinRule(key=key, title=title, description=description, apply=fn, kind=kind)
 		return fn
 
 	return register
@@ -186,6 +207,36 @@ def fte_ceiling(ctx: RuleContext) -> None:
 			)
 
 
+# ── Built-in objective rules (formerly hardcoded in model_builder.build) ──────
+
+
+@builtin_rule(
+	"room_utilization_objective",
+	"Objective: Room utilization",
+	"Maximize the total number of staffed rooms across all disciplines, shifts, days and branches.",
+	kind=KIND_OBJECTIVE,
+)
+def room_utilization_objective(ctx: RuleContext) -> None:
+	ctx.add_objective(pulp.lpSum(ctx.active_rooms.values()))
+
+
+@builtin_rule(
+	"shift_preference_objective",
+	"Objective: Shift preferences",
+	"Reward assignments matching each employee's normalized shift preferences (from Employee "
+	"Settings); assignments to less-preferred shifts score lower.",
+	kind=KIND_OBJECTIVE,
+)
+def shift_preference_objective(ctx: RuleContext) -> None:
+	data = ctx.data
+	ctx.add_objective(
+		pulp.lpSum(
+			(-1 + data.shift_preferences.get(e, {}).get(s, 0.0)) * var
+			for (e, s, _d, _b), var in ctx.x.items()
+		)
+	)
+
+
 # ── Custom rules ──────────────────────────────────────────────────────────────
 
 
@@ -194,11 +245,12 @@ def compile_custom_rule(rule_name: str, code: str) -> Callable[[RuleContext], No
 	Compile the Python source of a Custom Code rule and return its ``apply`` function.
 
 	The source runs with ``pulp`` and ``itertools`` pre-imported and must define
-	``apply(ctx)``. Only developer-validated code reaches this point (enforced by
-	the data loader), so it executes with normal Python semantics — an Optimization
-	Rule document is as trusted as app code.
+	``apply(ctx)``; it may add constraints to ``ctx.prob`` and/or contribute
+	objective terms via ``ctx.add_objective(expr)``. Only developer-validated code
+	reaches this point (enforced by the data loader), so it executes with normal
+	Python semantics — an Optimization Rule document is as trusted as app code.
 	"""
-	namespace: dict = {"pulp": pulp, "itertools": itertools}
+	namespace: dict = {"pulp": pulp, "itertools": itertools, "cname": _cname}
 	try:
 		# source: ../autoshift/doctype/optimization_rule/optimization_rule.json
 		# developer must ensure that no unauthorized user can add/edit/validate rules
@@ -212,23 +264,33 @@ def compile_custom_rule(rule_name: str, code: str) -> Callable[[RuleContext], No
 	return apply_fn
 
 
-def apply_rules(ctx: RuleContext) -> None:
+def apply_rules(ctx: RuleContext) -> str:
 	"""
 	Apply the rules selected in ``ctx.data.rules`` to the problem.
 
-	An empty selection applies every built-in rule (pre-ruleset behaviour).
+	Each spec's weight scales the objective terms the rule contributes (via
+	``ctx.add_objective``); constraint rules are unaffected by it. An empty
+	selection applies every built-in rule at weight 1.0 (pre-ruleset behaviour).
 	"""
-	specs = ctx.data.rules or tuple((rule.title, key, "") for key, rule in BUILTIN_RULES.items())
-	for name, builtin_key, code in specs:
-		if builtin_key:
-			rule = BUILTIN_RULES.get(builtin_key)
-			if rule is None:
-				raise ValueError(
-					f"Optimization Rule {name!r}: unknown built-in key {builtin_key!r}. "
-					f"Registered keys: {sorted(BUILTIN_RULES)}"
-				)
-			rule.apply(ctx)
-		elif code:
-			compile_custom_rule(name, code)(ctx)
-		else:
-			raise ValueError(f"Optimization Rule {name!r} has no implementation and cannot be used.")
+	specs = ctx.data.rules or tuple((rule.title, key, "", 1.0) for key, rule in BUILTIN_RULES.items())
+	logs = io.StringIO()
+	for name, builtin_key, code, weight in specs:
+		ctx._current_weight = weight
+		try:
+			if builtin_key:
+				rule = BUILTIN_RULES.get(builtin_key)
+				if rule is None:
+					raise ValueError(
+						f"Optimization Rule {name!r}: unknown built-in key {builtin_key!r}. "
+						f"Registered keys: {sorted(BUILTIN_RULES)}"
+					)
+				with contextlib.redirect_stdout(logs):
+					rule.apply(ctx)
+			elif code:
+				with contextlib.redirect_stdout(logs):
+					compile_custom_rule(name, code)(ctx)
+			else:
+				raise ValueError(f"Optimization Rule {name!r} has no implementation and cannot be used.")
+		finally:
+			ctx._current_weight = 1.0
+	return logs.getvalue()

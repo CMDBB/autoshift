@@ -53,7 +53,7 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 	try:
 		run.set("hash", data.input_hash())
 
-		prob, x, _active_rooms = model_builder.build(data)
+		prob, x, _active_rooms, rule_logs = model_builder.build(data)
 
 		# CBC runs as a subprocess, so the only sane way to capture output is through a file
 		fd, log_path = tempfile.mkstemp(prefix="cbc_", suffix=".log")
@@ -75,10 +75,19 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 			# caller decide whether to escalate rather than recording a failure.
 			return True
 
-		run.set("solver_log", solver_log)
+		run.set(
+			"solver_log",
+			f"""
+		--- Rules Logs ---
+		{rule_logs}
+		--- Solver Logs ---
+		{solver_log}
+		""",
+		)
 
 		if lp_status == "Optimal":
-			run.set("objective_value", pulp.value(prob.objective))
+			# value() is None for a constant (e.g. objective-less feasibility) problem
+			run.set("objective_value", pulp.value(prob.objective) or 0.0)
 			run.set("solution_table", [])
 
 			for (e, s, d, b), var in x.items():

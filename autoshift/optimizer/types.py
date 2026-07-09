@@ -56,13 +56,14 @@ class DataPackage:
 
 	# optimizer policy
 	fte_tolerance: float  # e.g. 0.05 = ±5%
-	turnover_weight: float
 
-	# rules selected for this run, as (rule_document_name, builtin_key, custom_code)
-	# triples from the run's Optimization Ruleset. Exactly one of builtin_key/custom_code
-	# is non-empty per triple. Empty tuple = apply every built-in rule (pre-ruleset
-	# behaviour, kept for tests and cached packages serialized before rulesets existed).
-	rules: tuple[tuple[str, str, str], ...] = ()
+	# rules selected for this run, as (rule_document_name, builtin_key, custom_code, weight)
+	# tuples from the run's Optimization Ruleset. Exactly one of builtin_key/custom_code
+	# is non-empty per tuple; weight scales the rule's objective contribution (no effect
+	# on constraint rules). Empty tuple = apply every built-in rule at weight 1.0
+	# (pre-ruleset behaviour, kept for tests and cached packages serialized before
+	# rulesets existed).
+	rules: tuple[tuple[str, str, str, float], ...] = ()
 
 	def input_hash(self) -> str:
 		"""
@@ -109,7 +110,6 @@ class DataPackage:
 			],
 			"shift_preferences": self.shift_preferences,
 			"fte_tolerance": self.fte_tolerance,
-			"turnover_weight": self.turnover_weight,
 			"rules": [list(rule) for rule in self.rules],
 		}
 		return json.dumps(payload)
@@ -139,8 +139,11 @@ class DataPackage:
 			},
 			shift_preferences=payload["shift_preferences"],
 			fte_tolerance=payload["fte_tolerance"],
-			turnover_weight=payload["turnover_weight"],
-			rules=tuple(tuple(rule) for rule in payload.get("rules", [])),
+			# pad pre-weight 3-element specs (cached packages) with weight 1.0
+			rules=tuple(
+				(rule[0], rule[1], rule[2], rule[3] if len(rule) > 3 else 1.0)
+				for rule in payload.get("rules", [])
+			),
 		)
 
 
