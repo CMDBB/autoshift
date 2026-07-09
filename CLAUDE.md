@@ -33,7 +33,14 @@ Doctypes (`autoshift/autoshift/doctype/`):
   (System Manager write only); HR Manager may create/edit name + NL description only. The
   controller overrides `validate_higher_perm_levels` (which Frappe runs *before* `validate`,
   silently resetting permlevel-protected fields) to also warn/clean non-developer
-  implementation edits and hard-refuse `validated` flips.
+  implementation edits and hard-refuse `validated` flips. `optimization_rule.js` upgrades
+  the code editor: domain completions from the whitelisted `get_code_completions` (backed
+  by `optimizer/editor_support.completion_items()`, introspected from
+  RuleContext/DataPackage) via the Code control's `autocompletions` hook, plus inline Ruff
+  lint (WASM webworker) through the `ace-linters` + `ace-python-ruff-linter` npm deps
+  (`package.json`), self-hosted at `/assets/autoshift/node_modules/…` by `bench build`'s
+  node_modules symlink (Ruff `builtins` configured for the injected `pulp`/`itertools`;
+  provider completion functionality disabled so it can't clobber the Frappe completer).
 - **Optimization Ruleset** (+ child `Optimization Ruleset Rule`) — reusable bundle of rules
   (compiling/validating rules is slow, rulesets are not). Each row has a `weight` that scales
   the rule's objective contribution (no-op on constraint rules; save warns). Unimplemented

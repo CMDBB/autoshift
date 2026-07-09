@@ -34,6 +34,8 @@ venv.bak/
 
 # Dependency directories
 node_modules/
+# the symlink bench build creates so node_modules is served under /assets
+autoshift/public/node_modules
 jspm_packages/
 
 # IDEs and editors

@@ -179,3 +179,20 @@ class IntegrationTestOptimizationRule(IntegrationTestCase):
 				implementation_type="Built-in",
 				builtin_key="no_such_rule",
 			)
+
+	# ── code-editor completions endpoint ──────────────────────────────────────
+
+	def test_code_completions_served_to_rule_readers(self):
+		from autoshift.autoshift.doctype.optimization_rule.optimization_rule import get_code_completions
+
+		frappe.set_user(HR_ONLY_USER)
+		values = {item["value"] for item in get_code_completions()}
+		self.assertIn("ctx.add_objective", values)
+		self.assertIn("ctx.data.employees", values)
+
+	def test_code_completions_denied_without_read_permission(self):
+		from autoshift.autoshift.doctype.optimization_rule.optimization_rule import get_code_completions
+
+		frappe.set_user("Guest")
+		with self.assertRaises(frappe.PermissionError):
+			get_code_completions()

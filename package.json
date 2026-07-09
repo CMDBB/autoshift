@@ -1,0 +1,10 @@
+{
+	"name": "autoshift",
+	"version": "0.0.1",
+	"description": "Automatic shift planning for multi-branch businesses",
+	"private": true,
+	"dependencies": {
+		"ace-linters": "2.2.0",
+		"ace-python-ruff-linter": "1.2.1"
+	}
+}
