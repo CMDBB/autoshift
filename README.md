@@ -87,6 +87,14 @@ for built-ins, declared by the developer for custom code) and an optional implem
 | `Built-in` | Points at a rule shipped in the app code via **Built-in Key** (registry in `autoshift/optimizer/rules.py`) |
 | `Custom Code` | Python on the document defining `apply(ctx)`; it only runs after a developer checks **Validated by Developer** (editing the code clears the flag) |
 
+The Implementation Code editor assists authoring: autocompletion for the rule API
+(`ctx.…`, `ctx.data.…`, `pulp.…`, `itertools.…` — introspected server-side from the real
+classes) and inline lint squiggles from [Ruff](https://docs.astral.sh/ruff/) running as
+WebAssembly in a browser worker (via [ace-linters](https://github.com/mkslanc/ace-linters);
+self-hosted, no external requests). The lint assets come from the app's npm dependencies —
+run `yarn install` in `apps/autoshift` followed by `bench build` once per bench (completions
+work regardless).
+
 Only implemented rules can be used in a solve. Because writing and validating rules takes
 time, rules are bundled into an **Optimization Ruleset** (**Autoshift → Optimization
 Ruleset**) — a reusable, ordered list of rules that every Optimizer Run points to. Each
@@ -325,6 +333,14 @@ then scan:
 git submodule update --init frappe-semgrep-rules
 uv run semgrep scan --config ./frappe-semgrep-rules/rules --config r/python.lang.correctness
 ```
+
+### Front-end assets
+
+The app has npm dependencies (`package.json`): `ace-linters` + `ace-python-ruff-linter`
+power the in-browser lint of Custom Code rules. `bench setup requirements` (or a manual
+`yarn install` in `apps/autoshift`) installs them; `bench build` then symlinks
+`node_modules` into served assets (`/assets/autoshift/node_modules/…`), from which
+`optimization_rule.js` lazy-loads them only on the Optimization Rule form.
 
 ### Adding dev data
 

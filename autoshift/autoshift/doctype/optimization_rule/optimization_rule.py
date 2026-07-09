@@ -143,3 +143,12 @@ class OptimizationRule(Document):
 				frappe._("Implementation code changed; the Validated flag was cleared for re-review."),
 				indicator="orange",
 			)
+
+
+@frappe.whitelist()
+def get_code_completions() -> list[dict]:
+	"""Autocompletion items for the implementation-code editor (see optimization_rule.js)."""
+	frappe.has_permission("Optimization Rule", "read", throw=True)
+	from autoshift.optimizer.editor_support import completion_items
+
+	return completion_items()

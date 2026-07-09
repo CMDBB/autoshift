@@ -77,12 +77,7 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 
 		run.set(
 			"solver_log",
-			f"""
-		--- Rules Logs ---
-		{rule_logs}
-		--- Solver Logs ---
-		{solver_log}
-		""",
+			f"--- Rules Logs ---\n{rule_logs}\n--- Solver Logs ---\n{solver_log}",
 		)
 
 		if lp_status == "Optimal":

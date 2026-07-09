@@ -7,6 +7,7 @@ Run with:  pytest autoshift/tests/test_optimizer.py
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import json
 from typing import Any
@@ -14,6 +15,7 @@ from typing import Any
 import pulp
 import pytest
 
+from autoshift.optimizer.editor_support import completion_items
 from autoshift.optimizer.model_builder import build
 from autoshift.optimizer.rules import BUILTIN_RULES
 from autoshift.optimizer.types import DataPackage, planning_days
@@ -597,3 +599,28 @@ def test_leave_does_not_block_other_employees():
 	assert status(prob) == "Optimal"
 	assert assigned(x, employee="E1") == 0
 	assert assigned(x, employee="E2") == 1
+
+
+# ── editor completions (Custom Code rule authoring) ───────────────────────────
+
+
+def test_completion_items_cover_rule_authoring_api():
+	values = {item["value"] for item in completion_items()}
+	assert {"ctx.prob", "ctx.x", "ctx.active_rooms", "ctx.data", "ctx.add_objective"} <= values
+	# every DataPackage field is offered under ctx.data (introspected, cannot drift)
+	assert {f"ctx.data.{f.name}" for f in dataclasses.fields(DataPackage)} <= values
+	assert {"ctx.data.WEIGH_ASSIGNMENTS", "pulp.lpSum", "itertools.product"} <= values
+
+
+def test_completion_items_do_not_leak_private_members():
+	leaked = [item["value"] for item in completion_items() if "._" in item["value"]]
+	assert not leaked
+
+
+def test_completion_items_have_editor_shape():
+	items = completion_items()
+	assert items
+	for item in items:
+		assert set(item) == {"value", "meta", "score"}
+		assert item["meta"] in ("ctx", "data", "pulp", "itertools")
+		assert isinstance(item["score"], int)
