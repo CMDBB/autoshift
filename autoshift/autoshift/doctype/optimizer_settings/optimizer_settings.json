@@ -6,7 +6,6 @@
  "engine": "InnoDB",
  "field_order": [
   "fte_tolerance_pct",
-  "turnover_weight",
   "bounded_holiday_list",
   "unbounded_holiday_list"
  ],
@@ -17,13 +16,6 @@
    "fieldname": "fte_tolerance_pct",
    "fieldtype": "Float",
    "label": "FTE Tolerance"
-  },
-  {
-   "default": "1.0",
-   "description": "Weight applied to room utilisation term in the objective",
-   "fieldname": "turnover_weight",
-   "fieldtype": "Float",
-   "label": "Turnover Weight"
   },
   {
    "description": "Holiday List for the bounded planners. Include only week-based holidays (i.e. Weekends)",
@@ -42,7 +34,7 @@
  ],
  "issingle": 1,
  "links": [],
- "modified": "2026-06-15 13:56:21.066531",
+ "modified": "2026-07-08 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Optimizer Settings",

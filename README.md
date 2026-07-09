@@ -35,7 +35,11 @@ Before running the optimiser, configure the following three areas in the Frappe 
 | Bounded Holiday List | Holiday list used for 1-week / 2-week / 4-week planning modes |
 | Unbounded Holiday List | Holiday list used for Unbounded planning mode |
 | FTE Tolerance % | Allowed deviation from each employee's FTE target (default 5 %) |
-| Turnover Weight | Objective weight placed on maximising active rooms (default 1.0) |
+
+> **Breaking change:** the former **Turnover Weight** setting was removed. Objective terms
+> are now Optimization Rules, and their relative importance is set per ruleset via the
+> rule row's **Weight** (migration copies your old Turnover Weight onto the Standard
+> Ruleset's *Objective: Room utilization* row automatically).
 
 ### 2. Discipline Designation Branch Config
 
@@ -70,10 +74,12 @@ On each **Employee** record, fill in the **FTE %** field (0–100). This determi
 
 ### 5. Optimization Rules & Rulesets
 
-The constraints a run enforces are documents, not hardcoded behaviour.
+The constraints a run enforces — and the objective terms it maximises — are documents, not
+hardcoded behaviour.
 
 **Autoshift → Optimization Rule** — one document per rule. Each rule has a natural-language
-**Description** and an optional implementation:
+**Description**, a **Rule Kind** (`Constraint`, `Objective`, or `Mixed`; derived from code
+for built-ins, declared by the developer for custom code) and an optional implementation:
 
 | Implementation Type | Meaning |
 |---|---|
@@ -83,13 +89,21 @@ The constraints a run enforces are documents, not hardcoded behaviour.
 
 Only implemented rules can be used in a solve. Because writing and validating rules takes
 time, rules are bundled into an **Optimization Ruleset** (**Autoshift → Optimization
-Ruleset**) — a reusable, ordered list of rules that every Optimizer Run points to.
+Ruleset**) — a reusable, ordered list of rules that every Optimizer Run points to. Each
+ruleset row carries a **Weight** that multiplies the rule's objective contribution (it has
+no effect on constraint rules — saving warns if you set one there).
 
-Migration seeds one Optimization Rule per built-in constraint (one shift per day, leave
-blocklist, existing assignments, max rooms per slot, room coverage, FTE ceiling) and a
-**Standard Ruleset** containing all of them, which is the default for new runs. Unimplemented
-rules may sit in a ruleset as a draft, but a run using that ruleset refuses to solve until
-they are implemented.
+Migration seeds one Optimization Rule per built-in (constraints: one shift per day, leave
+blocklist, existing assignments, max rooms per slot, room coverage, FTE ceiling; objective
+terms: room utilization, shift preferences) and a **Standard Ruleset** containing all of
+them, which is the default for new runs. Unimplemented rules may sit in a ruleset as a
+draft, but a run using that ruleset refuses to solve until they are implemented.
+
+A ruleset with no `Objective`/`Mixed` rule gives the solver nothing to maximise — it
+returns an arbitrary feasible schedule (typically nobody assigned). Saving such a ruleset
+warns but is allowed, since it's useful for pure feasibility checks. **Note for rulesets
+created before objective rules existed:** only the Standard Ruleset is upgraded
+automatically; add the objective rules to your own rulesets yourself.
 
 > **Security note:** Custom Code rules execute as ordinary Python at solve time, so
 > implementing and validating rules is developer-only. **HR Manager** can create and edit
@@ -202,7 +216,7 @@ The MILP model is built with [PuLP](https://coin-or.github.io/pulp/) and solved 
 - `active_rooms[discipline, shift, day, branch]` ∈ ℤ≥0 — rooms staffed in each slot
 
 **Constraints** — supplied by the run's Optimization Ruleset (see [One-time Setup §5](#5-optimization-rules--rulesets)),
-one Optimization Rule document per constraint group. The built-in rules:
+one Optimization Rule document per constraint group. The built-in constraint rules:
 
 1. At most one shift per employee per day
 2. Approved and speculated leaves block assignments
@@ -214,11 +228,14 @@ one Optimization Rule document per constraint group. The built-in rules:
    upper bound only. Staying near the target today comes from the objective's preference term
    pulling assignments up, not from a hard minimum.
 
-Validated Custom Code rules add further constraints on top of (or instead of) these.
+**Objective (maximise)** — also supplied by the ruleset; each objective rule's term is
+scaled by its row weight. The built-in objective rules:
 
-**Objective (maximise)**
-- Room utilisation: `turnover_weight × Σ active_rooms`
-- Shift preferences: `Σ pref[employee, shift] × x[employee, shift, day, branch]`
+- Room utilisation: `weight × Σ active_rooms`
+- Shift preferences: `weight × Σ pref[employee, shift] × x[employee, shift, day, branch]`
+
+Validated Custom Code rules can add further constraints and/or objective terms
+(`ctx.add_objective(expr)`) on top of — or instead of — the built-ins.
 
 ---
 
@@ -239,9 +256,8 @@ Current modelling limitations (revisit if the underlying assumption stops holdin
   — it doesn't pick which physical room an employee works in.
 - **No minimum rest gap between shifts.** Moot today since each employee gets at most one
   shift per day; would need revisiting if night shifts or extended hours are introduced.
-- **Rules control constraints only.** The objective (room utilisation + shift preferences)
-  is still hardcoded in the model builder; Custom Code rules cannot add or reweight
-  objective terms.
+- **Rule weights are per-ruleset, not per-run.** Reweighting objective terms for a single
+  run means duplicating the ruleset.
 
 Out of scope for this app — handled elsewhere in the Frappe HR / ERPNext stack:
 

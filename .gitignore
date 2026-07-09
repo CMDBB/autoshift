@@ -62,3 +62,6 @@ Cargo.lock
 
 # Claude local stuff
 /.claude/*local*
+
+# this file is both ignored and committed, so it is available but its changes are ignored
+rule_scratchpad.py

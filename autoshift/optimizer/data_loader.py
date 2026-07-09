@@ -43,42 +43,43 @@ def getdate(*args, **kwargs) -> datetime.date:
 	return result
 
 
-def _load_rules(run_doc) -> tuple[tuple[str, str, str], ...]:
+def _load_rules(run_doc) -> tuple[tuple[str, str, str, float], ...]:
 	"""
-	Resolve the run's Optimization Ruleset into (rule_name, builtin_key, custom_code)
-	triples for the DataPackage. Only implemented rules can be used: Built-in rules
-	whose key is registered in code, or Custom Code rules a developer has validated.
-	Sorted by rule name so two rulesets with the same rules hash identically.
+	Resolve the run's Optimization Ruleset into (rule_name, builtin_key, custom_code,
+	weight) tuples for the DataPackage. Only implemented rules can be used: Built-in
+	rules whose key is registered in code, or Custom Code rules a developer has
+	validated. Sorted by rule name so two rulesets with the same rules hash identically.
 	"""
 	ruleset = run_doc.get("ruleset")
 	if not ruleset:
 		frappe.throw(frappe._("This Optimizer Run has no Optimization Ruleset set."))
 
-	rule_names = [
-		row.rule
+	weight_by_rule = {
+		row.rule: float(row.weight if row.weight is not None else 1.0)
 		for row in frappe.get_all(
 			"Optimization Ruleset Rule",
 			filters={"parent": ruleset, "parenttype": "Optimization Ruleset"},
-			fields=["rule"],
+			fields=["rule", "weight"],
 			order_by="idx",
 		)
-	]
-	if not rule_names:
+	}
+	if not weight_by_rule:
 		frappe.throw(frappe._("Optimization Ruleset {0} contains no rules.").format(frappe.bold(ruleset)))
 
 	rules = frappe.get_all(
 		"Optimization Rule",
-		filters={"name": ["in", rule_names]},
+		filters={"name": ["in", list(weight_by_rule)]},
 		fields=["name", "implementation_type", "builtin_key", "implementation_code", "validated"],
 	)
 
-	specs: list[tuple[str, str, str]] = []
+	specs: list[tuple[str, str, str, float]] = []
 	unusable: list[str] = []
 	for rule in sorted(rules, key=lambda r: r.name):
+		weight = weight_by_rule[rule.name]
 		if rule.implementation_type == "Built-in" and rule.builtin_key in BUILTIN_RULES:
-			specs.append((rule.name, rule.builtin_key, ""))
+			specs.append((rule.name, rule.builtin_key, "", weight))
 		elif rule.implementation_type == "Custom Code" and rule.implementation_code and rule.validated:
-			specs.append((rule.name, "", rule.implementation_code))
+			specs.append((rule.name, "", rule.implementation_code, weight))
 		else:
 			unusable.append(rule.name)
 
@@ -102,7 +103,6 @@ def load(run_doc) -> DataPackage:
 	# ── Optimizer settings ──────────────────────────────────────────────────
 	settings = frappe.get_single("Optimizer Settings")
 	fte_tolerance = cast(float, settings.get("fte_tolerance_pct") or 0.05)
-	turnover_weight = cast(float, settings.get("turnover_weight") or 1.0)
 
 	# ── Discipline-Designation-Branch Config ─────────────────────────────────
 	config_rows = frappe.get_all(
@@ -343,6 +343,5 @@ def load(run_doc) -> DataPackage:
 		forced=forced,
 		shift_preferences=shift_preferences,
 		fte_tolerance=fte_tolerance,
-		turnover_weight=turnover_weight,
 		rules=rules,
 	)

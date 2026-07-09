@@ -5,3 +5,4 @@
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
 autoshift.patches.create_standard_optimization_rules
+autoshift.patches.add_objective_rules

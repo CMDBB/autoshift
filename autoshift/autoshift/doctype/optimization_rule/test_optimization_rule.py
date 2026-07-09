@@ -123,6 +123,14 @@ class IntegrationTestOptimizationRule(IntegrationTestCase):
 		self.assertEqual(rule.builtin_key, "fte_ceiling")
 		self.assertEqual(rule.implemented, 1)
 
+	def test_hr_rule_kind_change_is_reverted(self):
+		frappe.set_user(HR_ONLY_USER)
+		rule = self._insert_rule(rule_name="TEST hr kind rule")
+		rule = frappe.get_doc("Optimization Rule", rule.name)
+		rule.rule_kind = "Objective"
+		rule.save()
+		self.assertEqual(rule.rule_kind, "Constraint")
+
 	def test_hr_implementation_change_is_reverted(self):
 		rule = self._make_builtin_rule()
 		frappe.set_user(HR_ONLY_USER)
@@ -144,6 +152,17 @@ class IntegrationTestOptimizationRule(IntegrationTestCase):
 	def test_developer_can_implement_and_validate(self):
 		rule = self._make_custom_rule(validated=1)
 		self.assertEqual(rule.implemented, 1)
+
+	def test_rule_kind_synced_from_registry(self):
+		constraint_rule = self._make_builtin_rule()  # fte_ceiling
+		self.assertEqual(constraint_rule.rule_kind, "Constraint")
+		frappe.set_user("Administrator")
+		objective_rule = self._insert_rule(
+			rule_name="TEST objective builtin",
+			implementation_type="Built-in",
+			builtin_key="room_utilization_objective",
+		)
+		self.assertEqual(objective_rule.rule_kind, "Objective")
 
 	def test_editing_code_clears_validated(self):
 		rule = self._make_custom_rule(validated=1)
