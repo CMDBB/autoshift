@@ -54,9 +54,6 @@ class DataPackage:
 	# per-employee shift preference weights: employee -> {shift_type -> weight}
 	shift_preferences: dict[str, dict[str, float]]
 
-	# optimizer policy
-	fte_tolerance: float  # e.g. 0.05 = ±5%
-
 	# rules selected for this run, as (rule_document_name, builtin_key, custom_code, weight)
 	# tuples from the run's Optimization Ruleset. Exactly one of builtin_key/custom_code
 	# is non-empty per tuple; weight scales the rule's objective contribution (no effect
@@ -109,7 +106,6 @@ class DataPackage:
 				for employee, shift_type, date, branch in self.forced
 			],
 			"shift_preferences": self.shift_preferences,
-			"fte_tolerance": self.fte_tolerance,
 			"rules": [list(rule) for rule in self.rules],
 		}
 		return json.dumps(payload)
@@ -138,7 +134,6 @@ class DataPackage:
 				for employee, shift_type, date, branch in payload["forced"]
 			},
 			shift_preferences=payload["shift_preferences"],
-			fte_tolerance=payload["fte_tolerance"],
 			# pad pre-weight 3-element specs (cached packages) with weight 1.0
 			rules=tuple(
 				(rule[0], rule[1], rule[2], rule[3] if len(rule) > 3 else 1.0)

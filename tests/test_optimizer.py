@@ -50,7 +50,6 @@ def pkg(**overrides) -> DataPackage:
 		disciplines=[disc],
 		leave_blocked=set(),
 		forced=set(),
-		fte_tolerance=0.0,
 	)
 	base.update(overrides)
 	if "shift_preferences" not in base:
@@ -129,14 +128,12 @@ def test_infeasible_when_fte_impossible():
 	prob1, _x, _ = solve(
 		pkg(
 			target_shifts={"E1": 1},
-			fte_tolerance=0.0,
 		)
 	)
 	prob2, _x, _ = solve(
 		pkg(
 			working_days=days_from(2),
 			target_shifts={"E1": 1},
-			fte_tolerance=0.0,
 		)
 	)
 	assert status(prob1) == "Optimal"
@@ -225,7 +222,6 @@ def test_at_most_one_shift_per_employee_per_day():
 		pkg(
 			shift_types=["AM", "PM"],
 			target_shifts={"E1": 2},
-			fte_tolerance=0.0,
 		)
 	)
 	assert status(prob) == "Optimal"
@@ -243,7 +239,6 @@ def test_employee_meets_exact_target():
 		pkg(
 			working_days=D,
 			target_shifts={"E1": 2},
-			fte_tolerance=0.0,
 		)
 	)
 	assert status(prob) == "Optimal"
@@ -260,7 +255,6 @@ def test_employee_does_not_exceed_upper_bound():
 		pkg(
 			working_days=D,
 			target_shifts={"E1": 2},
-			fte_tolerance=0.0,
 		)
 	)
 	assert status(prob) == "Optimal"
@@ -282,7 +276,6 @@ def test_active_rooms_cannot_exceed_assistants_in_slot():
 			working_days=D,
 			rooms={(disc, b): 3},
 			target_shifts={"E1": 2},
-			fte_tolerance=0.0,
 		)
 	)
 	assert status(prob) == "Optimal"
@@ -301,7 +294,6 @@ def test_max_rooms_per_employee_limits_cross_branch_assignment():
 			rooms={("Omni", "B1"): 1, ("Omni", "B2"): 1},
 			max_rpe={"E1": 1},
 			target_shifts={"E1": 1},
-			fte_tolerance=0.0,
 		)
 	)
 	assert status(prob) == "Optimal"
@@ -336,7 +328,6 @@ def test_fairness_equalizes_unfairness_not_individual_balance():
 		max_rpe={"E1": 1, "E2": 1},
 		rooms={(disc, b): 2},
 		forced=forced_e1,
-		fte_tolerance=0.0,
 	)
 	prob, x, _ = solve(data)
 	assert status(prob) == "Optimal"
@@ -534,7 +525,6 @@ def test_two_employees_both_meet_fte_targets():
 		target_shifts={"E1": 2, "E2": 3},
 		max_rpe={"E1": 1, "E2": 1},
 		rooms={(disc, b): 2},
-		fte_tolerance=0.0,
 	)
 	prob, x, _ = solve(data)
 	assert status(prob) == "Optimal"
@@ -593,7 +583,6 @@ def test_leave_does_not_block_other_employees():
 		max_rpe={"E1": 1, "E2": 1},
 		rooms={(disc, b): 1},
 		leave_blocked={("E1", MON)},
-		fte_tolerance=0.0,
 	)
 	prob, x, _ = solve(data)
 	assert status(prob) == "Optimal"
@@ -622,5 +611,5 @@ def test_completion_items_have_editor_shape():
 	assert items
 	for item in items:
 		assert set(item) == {"value", "meta", "score"}
-		assert item["meta"] in ("ctx", "data", "pulp", "itertools")
+		assert item["meta"] in ("ctx", "data", "pulp", "itertools", "utils")
 		assert isinstance(item["score"], int)

@@ -53,8 +53,7 @@ Doctypes (`autoshift/autoshift/doctype/`):
   the Standard Ruleset room-utilization row weight (**breaking**: non-Standard rulesets are
   not upgraded).
 - **Optimizer Run Slot** — child; one row per assigned shift in a solution.
-- **Optimizer Settings** — singleton: `fte_tolerance_pct`, holiday lists. (`turnover_weight`
-  was removed — objective weighting now lives on Optimization Ruleset rows.)
+- **Optimizer Settings** — singleton: holiday lists.
 - **Discipline Designation Branch Config** — per (discipline, designation, branch): room
   counts + max-rooms-per-employee.
 - **Employee Settings** (+ children `Employee Shift Preference`, `Employee Branch Preference`)
