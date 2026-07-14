@@ -18,8 +18,8 @@ from autoshift.optimizer.types import DataPackage
 # Use these module variables to add/remove to/from that list
 EXTRA_TEST_RECORD_DEPENDENCIES = []  # eg. ["User"]
 # These tests inject a synthetic DataPackage into the cache and never touch real
-# HR records (they *rely* on Alice/Bob not existing — see the LinkValidationError
-# asserts). Pruning these links from the recursive test-record walk matters: the
+# HR records (they *rely* on Alice/Bob not existing — see the ignore_links
+# flag set). Pruning these links from the recursive test-record walk matters: the
 # Leave Application subtree alone drags in the whole hrms/erpnext graph, whose
 # generation only ever worked on sites with warmed-up state (e.g. frappe's own
 # "Test ToDo" workflow tries to email a wkhtmltopdf print of every new ToDo and
@@ -58,7 +58,6 @@ def pkg(**overrides) -> DataPackage:
 			"Alice": {"Day": 1.0, "Night": 0.5},
 			"Bob": {"Day": 0.5, "Night": 1.0},
 		},
-		fte_tolerance=0.05,
 	)
 	base.update(overrides)
 	if "shift_preferences" not in overrides and ("shift_types" in overrides or "employees" in overrides):
@@ -82,31 +81,26 @@ class IntegrationTestOptimizerRun(IntegrationTestCase):
 
 	def setUp(self):
 		super().setUp()
-		self.test_record = self.globalTestRecords["Optimizer Run"][0]
-		self.test_record = frappe.get_doc(dict(self.test_record))
+		self.test_record: OptimizerRun = self.globalTestRecords["Optimizer Run"][0]
+		self.test_record = frappe.get_doc(self.test_record)
 		self.test_record.insert()
 
 	def tearDown(self):
 		super().tearDown()
 		frappe.delete_doc("Optimizer Run", self.test_record.name, force=True)
 
-	def test_override_pkg(self):
+	def test_pkg_injection(self):
 		"""
-		Tests:
-		- The cache mechnism
-		- The solve() method (on a controlled data package)
-		- stability of the table generation (get_schedule_events())
+		Smoke test on:
+		- The cache mechanism
+		- The solve() method (on a basic data package)
 		"""
-		# inject a DataPackage into the cache for the test record, so that the OptimizerRun.solve() method can retrieve it
-		assert self.cache is not None, "Cache is not available in the test environment"
-		self.cache.set_value(datapackage_cache_key(self.test_record.name), pkg().dumps())
-		with self.assertRaises(frappe.exceptions.LinkValidationError):
-			# Alice and Bob don't exist in the actual database where solve will try to self.save()
-			self.test_record.solve()
+		self.cache.set_value(datapackage_cache_key(self.test_record.name), pkg().dumps())  # ty:ignore[unresolved-attribute]
+		self.test_record.flags.ignore_links = True
+		self.test_record.solve()
 
 	def test_no_overfilling_of_shifts(self):
-		assert self.cache is not None, "Cache is not available in the test environment"
-		self.cache.set_value(
+		self.cache.set_value(  # ty:ignore[unresolved-attribute]
 			datapackage_cache_key(self.test_record.name),
 			pkg(
 				employees=["Alice", "Bob", "Caoimhe"],
@@ -117,6 +111,7 @@ class IntegrationTestOptimizerRun(IntegrationTestCase):
 				rooms={("ER", "Branch1"): 1},
 			).dumps(),
 		)
-		with self.assertRaises(frappe.exceptions.LinkValidationError):
-			# Alice and Bob don't exist in the actual database where solve will try to self.save()
-			self.test_record.solve()
+		self.test_record.flags.ignore_links = True
+		self.test_record.solve()
+		schedule = self.test_record.get_schedule_events()
+		assert {"Alice", "Bob", "Caoimhe"} & {e.name for e in schedule["employees"]} == set()

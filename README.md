@@ -34,12 +34,6 @@ Before running the optimiser, configure the following three areas in the Frappe 
 |---|---|
 | Bounded Holiday List | Holiday list used for 1-week / 2-week / 4-week planning modes |
 | Unbounded Holiday List | Holiday list used for Unbounded planning mode |
-| FTE Tolerance % | Allowed deviation from each employee's FTE target (default 5 %) |
-
-> **Breaking change:** the former **Turnover Weight** setting was removed. Objective terms
-> are now Optimization Rules, and their relative importance is set per ruleset via the
-> rule row's **Weight** (migration copies your old Turnover Weight onto the Standard
-> Ruleset's *Objective: Room utilization* row automatically).
 
 ### 2. Discipline Designation Branch Config
 

@@ -188,12 +188,12 @@ def room_coverage(ctx: RuleContext) -> None:
 	"fte_ceiling",
 	"FTE ceiling",
 	"An employee's total assigned shifts over the horizon stay at or below "
-	"(1 + tolerance) x their FTE-derived target; utilization pressure toward the target "
+	"105% x their FTE-derived target; utilization pressure toward the target "
 	"comes from the objective, not a lower bound.",
 )
 def fte_ceiling(ctx: RuleContext) -> None:
 	data = ctx.data
-	tol = data.fte_tolerance
+	tol = 0.05
 	for e in data.employees:
 		target = data.target_shifts.get(e, 0)
 		total_assigned = pulp.lpSum(

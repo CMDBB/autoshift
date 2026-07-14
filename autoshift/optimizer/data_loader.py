@@ -102,7 +102,6 @@ def load(run_doc) -> DataPackage:
 
 	# ── Optimizer settings ──────────────────────────────────────────────────
 	settings = frappe.get_single("Optimizer Settings")
-	fte_tolerance = cast(float, settings.get("fte_tolerance_pct") or 0.05)
 
 	# ── Discipline-Designation-Branch Config ─────────────────────────────────
 	config_rows = frappe.get_all(
@@ -342,6 +341,5 @@ def load(run_doc) -> DataPackage:
 		leave_blocked=leave_blocked,
 		forced=forced,
 		shift_preferences=shift_preferences,
-		fte_tolerance=fte_tolerance,
 		rules=rules,
 	)

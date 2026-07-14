@@ -5,18 +5,10 @@
  "document_type": "Setup",
  "engine": "InnoDB",
  "field_order": [
-  "fte_tolerance_pct",
   "bounded_holiday_list",
   "unbounded_holiday_list"
  ],
  "fields": [
-  {
-   "default": "0.05",
-   "description": "Allowed deviation from FTE target as a fraction (e.g. 0.05 = \u00b15%)",
-   "fieldname": "fte_tolerance_pct",
-   "fieldtype": "Float",
-   "label": "FTE Tolerance"
-  },
   {
    "description": "Holiday List for the bounded planners. Include only week-based holidays (i.e. Weekends)",
    "fieldname": "bounded_holiday_list",
