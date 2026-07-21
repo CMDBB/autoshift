@@ -17,7 +17,14 @@ import pytest
 
 from autoshift.optimizer.editor_support import completion_items
 from autoshift.optimizer.model_builder import build
-from autoshift.optimizer.rules import BUILTIN_RULES
+from autoshift.optimizer.rules import (
+	BUILTIN_RULES,
+	KIND_CONSTRAINT,
+	KIND_MIXED,
+	KIND_OBJECTIVE,
+	STANDARD_RULES,
+	leave_blocklist,
+)
 from autoshift.optimizer.types import DataPackage, planning_days
 
 # ── constants & helpers ───────────────────────────────────────────────────────
@@ -350,13 +357,14 @@ def test_fairness_equalizes_unfairness_not_individual_balance():
 # ── rule selection ────────────────────────────────────────────────────────────
 
 ALL_BUT_LEAVE = builtin_specs(
-	"one_shift_per_day",
-	"existing_assignments",
-	"max_rooms_per_slot",
-	"room_coverage",
-	"fte_ceiling",
-	"room_utilization_objective",
-	"shift_preference_objective",
+	*(
+		rule
+		for rule in STANDARD_RULES
+		if rule
+		not in [
+			leave_blocklist.__name__,
+		]
+	)
 )
 
 
@@ -392,7 +400,7 @@ def test_custom_code_rule_is_applied():
 		"            name = f'never_e1_{s}_{d}_{b}'.replace('-', '_').replace(' ', '_')\n"
 		"            ctx.prob += (var <= 0, name)\n"
 	)
-	rules = (*builtin_specs(*BUILTIN_RULES), ("Never E1", "", code, 1.0))
+	rules = (*builtin_specs(*STANDARD_RULES), ("Never E1", "", code, 1.0))
 	prob, x, _ = solve(pkg(rules=rules))
 	assert status(prob) == "Optimal"
 	assert assigned(x, employee="E1") == 0
@@ -438,11 +446,16 @@ def test_loads_pads_legacy_rule_triples_with_weight():
 # ── objective rules ───────────────────────────────────────────────────────────
 
 CONSTRAINTS_ONLY = builtin_specs(
-	"one_shift_per_day",
-	"existing_assignments",
-	"max_rooms_per_slot",
-	"room_coverage",
-	"fte_ceiling",
+	*(
+		key
+		for key, rule in BUILTIN_RULES.items()
+		if rule.kind
+		not in [  # constraints only <=> NO objectives
+			KIND_OBJECTIVE,
+			KIND_MIXED,
+		]
+		and key in STANDARD_RULES
+	)
 )
 
 
@@ -458,7 +471,7 @@ def test_objective_less_ruleset_assigns_nobody():
 def test_explicit_all_builtins_matches_default_selection():
 	"""Selecting every built-in explicitly (weight 1) is the pre-ruleset behaviour."""
 	default_prob, _, _ = solve(pkg())
-	explicit_prob, _, _ = solve(pkg(rules=builtin_specs(*BUILTIN_RULES)))
+	explicit_prob, _, _ = solve(pkg(rules=builtin_specs(*STANDARD_RULES)))
 	assert pulp.value(default_prob.objective) == pytest.approx(pulp.value(explicit_prob.objective))
 
 
@@ -467,19 +480,19 @@ def test_objective_weight_scales_term():
 	objective for the single staffed room; the assignment itself is unchanged."""
 	weighted = tuple(
 		(name, key, code, 2.0 if key == "room_utilization_objective" else w)
-		for name, key, code, w in builtin_specs(*BUILTIN_RULES)
+		for name, key, code, w in builtin_specs(*STANDARD_RULES)
 	)
-	prob1, x1, _ = solve(pkg(rules=builtin_specs(*BUILTIN_RULES)))
+	prob1, x1, _ = solve(pkg(rules=builtin_specs(*STANDARD_RULES)))
 	prob2, x2, _ = solve(pkg(rules=weighted))
 	assert assigned(x1) == assigned(x2) == 1
 	assert pulp.value(prob2.objective) == pytest.approx(pulp.value(prob1.objective) + 1.0)
 
 
 def test_weight_on_constraint_rule_is_a_noop():
-	prob1, x1, _ = solve(pkg(rules=builtin_specs(*BUILTIN_RULES)))
+	prob1, x1, _ = solve(pkg(rules=builtin_specs(*STANDARD_RULES)))
 	reweighted = tuple(
 		(name, key, code, 5.0 if key == "one_shift_per_day" else w)
-		for name, key, code, w in builtin_specs(*BUILTIN_RULES)
+		for name, key, code, w in builtin_specs(*STANDARD_RULES)
 	)
 	prob2, x2, _ = solve(pkg(rules=reweighted))
 	assert pulp.value(prob1.objective) == pytest.approx(pulp.value(prob2.objective))
@@ -503,7 +516,7 @@ def test_custom_objective_rule_steers_solution():
 		target_shifts={"E1": 1, "E2": 1},
 		max_rpe={"E1": 1, "E2": 1},
 		rooms={(disc, b): 1},
-		rules=(*builtin_specs(*BUILTIN_RULES), ("Avoid E1", "", code, 1.0)),
+		rules=(*builtin_specs(*STANDARD_RULES), ("Avoid E1", "", code, 1.0)),
 	)
 	prob, x, _ = solve(data)
 	assert status(prob) == "Optimal"

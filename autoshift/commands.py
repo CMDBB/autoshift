@@ -107,4 +107,52 @@ def seed_dev_data(context, input_dir, overwrite, clobber_designations):
 	frappe.destroy()
 
 
-commands = [dump_dev_data, seed_dev_data]
+def _default_snapshot_dir():
+	# bench chdirs into sites/ before dispatching commands, so a plain relative
+	# default would land under sites/sandbox/snapshots instead of the app's own
+	# sandbox/ — anchor it to this file's location instead.
+	import os
+
+	app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+	return os.path.join(app_root, "sandbox", "snapshots")
+
+
+@click.command("capture-datapackage")
+@click.option(
+	"--run",
+	"run_name",
+	required=True,
+	help="Optimizer Run to capture (its date/mode/ruleset/leave speculations/existing-assignments "
+	"mode decide what data_loader.load resolves)",
+)
+@click.option("--output", default=_default_snapshot_dir, help="Output directory")
+@pass_context
+def capture_datapackage(context, run_name, output):
+	"""Snapshot the DataPackage an Optimizer Run resolves to, for offline sandbox play"""
+	import os
+
+	from autoshift.optimizer import data_loader
+
+	site = get_site(context)
+	frappe.init(site=str(site))
+	frappe.connect()
+
+	run = frappe.get_doc("Optimizer Run", run_name)
+	data = data_loader.load(run)
+
+	os.makedirs(output, exist_ok=True)
+	path = os.path.join(output, f"{run_name}.json")
+	# developer-run bench command writing to a developer-supplied local path;
+	# no web/user input involved
+	# nosemgrep: frappe-semgrep-rules.rules.security.frappe-security-file-traversal
+	with open(path, "w") as f:
+		f.write(data.dumps())
+	click.echo(
+		f"  Captured DataPackage for {run_name} ({len(data.employees)} employees, "
+		f"{len(data.working_days)} days) to {path}"
+	)
+
+	frappe.destroy()
+
+
+commands = [dump_dev_data, seed_dev_data, capture_datapackage]

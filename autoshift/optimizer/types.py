@@ -60,7 +60,12 @@ class DataPackage:
 	# on constraint rules). Empty tuple = apply every built-in rule at weight 1.0
 	# (pre-ruleset behaviour, kept for tests and cached packages serialized before
 	# rulesets existed).
-	rules: tuple[tuple[str, str, str, float], ...] = ()
+	RULE_DOCUMENT_NAME = str
+	BUILTIN_KEY = str
+	CUSTOM_CODE = str
+	WEIGHT = float
+	RULE = tuple[RULE_DOCUMENT_NAME, BUILTIN_KEY, CUSTOM_CODE, WEIGHT]
+	rules: tuple[RULE, ...] = ()
 
 	def input_hash(self) -> str:
 		"""

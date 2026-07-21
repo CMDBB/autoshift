@@ -31,15 +31,17 @@ import io
 import itertools
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from types import FunctionType
 from typing import TYPE_CHECKING
 
 import pulp
 
-if TYPE_CHECKING:
-	from .types import DataPackage
+from .types import DataPackage
 
 KIND_CONSTRAINT = "constraint"
 KIND_OBJECTIVE = "objective"
+KIND_MIXED = "mixed"
+KIND_OTHER = "other"
 
 
 @dataclass
@@ -68,17 +70,49 @@ class BuiltinRule:
 	title: str
 	description: str
 	apply: Callable[[RuleContext], None]
+	excludes: dict[str, str]
+	requires: dict[str, str]
 	kind: str = KIND_CONSTRAINT
 
+	@staticmethod
+	def check_ruleset(ruleset: set[str]) -> None:
+		for rule in ruleset:
+			if rule not in BUILTIN_RULES:
+				continue
+			for ex, reason in BUILTIN_RULES[rule].excludes.items():
+				if ex in ruleset:
+					raise ValueError((reason or "{r} is incompatible with {ex}").format(r=rule, ex=ex))
+			for req, reason in BUILTIN_RULES[rule].requires.items():
+				if req not in ruleset:
+					raise ValueError((reason or "{r} requires {req}").format(r=rule, req=req))
 
-BUILTIN_RULES: dict[str, BuiltinRule] = {}
+
+BUILTIN_RULES: dict[str, BuiltinRule] = {}  # empty -> filled by the builtin_rule decorator
+STANDARD_RULES: set[str] = set()  # idem
 
 
-def builtin_rule(key: str, title: str, description: str, kind: str = KIND_CONSTRAINT):
+def builtin_rule(
+	title: str,
+	description: str,
+	kind: str = KIND_CONSTRAINT,
+	standard: bool = False,
+	requires: dict[FunctionType, str] | None = None,
+	excludes: dict[FunctionType, str] | None = None,
+):
 	"""Register a function as a built-in optimization rule."""
 
-	def register(fn: Callable[[RuleContext], None]):
-		BUILTIN_RULES[key] = BuiltinRule(key=key, title=title, description=description, apply=fn, kind=kind)
+	def register(fn: FunctionType[[RuleContext], None]):
+		BUILTIN_RULES[fn.__name__] = BuiltinRule(
+			key=fn.__name__,
+			title=title,
+			description=description,
+			apply=fn,
+			kind=kind,
+			requires={k.__name__: v for k, v in (requires or {}).items()},
+			excludes={k.__name__: v for k, v in (excludes or {}).items()},
+		)
+		if standard:
+			STANDARD_RULES.add(fn.__name__)
 		return fn
 
 	return register
@@ -93,9 +127,9 @@ def _cname(*parts) -> str:
 
 
 @builtin_rule(
-	"one_shift_per_day",
 	"One shift per employee per day",
 	"An employee works at most one shift per day, across all shift types and branches.",
+	standard=True,
 )
 def one_shift_per_day(ctx: RuleContext) -> None:
 	data = ctx.data
@@ -107,10 +141,26 @@ def one_shift_per_day(ctx: RuleContext) -> None:
 
 
 @builtin_rule(
-	"leave_blocklist",
+	"Use existing Shift Assignments as a baseline",
+	"This provides a soft tie-breaking towards existing assignments, "
+	"and is used as a baseline for other rules.",
+	standard=True,
+	kind=KIND_OTHER,
+)
+def warm_start(ctx: RuleContext) -> None:
+	data = ctx.data
+	for (e, s, d, b), var in ctx.x.items():
+		if (e, s, d, b) in data.forced and (e, s, d, b) in data.leave_blocked:
+			raise ValueError(f"Employee {e} cant both be on leave and scheduled for a shift on {d}")
+		var.setInitialValue(1 if (e, s, d, b) in data.forced else 0)
+
+
+@builtin_rule(
 	"Respect approved leaves",
 	"An employee on approved leave (or a leave this run speculates as approved) is never "
 	"assigned a shift on the leave days.",
+	standard=True,
+	requires={warm_start: "{r} doesn't set its values, include {req}"},
 )
 def leave_blocklist(ctx: RuleContext) -> None:
 	data = ctx.data
@@ -120,76 +170,64 @@ def leave_blocklist(ctx: RuleContext) -> None:
 			continue
 		for s in data.shift_types:
 			for b in data.branches:
-				ctx.x[(e, s, d, b)].setInitialValue(0)
 				ctx.x[(e, s, d, b)].fixValue()
 
 
 @builtin_rule(
-	"existing_assignments",
 	"Honor existing Shift Assignments",
-	"Shift Assignments already on the books are honored per the run's 'Existing Shift "
-	"Assignments' mode: fixed as hard constraints in 'Use' mode, used as a soft warm-start "
-	"the solver may override in 'Weigh' mode (in 'Ignore' mode the set is empty).",
+	"Shift Assignments already on the books are honored.",
+	standard=True,
+	requires={warm_start: "{r} doesn't set its values, include {req}"},
 )
-def existing_assignments(ctx: RuleContext) -> None:
-	data = ctx.data
-	all_combs = itertools.product(data.employees, data.shift_types, data.working_days, data.branches)
-	for comb in all_combs:
-		ctx.x[comb].setInitialValue(1 if comb in data.forced else 0)
-	if data.WEIGH_ASSIGNMENTS not in data.flags:
-		# this is the 'Use'/'Ignore' mode
-		for comb in data.forced:
-			if comb in ctx.x:
-				ctx.x[comb].fixValue()
+def use_existing_assignments(ctx: RuleContext) -> None:
+	for comb in ctx.data.forced:
+		ctx.x[comb].fixValue()
 
 
 @builtin_rule(
-	"max_rooms_per_slot",
-	"Max rooms per employee per slot",
-	"In any single slot (shift + day), an employee covers at most their configured maximum "
-	"number of rooms (from Discipline Designation Branch Config), which also limits working "
-	"multiple branches in the same slot.",
+	"One Branch per Shift",
+	"Employees can't cover more than one branch during a single shift.",
+	standard=False,
+	excludes={
+		one_shift_per_day: "This is a strictly more permissive rule than one_shift_per_day."
+		"Don't include both."
+	},
 )
-def max_rooms_per_slot(ctx: RuleContext) -> None:
+def one_branch_per_shift(ctx: RuleContext) -> None:
 	data = ctx.data
 	for e, s, d in itertools.product(data.employees, data.shift_types, data.working_days):
-		limit = data.max_rpe.get(e, 1)
 		ctx.prob += (
-			pulp.lpSum(ctx.x[(e, s, d, b)] for b in data.branches) <= limit,
-			_cname("max_rpe", e, s, d),
+			pulp.lpSum(ctx.x[(e, s, d, b)] for b in data.branches) <= 1,
+			_cname("one_branch", e, s, d),
 		)
 
 
 @builtin_rule(
-	"room_coverage",
 	"Room coverage per discipline",
 	"The rooms staffed in a discipline for a given shift, day and branch equal the room-slots "
 	"contributed by the discipline's assigned employees (each contributes their max-rooms "
 	"figure), capped at the branch's configured room count.",
+	standard=True,
 )
 def room_coverage(ctx: RuleContext) -> None:
+	"""Note that the branch room cap is modeled by the variable bound."""
 	data = ctx.data
-	for k, s, d, b in itertools.product(data.disciplines, data.shift_types, data.working_days, data.branches):
+	for k, s, d, b in ctx.active_rooms:
 		employees_in_discipline = [e for e in data.employees if data.department.get(e) == k]
-		if not employees_in_discipline:
-			ctx.prob += (
-				ctx.active_rooms[(k, s, d, b)] == 0,
-				_cname("no_employees", k, s, d, b),
-			)
-		else:
-			ctx.prob += (
-				pulp.lpSum(data.max_rpe.get(e, 1) * ctx.x[(e, s, d, b)] for e in employees_in_discipline)
-				== ctx.active_rooms[(k, s, d, b)],
-				_cname("room_coverage", k, s, d, b),
-			)
+		# lpSum([])=0 (no need for a condition)
+		ctx.prob += (
+			pulp.lpSum(data.max_rpe.get(e, 1) * ctx.x[(e, s, d, b)] for e in employees_in_discipline)
+			== ctx.active_rooms[(k, s, d, b)],
+			_cname("room_coverage", k, s, d, b),
+		)
 
 
 @builtin_rule(
-	"fte_ceiling",
 	"FTE ceiling",
 	"An employee's total assigned shifts over the horizon stay at or below "
 	"105% x their FTE-derived target; utilization pressure toward the target "
-	"comes from the objective, not a lower bound.",
+	"comes from the objective.",
+	standard=True,
 )
 def fte_ceiling(ctx: RuleContext) -> None:
 	data = ctx.data
@@ -211,21 +249,21 @@ def fte_ceiling(ctx: RuleContext) -> None:
 
 
 @builtin_rule(
-	"room_utilization_objective",
 	"Objective: Room utilization",
 	"Maximize the total number of staffed rooms across all disciplines, shifts, days and branches.",
 	kind=KIND_OBJECTIVE,
+	standard=True,
 )
 def room_utilization_objective(ctx: RuleContext) -> None:
 	ctx.add_objective(pulp.lpSum(ctx.active_rooms.values()))
 
 
 @builtin_rule(
-	"shift_preference_objective",
 	"Objective: Shift preferences",
 	"Reward assignments matching each employee's normalized shift preferences (from Employee "
 	"Settings); assignments to less-preferred shifts score lower.",
 	kind=KIND_OBJECTIVE,
+	standard=True,
 )
 def shift_preference_objective(ctx: RuleContext) -> None:
 	data = ctx.data
@@ -234,6 +272,20 @@ def shift_preference_objective(ctx: RuleContext) -> None:
 			(-1 + data.shift_preferences.get(e, {}).get(s, 0.0)) * var
 			for (e, s, _d, _b), var in ctx.x.items()
 		)
+	)
+
+
+@builtin_rule(
+	"Objective: Conserve Existing Assignments",
+	"Promote tie-breaking towards existing assignments with small reward.",
+	kind=KIND_OBJECTIVE,
+	standard=False,
+)
+def weigh_assignments_objective(ctx: RuleContext) -> None:
+	data = ctx.data
+	epsilon = 2**-10
+	ctx.add_objective(
+		pulp.lpSum((0 if comb in data.forced else -epsilon) * var for comb, var in ctx.x.items())
 	)
 
 
@@ -264,6 +316,26 @@ def compile_custom_rule(rule_name: str, code: str) -> Callable[[RuleContext], No
 	return apply_fn
 
 
+def _get_legacy_ruleset(ctx: RuleContext) -> tuple[DataPackage.RULE, ...]:
+	if DataPackage.WEIGH_ASSIGNMENTS in ctx.data.flags:
+		return tuple(
+			(rule.title, key, "", 1.0)
+			for key, rule in BUILTIN_RULES.items()
+			if (
+				key in STANDARD_RULES
+				and key
+				not in [
+					use_existing_assignments.__name__,
+				]
+			)
+			or key
+			in [
+				weigh_assignments_objective.__name__,
+			]
+		)
+	return tuple((rule.title, key, "", 1.0) for key, rule in BUILTIN_RULES.items() if key in STANDARD_RULES)
+
+
 def apply_rules(ctx: RuleContext) -> str:
 	"""
 	Apply the rules selected in ``ctx.data.rules`` to the problem.
@@ -272,7 +344,8 @@ def apply_rules(ctx: RuleContext) -> str:
 	``ctx.add_objective``); constraint rules are unaffected by it. An empty
 	selection applies every built-in rule at weight 1.0 (pre-ruleset behaviour).
 	"""
-	specs = ctx.data.rules or tuple((rule.title, key, "", 1.0) for key, rule in BUILTIN_RULES.items())
+	specs = ctx.data.rules or _get_legacy_ruleset(ctx)
+	BuiltinRule.check_ruleset({key for _, key, _, _ in specs})
 	logs = io.StringIO()
 	for name, builtin_key, code, weight in specs:
 		ctx._current_weight = weight

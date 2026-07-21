@@ -1,7 +1,7 @@
 import colorsys
 import heapq
 
-import frappe.utils
+import frappe.utils.caching
 from frappe.model.document import Document
 
 from autoshift.optimizer import data_loader, types
@@ -72,7 +72,8 @@ class OptimizerRun(Document):
 		if not self.type:
 			self.type = "Manual"
 
-	def memoize_datapackage(self):
+	@frappe.utils.caching.redis_cache()
+	def cache_datapackage(self):
 		cache = frappe.cache
 		if cache is None:
 			return data_loader.load(self)
@@ -93,7 +94,7 @@ class OptimizerRun(Document):
 		"""
 		from autoshift.optimizer.solver import find_cached_runs
 
-		data = self.memoize_datapackage()
+		data = self.cache_datapackage()
 
 		cached_names = find_cached_runs(data.input_hash(), exclude_name=self.name)
 
@@ -114,7 +115,7 @@ class OptimizerRun(Document):
 			frappe.throw(frappe._("Only Draft runs can be solved."))
 		from autoshift.optimizer.solver import run_solve
 
-		data = self.memoize_datapackage()
+		data = self.cache_datapackage()
 		self.set("status", "Solving")
 		timed_out = run_solve(str(self.name), data, time_limit=SYNC_TIME_LIMIT)
 		if timed_out:
@@ -175,7 +176,7 @@ class OptimizerRun(Document):
 
 		getdate = data_loader.getdate
 
-		data = self.memoize_datapackage()
+		data = self.cache_datapackage()
 		in_scope = list(data.employees)
 
 		days = [d.isoformat() for d in types.planning_days(self.date, self.mode)]  # ty:ignore[unresolved-attribute]

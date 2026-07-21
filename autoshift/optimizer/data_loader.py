@@ -50,7 +50,7 @@ def _load_rules(run_doc) -> tuple[tuple[str, str, str, float], ...]:
 	rules whose key is registered in code, or Custom Code rules a developer has
 	validated. Sorted by rule name so two rulesets with the same rules hash identically.
 	"""
-	ruleset = run_doc.get("ruleset")
+	ruleset = run_doc.ruleset
 	if not ruleset:
 		frappe.throw(frappe._("This Optimizer Run has no Optimization Ruleset set."))
 

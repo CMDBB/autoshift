@@ -219,20 +219,27 @@ if [ $total -gt 0 ]; then
     declare -a finished
     while [ $completed -lt $total ]; do
         for i in "${!pids[@]}"; do
-            if [ -z "${finished[$i]-}" ] && ! kill -0 "${pids[$i]}" 2>/dev/null; then
-                ( set +e; wait "${pids[$i]}"; exit_code=$? ) || exit_code=$?
-                finished[$i]=1
-                !((completed++))
-
-                echo -ne "\033[1K\r"
-                echo -e "${YELLOW}=== ${names[$i]} ===${NC}"
-                cat "${temp_files[$i]}"
-                echo
-
-                status=$([[ $exit_code -eq 0 ]] && echo "✓" || echo "✗")
-                printf "\r${GREEN}[%d/%d]${NC} %s %s" "$completed" "$total" "$status" "${names[$i]}"
-                echo
+            if ! [ -z "${finished[$i]-}" ] || kill -0 "${pids[$i]}" 2>/dev/null; then
+                continue
             fi
+
+            exit_code=$( set +e; wait "${pids[$i]}"; echo $? )
+            finished[$i]=1
+            !((completed++))
+
+            echo -ne "\033[1K\r"
+            echo -e "${YELLOW}=== ${names[$i]} ===${NC}"
+            if [[ $exit_code -eq 0 ]]; then
+                echo ...
+                tail -n 3 "${temp_files[$i]}"
+            else
+                cat "${temp_files[$i]}"
+            fi
+            echo
+
+            status=$([[ $exit_code -eq 0 ]] && echo "✓" || echo "✗")
+            printf "\r${GREEN}[%d/%d]${NC} %s %s" "$completed" "$total" "$status" "${names[$i]}"
+            echo
         done
 
         if [ $completed -lt $total ]; then
