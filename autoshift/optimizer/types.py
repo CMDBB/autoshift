@@ -157,15 +157,11 @@ def planning_days(start_date_raw: datetime.date, mode: str) -> Iterable[datetime
 	else:
 		start_date = start_date_raw
 
-	weeks = {
-		"1-week": 1,
-		"2-week": 2,
-		"4-week": 4,
-		"UnboundedTODO": None,
-	}
-	if mode not in weeks:
-		raise NotImplementedError(f"Planning mode '{mode}' not yet implemented")
-	weeks = weeks[mode]
-	if weeks is None:  # Unbounded: infinite iterator -> let the caller decide how many days to take
-		return (start_date + datetime.timedelta(days=i) for i in itertools.count())
-	return [start_date + datetime.timedelta(days=i) for i in range(weeks * 7)]
+	match mode:
+		case "Unbounded":  # infinite -> caller decides how many to take
+			return (start_date + datetime.timedelta(days=i) for i in itertools.count())
+		case "1-week" | "2-week" | "4-week":
+			n_days = int(mode[0]) * 7
+			return [start_date + datetime.timedelta(days=i) for i in range(n_days)]
+		case _:
+			raise NotImplementedError(f"Planning mode {mode!r} not yet implemented")

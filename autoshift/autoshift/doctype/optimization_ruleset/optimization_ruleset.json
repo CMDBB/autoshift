@@ -35,12 +35,11 @@
    "fieldname": "rules",
    "fieldtype": "Table",
    "label": "Rules",
-   "options": "Optimization Ruleset Rule",
-   "reqd": 1
+   "options": "Optimization Ruleset Rule"
   }
  ],
  "links": [],
- "modified": "2026-07-06 00:00:00",
+ "modified": "2026-07-27 11:06:44.950848",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Optimization Ruleset",

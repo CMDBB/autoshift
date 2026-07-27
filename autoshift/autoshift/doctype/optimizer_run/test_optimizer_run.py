@@ -11,7 +11,7 @@ from autoshift.autoshift.doctype.optimizer_run.optimizer_run import (
 	OptimizerRun,
 	datapackage_cache_key,
 )
-from autoshift.optimizer.types import DataPackage
+from autoshift.optimizer.types import DataPackage, planning_days
 
 # On IntegrationTestCase, the doctype test records and all
 # link-field test record dependencies are recursively loaded
@@ -115,3 +115,19 @@ class IntegrationTestOptimizerRun(IntegrationTestCase):
 		self.test_record.solve()
 		schedule = self.test_record.get_schedule_events()
 		assert {"Alice", "Bob", "Caoimhe"} & {e.name for e in schedule["employees"]} == set()
+
+	# --- utilities tests ---
+
+	def test_unbounded_exceeds_any_bounded_integrated(self):
+		modes = frappe.get_meta("Optimizer Run").get_field("mode").options.split("\n")
+		bounded_max = max(
+			len(d)  # ty:ignore[invalid-argument-type]
+			for d in (planning_days(MONDAY, m) for m in modes)
+			if hasattr(d, "__len__")  # => is bounded
+		)
+
+		for i, _ in enumerate(planning_days(MONDAY, "Unbounded")):
+			if i > bounded_max:
+				break
+		else:
+			self.fail(f"Unbounded planning_days is bounded by {bounded_max}")

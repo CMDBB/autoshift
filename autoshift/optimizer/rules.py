@@ -38,10 +38,10 @@ import pulp
 
 from .types import DataPackage
 
-KIND_CONSTRAINT = "constraint"
-KIND_OBJECTIVE = "objective"
-KIND_MIXED = "mixed"
-KIND_OTHER = "other"
+KIND_CONSTRAINT = "Constraint"
+KIND_OBJECTIVE = "Objective"
+KIND_MIXED = "Mixed"
+KIND_OTHER = "Other"
 
 
 @dataclass

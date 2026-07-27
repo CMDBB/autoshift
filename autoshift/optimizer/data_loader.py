@@ -11,7 +11,6 @@ from typing import cast
 
 import frappe
 import numpy as np
-from frappe.utils import add_days
 from frappe.utils import getdate as _getdate
 
 from .rules import BUILTIN_RULES
@@ -239,20 +238,20 @@ def load(run_doc) -> DataPackage:
 		fte_pct = cast(float, emp.custom_fte) or 100.0
 		fte_fraction = fte_pct / 100.0
 		# Two shifts per day * number of working days * FTE fraction
-		n_slots = len(all_days) * 2
-		target_shifts[name] = round(fte_fraction * n_slots)
+		shifts_in_period_for_fulltime = sum(1 - d.weekday() / 5 for d in all_days)
+		target_shifts[name] = round(fte_fraction * shifts_in_period_for_fulltime)
 
 		max_rpe[name] = max_rpe_by_desig.get(desig, 1)
 
-	_holiday_list_name: str = settings.get(f"{'un' if mode == 'Unbounded' else ''}bounded_holiday_list")  # pyright: ignore[reportAssignmentType]
+	_holiday_list_name: str = settings.get(f"{'un' if mode == 'Unbounded' else ''}bounded_holiday_list")
 	_holiday_list_doc = frappe.get_doc("Holiday List", _holiday_list_name)
-	_holiday_doc_list: list = _holiday_list_doc.get("holidays")  # pyright: ignore[reportAssignmentType]
+	_holiday_doc_list: list = _holiday_list_doc.get("holidays")
 	holiday_list = [h.get("holiday_date") for h in _holiday_doc_list]
 	working_days = [d for d in all_days if d not in holiday_list]
 
 	# ── Leave blocklist ───────────────────────────────────────────────────────
 	window_start = str(working_days[0]) if working_days else str(start_date)
-	window_end = str(working_days[-1]) if working_days else str(add_days(start_date, 27))
+	window_end = str(working_days[-1]) if working_days else str(frappe.utils.add_days(start_date, 27))
 
 	leave_blocked: set[tuple[str, datetime.date]] = set()
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import itertools
 import json
 from typing import Any
 
@@ -107,9 +108,21 @@ def test_planning_days():
 	assert len(list(planning_days(MON, "4-week"))) == 28
 
 
-def test_unbounded_nyi():
-	with pytest.raises(NotImplementedError):
-		_ = planning_days(MON, "unbounded")
+def test_unbounded_exceeds_any_bounded():
+	# This uses a static list of modes, see the sister integration test that uses the following:
+	# modes = frappe.get_meta("Optimizer Run").get_field("mode").options.split("\n")
+	modes = ["1-week", "2-week", "4-week", "Unbounded"]
+	bounded_max = max(
+		len(d)  # ty:ignore[invalid-argument-type]
+		for d in (planning_days(MON, m) for m in modes)
+		if hasattr(d, "__len__")
+	)
+
+	for i, _ in enumerate(planning_days(MON, "Unbounded")):
+		if i > bounded_max:
+			break
+	else:
+		pytest.fail(f"Unbounded planning_days is bounded by {bounded_max}")
 
 
 # ── build() guards ────────────────────────────────────────────────────────────
