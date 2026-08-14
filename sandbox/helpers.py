@@ -8,6 +8,7 @@ No Frappe imports — works against a captured DataPackage snapshot (see the
 from __future__ import annotations
 
 import dataclasses
+import datetime
 
 import pandas as pd
 import pulp
@@ -82,13 +83,30 @@ def assignment_frame(data: DataPackage, x: dict) -> pd.DataFrame:
 			"date": d,
 			"branch": b,
 			"forced": (e, s, d, b) in data.forced,
-			"ass": pulp.value(var),
+			"assigned": pulp.value(var),
+			"opportunity": var.dj,
 		}
 		for (e, s, d, b), var in x.items()
 		if (pulp.value(var) or 0) > 0.0
 	]
-	frame = pd.DataFrame(rows, columns=["employee", "shift_type", "date", "branch", "forced", "ass"])
-	return frame.sort_values(["date", "shift_type", "branch", "ass", "employee"]).reset_index(drop=True)
+	frame = pd.DataFrame(rows, columns=["employee", "shift_type", "date", "branch", "forced", "assigned"])
+	return frame.sort_values(["date", "shift_type", "branch", "assigned", "employee"]).reset_index(drop=True)
+
+
+def constraint_frame(prob: pulp.LpProblem) -> pd.DataFrame:
+	"""One row per assigned (employee, shift_type, date, branch) slot."""
+	rows = [
+		{
+			"len": len(str(c)),
+			"type": str(c.name).partition(":")[0],
+			"constraint": str(c),
+			"slack": c.slack,
+			"pi": c.pi,
+		}
+		for c in prob.constraints()
+	]
+	frame = pd.DataFrame(rows, columns=["len", "type", "constraint", "slack", "pi"])
+	return frame.sort_values(by=["len", "slack", "constraint", "pi"]).reset_index(drop=True)
 
 
 def room_utilization_frame(data: DataPackage, active_rooms: dict) -> pd.DataFrame:
@@ -106,6 +124,36 @@ def room_utilization_frame(data: DataPackage, active_rooms: dict) -> pd.DataFram
 	]
 	frame = pd.DataFrame(rows, columns=["discipline", "shift_type", "date", "branch", "staffed", "capacity"])
 	return frame.sort_values(["date", "shift_type", "branch", "discipline"]).reset_index(drop=True)
+
+
+def schedule_grid(data: DataPackage, x: dict) -> pd.DataFrame:
+	"""Employee x day grid of the solved schedule (rows=employees, columns=days).
+
+	Simplified, offline cousin of ``OptimizerRun.get_schedule_events``: only "assigned"
+	(from `x`) and "leave" (from `data.leave_blocked`) — no "existing" Shift Assignment
+	overlay, since that lives in Frappe's DB, not the DataPackage.
+	"""
+	cell: dict[tuple[str, datetime.date], list[str]] = {}
+
+	unique_s = {}
+	unique_b = {}
+
+	for (e, s, d, b), var in x.items():
+		if (pulp.value(var) or 0) <= 0.0:
+			continue
+		if s not in unique_s:
+			unique_s[s] = len(unique_s)
+		if b not in unique_b:
+			unique_b[b] = len(unique_b)
+		cell.setdefault((e, d), []).append(f"{unique_s[s]}@{unique_b[b]}")
+		# cell.setdefault((e, d), []).append(f"{s}@{b}")
+	for e, d in data.leave_blocked:
+		cell.setdefault((e, d), []).append("LEAVE")
+
+	grid = pd.DataFrame("", index=sorted(data.employees), columns=[d.isoformat() for d in data.working_days])
+	for (e, d), labels in cell.items():
+		grid.loc[e, d.isoformat()] = ", ".join(sorted(labels))
+	return grid
 
 
 def replace(data: DataPackage, **overrides) -> DataPackage:

@@ -120,7 +120,16 @@ def builtin_rule(
 
 def _cname(*parts) -> str:
 	"""Sanitize parts into a PuLP-safe constraint name."""
-	return "_".join(str(p) for p in parts).replace("-", "_").replace(" ", "_")
+	return (
+		":".join(
+			[
+				str(parts[0]),
+				"_".join(str(p) for p in parts),
+			]
+		)
+		.replace("-", "_")
+		.replace(" ", "_")
+	)
 
 
 # ── Built-in rules (formerly hardcoded in model_builder.build) ────────────────
@@ -188,10 +197,6 @@ def use_existing_assignments(ctx: RuleContext) -> None:
 	"One Branch per Shift",
 	"Employees can't cover more than one branch during a single shift.",
 	standard=False,
-	excludes={
-		one_shift_per_day: "This is a strictly more permissive rule than one_shift_per_day."
-		"Don't include both."
-	},
 )
 def one_branch_per_shift(ctx: RuleContext) -> None:
 	data = ctx.data
@@ -253,6 +258,7 @@ def fte_ceiling(ctx: RuleContext) -> None:
 	"Maximize the total number of staffed rooms across all disciplines, shifts, days and branches.",
 	kind=KIND_OBJECTIVE,
 	standard=True,
+	requires={room_coverage: "{r} requires {req}, otherwise the solver will just staff rooms for free."},
 )
 def room_utilization_objective(ctx: RuleContext) -> None:
 	ctx.add_objective(pulp.lpSum(ctx.active_rooms.values()))
