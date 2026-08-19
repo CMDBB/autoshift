@@ -1,10 +1,13 @@
 # Autoshift
 
-Frappe app (requires `frappe/hrms`) that schedules employee shifts for a multi-branch,
-multi-discipline dental practice using Mixed Integer Linear Programming (PuLP + bundled
-COIN-OR CBC solver). Reads Employee/Shift Type/Leave Application/Holiday List/Shift
-Assignment from Frappe HR; combines with app-specific config; produces a schedule a user
-reviews, approves, and commits into real `Shift Assignment` records.
+Frappe app (requires `frappe/hrms`) that schedules employee shifts across multiple
+branches and disciplines using Mixed Integer Linear Programming (PuLP + bundled COIN-OR
+CBC solver). Reads Employee/Shift Type/Leave Application/Holiday List/Shift Assignment
+from Frappe HR; combines with app-specific config; produces a schedule a user reviews,
+approves, and commits into real `Shift Assignment` records.
+
+Built for a dental practice, but **nothing about a specific practice belongs in this
+repo** — see "App boundary" below.
 
 **This is an early-stage, single-developer WIP**, not a finished product. Expect missing
 features, incomplete migrations, and rough edges — see the lists below before assuming
@@ -87,9 +90,13 @@ Optimizer engine (`autoshift/optimizer/`, pure-Python where possible for testabi
    **The run→Shift-Assignment link-back is mid-redesign and not finished — see To Be
    Implemented.**
 
-Custom fields on stock doctypes (`autoshift/fixtures/custom_field.json`):
-`Shift Location.custom_discipline`, `Shift Location.custom_branch` (Link to `Branch` — source
-of truth for a `Shift Assignment`'s branch via its `shift_location`), `Employee.custom_fte`.
+Custom fields on stock doctypes (`autoshift/fixtures/custom_field.json`), all under module
+`Autoshift`: `Shift Location.custom_discipline`, `Shift Location.custom_branch` (Link to
+`Branch` — source of truth for a `Shift Assignment`'s branch via its `shift_location`),
+`Employee.custom_fte`. `zawin2frappe` *populates* `custom_fte` and `custom_branch` on import
+but does not own them; `Shift Assignment.custom_zawin_key` is owned by `zawin2frappe` (module
+`Zawin2Frappe`) and must not be re-added here — two apps shipping the same fieldname under
+different modules fight on every `migrate`.
 
 `Discipline Designation Branch Config.shift_types` (Table MultiSelect, backed by the
 `Discipline Designation Branch Config Shift Type` child doctype) determines which `Shift
@@ -99,8 +106,14 @@ as a non-clinical variant and excluded. This duplicates the shift-type list acro
 `data_loader.py` warns (`frappe.log_error`) if rows sharing the same discipline list
 different Shift Types.
 
-CLI (`autoshift/commands.py`): `dump-dev-data` / `seed-dev-data` for snapshotting/seeding a
-dev site.
+CLI (`autoshift/commands.py`): `dump-dev-data` / `seed-dev-data` snapshot and restore **only
+Autoshift's own configuration** (`DEV_DATA_DOCTYPES`: Holiday List, Discipline Designation
+Branch Config, Employee Settings, Optimizer Settings). Company/Branch/Designation/Shift
+Type/Employee are zawin2frappe's job — seeding those here would duplicate it and dump real
+personnel to disk. Both go through `get_doc(...).as_dict()`, not `get_all(fields=["*"])`,
+because the latter returns no child rows (it was silently dropping Employee Settings'
+preference tables and the DDBC shift-type selection) and cannot read Singles at all.
+`capture-datapackage` snapshots a run's resolved `DataPackage` for the sandbox notebook.
 
 ## To be implemented (scaffolding exists; feature path is incomplete, not "broken")
 
@@ -116,6 +129,33 @@ dev site.
   `Shift Location.custom_discipline` exist as scaffolding, but `model_builder.py` only tracks
   an aggregate room *count* per discipline/slot — nothing assigns a specific room yet.
   Backlog, same as `Unbounded` mode.
+
+## App boundary
+
+Three apps split the responsibility; keep them separate.
+
+| App | Owns | Visibility |
+|---|---|---|
+| **autoshift** (this repo) | The scheduling engine and its doctypes. Generic — every practice-specific value is a doctype record a user enters, never a constant in code. | Public (`github.com/CMDBB/autoshift`) |
+| **`../zawin2frappe`** | Migrating data out of the legacy ZaWin system into Frappe HR. Reads a *profile* for everything practice-specific. | Public |
+| **`../cmdb_frappe`** | This practice: the zawin profile, curated overrides, investigation docs. `required_apps = ["autoshift", "zawin2frappe"]`. | **Private** |
+
+Consequences for work in this repo:
+
+- **No practice data, ever** — not in code, fixtures, tests, or notebook outputs. Branch
+  names, company abbreviations, discipline names, employee ids and real run dates together
+  fingerprint the practice; `cmdb_frappe/README.md` explains why that is a disclosure about
+  identifiable people, not a technical detail. Tests use neutral placeholders (`E1`, `B1`,
+  `D1`).
+- `sandbox/` is a live-data hazard. `sandbox/snapshots/*.json` (captured `DataPackage`s) and
+  any other `sandbox/*.json` are gitignored, and an `nbstripout` pre-commit hook clears
+  `playground.ipynb` outputs — the notebook runs against a real snapshot, so its outputs
+  embed live data. Don't defeat either.
+- Don't add configuration doctypes or seed data for one practice's setup. If autoshift needs
+  a new practice-specific value, it becomes a field on an existing config doctype that a user
+  fills in; the value itself lives in `cmdb_frappe`.
+- Custom fields: see the ownership note above. Check the other apps' fixtures before adding
+  a `Custom Field` on a stock doctype.
 
 ## Working conventions
 

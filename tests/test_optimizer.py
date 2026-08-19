@@ -42,7 +42,7 @@ def pkg(**overrides) -> DataPackage:
 	Minimal valid DataPackage: 1 salaried employee, 1 AM shift, 1 day, 1 branch.
 	Override any field to build specific scenarios.
 	"""
-	disc = "Omni"
+	disc = "D1"
 	b = "B1"
 	base: dict[str, Any] = dict(
 		flags=set(),
@@ -214,7 +214,7 @@ def test_weigh_mode_breaks_ties_toward_existing_assignment():
 	mode's warm-start should steer the solver to keep the one already assigned
 	(E1) rather than switching to the tied alternative (E2).
 	"""
-	disc, b = "Omni", "B1"
+	disc, b = "D1", "B1"
 	prob, x, _ = solve(
 		pkg(
 			flags={DataPackage.WEIGH_ASSIGNMENTS},
@@ -290,7 +290,7 @@ def test_active_rooms_cannot_exceed_assistants_in_slot():
 	active_rooms must stay ≤ 1 for every slot.
 	"""
 	D = days_from(2)
-	disc, b = "Omni", "B1"
+	disc, b = "D1", "B1"
 	prob, _x, ar = solve(
 		pkg(
 			working_days=D,
@@ -311,7 +311,7 @@ def test_max_rooms_per_employee_limits_cross_branch_assignment():
 	prob, x, _ = solve(
 		pkg(
 			branches=["B1", "B2"],
-			rooms={("Omni", "B1"): 1, ("Omni", "B2"): 1},
+			rooms={("D1", "B1"): 1, ("D1", "B2"): 1},
 			max_rpe={"E1": 1},
 			target_shifts={"E1": 1},
 		)
@@ -335,7 +335,7 @@ def test_fairness_equalizes_unfairness_not_individual_balance():
 	TODO: adapt this to preference-based fairness
 	"""
 	D = days_from(4)
-	disc, b = "Omni", "B1"
+	disc, b = "D1", "B1"
 	forced_e1 = {("E1", "AM", d, b) for d in D}
 
 	data = pkg(
@@ -521,7 +521,7 @@ def test_custom_objective_rule_steers_solution():
 		"        pulp.lpSum(-var for (e, s, d, b), var in ctx.x.items() if e == 'E1')\n"
 		"    )\n"
 	)
-	disc, b = "Omni", "B1"
+	disc, b = "D1", "B1"
 	data = pkg(
 		employees=["E1", "E2"],
 		designation={"E1": "Doctor", "E2": "Doctor"},
@@ -542,7 +542,7 @@ def test_custom_objective_rule_steers_solution():
 
 def test_two_employees_both_meet_fte_targets():
 	D = days_from(4)
-	disc, b = "Omni", "B1"
+	disc, b = "D1", "B1"
 	data = pkg(
 		employees=["E1", "E2"],
 		working_days=D,
@@ -565,7 +565,7 @@ def test_dumps_loads_round_trips_to_equal_package():
 	data = pkg(
 		employees=["E1", "E2"],
 		designation={"E1": "Doctor", "E2": "Nurse"},
-		department={"E1": "Omni", "E2": "Omni"},
+		department={"E1": "D1", "E2": "D1"},
 		leave_blocked={("E1", MON)},
 		forced={("E2", "AM", MON, "B1")},
 	)
@@ -600,7 +600,7 @@ def test_dumps_loads_round_trip_preserves_input_hash():
 
 def test_leave_does_not_block_other_employees():
 	"""E1 on leave; E2 should still be assigned normally."""
-	disc, b = "Omni", "B1"
+	disc, b = "D1", "B1"
 	data = pkg(
 		employees=["E1", "E2"],
 		designation={"E1": "Doctor", "E2": "Doctor"},

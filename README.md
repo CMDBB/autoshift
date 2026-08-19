@@ -2,6 +2,12 @@
 
 Autoshift is a Frappe app that automatically assigns employees to shifts using Mixed Integer Linear Programming (MILP). It integrates with Frappe HR data (employees, shift types, leave applications, holidays) and produces an optimised schedule that maximises room utilisation while respecting staff FTE targets and shift preferences.
 
+Autoshift is organisation-agnostic: disciplines, branches, designations, room counts and
+rules are all records you create in the desk (see [One-time Setup](#one-time-setup)), not
+constants in the code. Nothing about any particular practice ships in this repo — if you
+are migrating off a legacy system, that is a separate concern (for ZaWin, see the companion
+[`zawin2frappe`](https://github.com/CMDBB/zawin2frappe) app).
+
 ## Prerequisites
 
 - A Frappe v16 bench. Frappe HR (`hrms`) is a required app and is installed automatically
@@ -338,12 +344,24 @@ power the in-browser lint of Custom Code rules. `bench setup requirements` (or a
 
 ### Adding dev data
 
+`dump-dev-data` / `seed-dev-data` move **Autoshift's own configuration** between sites —
+Holiday List, Discipline Designation Branch Config, Employee Settings and Optimizer
+Settings. They deliberately do *not* cover Company, Branch, Department, Designation, Shift
+Type or Employee: those are upstream HR data, and the records these link to must already
+exist on the target site before you seed.
+
 ```bash
-bench --site YOUR_SITE seed-dev-data --input ./dev_data
+bench --site YOUR_SITE dump-dev-data --output ./dev_data   # snapshot a configured site
+bench --site YOUR_SITE seed-dev-data --input ./dev_data    # restore onto another
 ```
 
-(`dump-dev-data` is the inverse, for snapshotting an existing site's data.) Don't seed dev
-data into the test site — keep it pristine.
+Existing records are left alone unless you pass `--overwrite`. Don't seed dev data into the
+test site — keep it pristine.
+
+A dump contains real employees and leave records from whichever site produced it, so
+`dev_data/` is gitignored. The same goes for `sandbox/`: `capture-datapackage` snapshots are
+gitignored and a pre-commit hook strips `playground.ipynb` outputs, because the notebook runs
+against live data. Don't commit around either.
 
 ---
 

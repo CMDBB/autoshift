@@ -17,6 +17,13 @@ repos:
       - id: check-yaml
       - id: debug-statements
 
+  # The sandbox notebook runs against a real DataPackage snapshot, so its outputs
+  # embed live branch/discipline/employee data. This repo is public — never commit them.
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.8.1
+    hooks:
+      - id: nbstripout
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.10
     hooks:
