@@ -61,14 +61,21 @@ def execute():
 				],
 			}
 		).insert(ignore_permissions=True)
-	elif (standard := frappe.get_doc("Optimization Ruleset", STANDARD_RULESET_NAME)) and {
-		rule.name for rule in standard.rules
-	} != STANDARD_RULES:
-		standard.rules = []
-		for key, name in rule_doc_names.items():
-			if key in STANDARD_RULES and name:
-				standard.append("rules", {"rule": name, "weight": 1.0})
-		standard.save(ignore_permissions=True)
+	else:
+		# Compare the rows' *rule* links against the rule documents the standard built-ins
+		# resolved to. Comparing `row.name` (a child-row hash) against builtin keys, as this
+		# once did, can never match — which rebuilt the ruleset on every migrate and silently
+		# reset every hand-tuned weight to 1.0.
+		standard = frappe.get_doc("Optimization Ruleset", STANDARD_RULESET_NAME)
+		wanted = {name for key, name in rule_doc_names.items() if key in STANDARD_RULES and name}
+		if {row.rule for row in standard.rules} != wanted:
+			# Preserve the weights of rows that survive; only genuinely new rules default to 1.0.
+			weights = {row.rule: row.weight for row in standard.rules}
+			standard.rules = []
+			for key, name in rule_doc_names.items():
+				if key in STANDARD_RULES and name:
+					standard.append("rules", {"rule": name, "weight": weights.get(name, 1.0)})
+			standard.save(ignore_permissions=True)
 
 	# Runs from before the ruleset field existed were solved with exactly the
 	# built-in rules; record that so they remain loadable.

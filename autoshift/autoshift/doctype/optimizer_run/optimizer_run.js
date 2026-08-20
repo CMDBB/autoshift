@@ -150,7 +150,7 @@ function build_schedule_html({ days, employees, events }) {
 				})
 				.join("");
 			const name = frappe.utils.escape_html(emp.employee_name || emp.name);
-			const sub = emp.designation ? frappe.utils.escape_html(emp.designation) : "";
+			const sub = (emp.roles || []).map((r) => frappe.utils.escape_html(r)).join(", ");
 			return `<tr>
 				<td class="asg-emp">
 					<div class="asg-emp-name">${name}</div>
@@ -198,9 +198,14 @@ function build_chip(ev) {
 	const forced = ev.forced
 		? ` <span class="asg-forced" title="${__("Forced assignment")}">★</span>`
 		: "";
+	// The role is the point of a multi-skill schedule: it says which discipline this
+	// person is covering today, which the shift type and branch alone cannot.
+	const role = ev.scheduling_role
+		? `<div class="asg-chip-line">${frappe.utils.escape_html(ev.scheduling_role)}</div>`
+		: "";
 	return `<div class="asg-chip" style="background:${ev.bg};border-color:${ev.border};">
 		<div class="asg-chip-title">${frappe.utils.escape_html(ev.shift_type)}${forced}</div>
-		${time}${branch}
+		${role}${time}${branch}
 	</div>`;
 }
 

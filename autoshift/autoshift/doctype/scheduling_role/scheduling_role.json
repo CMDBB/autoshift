@@ -1,0 +1,103 @@
+{
+ "actions": [],
+ "autoname": "field:role_name",
+ "creation": "2026-08-19 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "role_name",
+  "discipline",
+  "column_break_1",
+  "max_rooms",
+  "active",
+  "section_break_description",
+  "description"
+ ],
+ "fields": [
+  {
+   "fieldname": "role_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Role Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "description": "The discipline this role staffs. A role always names one; this is what replaces Employee.department as the optimizer's notion of discipline.",
+   "fieldname": "discipline",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Discipline",
+   "options": "Department",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "description": "Rooms one holder of this role covers in a single slot. An Employee Scheduling Role may override it per person.",
+   "fieldname": "max_rooms",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Max Rooms Per Holder",
+   "non_negative": 1,
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "fieldname": "active",
+   "fieldtype": "Check",
+   "label": "Active"
+  },
+  {
+   "fieldname": "section_break_description",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  }
+ ],
+ "links": [],
+ "modified": "2026-08-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Autoshift",
+ "name": "Scheduling Role",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "HR Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -132,19 +132,37 @@ def _cname(*parts) -> str:
 	)
 
 
+def _vname(*parts) -> str:
+	"""Sanitize parts into a PuLP-safe variable name.
+
+	The counterpart to `_cname`, for rules that introduce auxiliary variables — a
+	linearized absolute value, say. Same prefix convention, so sandbox tooling can group
+	a rule's variables the way `constraint_frame` groups its constraints.
+	"""
+	return _cname(*parts)
+
+
 # ── Built-in rules (formerly hardcoded in model_builder.build) ────────────────
 
 
 @builtin_rule(
 	"One shift per employee per day",
-	"An employee works at most one shift per day, across all shift types and branches.",
+	"An employee works at most one shift per day, across all shift types, branches and "
+	"Scheduling Roles. Holding a second role widens where somebody can be scheduled, never "
+	"how much they can work.",
 	standard=True,
 )
 def one_shift_per_day(ctx: RuleContext) -> None:
 	data = ctx.data
 	for e, d in itertools.product(data.employees, data.working_days):
 		ctx.prob += (
-			pulp.lpSum(ctx.x[(e, s, d, b)] for s in data.shift_types for b in data.branches) <= 1,
+			pulp.lpSum(
+				ctx.x[(e, r, s, d, b)]
+				for r in data.employee_roles.get(e, ())
+				for s in data.shift_types
+				for b in data.branches
+			)
+			<= 1,
 			_cname("one_shift", e, d),
 		)
 
@@ -158,10 +176,11 @@ def one_shift_per_day(ctx: RuleContext) -> None:
 )
 def warm_start(ctx: RuleContext) -> None:
 	data = ctx.data
-	for (e, s, d, b), var in ctx.x.items():
-		if (e, s, d, b) in data.forced and (e, s, d, b) in data.leave_blocked:
+	for comb, var in ctx.x.items():
+		e, _r, _s, d, _b = comb
+		if comb in data.forced and (e, d) in data.leave_blocked:
 			raise ValueError(f"Employee {e} cant both be on leave and scheduled for a shift on {d}")
-		var.setInitialValue(1 if (e, s, d, b) in data.forced else 0)
+		var.setInitialValue(1 if comb in data.forced else 0)
 
 
 @builtin_rule(
@@ -177,9 +196,10 @@ def leave_blocklist(ctx: RuleContext) -> None:
 	for e, d in data.leave_blocked:
 		if e not in data.employees or d not in day_set:
 			continue
-		for s in data.shift_types:
-			for b in data.branches:
-				ctx.x[(e, s, d, b)].fixValue()
+		for r in data.employee_roles.get(e, ()):
+			for s in data.shift_types:
+				for b in data.branches:
+					ctx.x[(e, r, s, d, b)].fixValue()
 
 
 @builtin_rule(
@@ -202,7 +222,8 @@ def one_branch_per_shift(ctx: RuleContext) -> None:
 	data = ctx.data
 	for e, s, d in itertools.product(data.employees, data.shift_types, data.working_days):
 		ctx.prob += (
-			pulp.lpSum(ctx.x[(e, s, d, b)] for b in data.branches) <= 1,
+			pulp.lpSum(ctx.x[(e, r, s, d, b)] for r in data.employee_roles.get(e, ()) for b in data.branches)
+			<= 1,
 			_cname("one_branch", e, s, d),
 		)
 
@@ -210,18 +231,29 @@ def one_branch_per_shift(ctx: RuleContext) -> None:
 @builtin_rule(
 	"Room coverage per discipline",
 	"The rooms staffed in a discipline for a given shift, day and branch equal the room-slots "
-	"contributed by the discipline's assigned employees (each contributes their max-rooms "
-	"figure), capped at the branch's configured room count.",
+	"contributed by the Scheduling Roles assigned in that discipline (each contributes its "
+	"max-rooms figure), capped at the branch's configured room count.",
 	standard=True,
 )
 def room_coverage(ctx: RuleContext) -> None:
 	"""Note that the branch room cap is modeled by the variable bound."""
 	data = ctx.data
+
+	# (employee, role) pairs grouped by the role's discipline. Built once: the inner loop
+	# runs per active_rooms key, and rescanning every employee there was already the
+	# hottest part of this rule before roles multiplied the pairs.
+	pairs_by_discipline: dict[str, list[tuple[str, str]]] = {}
+	for e in data.employees:
+		for r in data.employee_roles.get(e, ()):
+			pairs_by_discipline.setdefault(data.role_discipline.get(r, ""), []).append((e, r))
+
 	for k, s, d, b in ctx.active_rooms:
-		employees_in_discipline = [e for e in data.employees if data.department.get(e) == k]
 		# lpSum([])=0 (no need for a condition)
 		ctx.prob += (
-			pulp.lpSum(data.max_rpe.get(e, 1) * ctx.x[(e, s, d, b)] for e in employees_in_discipline)
+			pulp.lpSum(
+				data.max_rpe.get((e, r), 1) * ctx.x[(e, r, s, d, b)]
+				for e, r in pairs_by_discipline.get(k, ())
+			)
 			== ctx.active_rooms[(k, s, d, b)],
 			_cname("room_coverage", k, s, d, b),
 		)
@@ -229,7 +261,8 @@ def room_coverage(ctx: RuleContext) -> None:
 
 @builtin_rule(
 	"FTE ceiling",
-	"An employee's total assigned shifts over the horizon stay at or below "
+	"An employee's total assigned shifts over the horizon, summed across every Scheduling "
+	"Role they hold, stay at or below "
 	"105% x their FTE-derived target; utilization pressure toward the target "
 	"comes from the objective.",
 	standard=True,
@@ -240,7 +273,11 @@ def fte_ceiling(ctx: RuleContext) -> None:
 	for e in data.employees:
 		target = data.target_shifts.get(e, 0)
 		total_assigned = pulp.lpSum(
-			ctx.x[(e, s, d, b)] for s in data.shift_types for d in data.working_days for b in data.branches
+			ctx.x[(e, r, s, d, b)]
+			for r in data.employee_roles.get(e, ())
+			for s in data.shift_types
+			for d in data.working_days
+			for b in data.branches
 		)
 		if target > 0:
 			# upper bound only: employee utilization will come from objective function
@@ -248,6 +285,26 @@ def fte_ceiling(ctx: RuleContext) -> None:
 				total_assigned <= (1 + tol) * target,
 				_cname("fte_max", e),
 			)
+
+
+@builtin_rule(
+	"Agreed role FTE ceiling",
+	"The hard reading of an agreed role split: where an Employee Scheduling Role names an "
+	"agreed FTE, that role's assigned shifts stay at or below 105% x the agreed figure. Off "
+	"by default, because these splits are normally informal expectations rather than "
+	"entitlements — the objective rule of the same name is the usual way to express them.",
+	standard=False,
+)
+def role_fte_ceiling(ctx: RuleContext) -> None:
+	data = ctx.data
+	tol = 0.05
+	for (e, r), target in data.role_target_shifts.items():
+		if target <= 0:
+			continue
+		assigned = pulp.lpSum(
+			ctx.x[(e, r, s, d, b)] for s in data.shift_types for d in data.working_days for b in data.branches
+		)
+		ctx.prob += (assigned <= (1 + tol) * target, _cname("role_fte_max", e, r))
 
 
 # ── Built-in objective rules (formerly hardcoded in model_builder.build) ──────
@@ -265,6 +322,37 @@ def room_utilization_objective(ctx: RuleContext) -> None:
 
 
 @builtin_rule(
+	"Objective: Agreed role FTE split",
+	"Where an Employee Scheduling Role names an agreed FTE for the role, penalize the "
+	"absolute deviation of that role's assigned shifts from the agreed figure. Roles with no "
+	"agreed figure are unpenalized, and bounded only by the employee's overall FTE ceiling.",
+	kind=KIND_OBJECTIVE,
+	standard=True,
+)
+def role_fte_target_objective(ctx: RuleContext) -> None:
+	"""Absolute deviation, linearized.
+
+	`|assigned - target|` is not linear, so split it into non-negative over/under slacks
+	tied by `assigned - target == over - under` and penalize their sum. Both carry a
+	negative coefficient in a maximization, so the solver squeezes them to the smallest
+	pair the equality permits — exactly one of them ends up non-zero, and it equals the
+	absolute deviation. No binaries and no big-M needed.
+	"""
+	data = ctx.data
+	penalties = []
+	for (e, r), target in data.role_target_shifts.items():
+		assigned = pulp.lpSum(
+			ctx.x[(e, r, s, d, b)] for s in data.shift_types for d in data.working_days for b in data.branches
+		)
+		over = ctx.prob.add_variable(_vname("role_dev_over", e, r), lowBound=0)
+		under = ctx.prob.add_variable(_vname("role_dev_under", e, r), lowBound=0)
+		ctx.prob += (assigned - target == over - under, _cname("role_dev", e, r))
+		penalties.append(over + under)
+
+	ctx.add_objective(-pulp.lpSum(penalties))
+
+
+@builtin_rule(
 	"Objective: Shift preferences",
 	"Reward assignments matching each employee's normalized shift preferences (from Employee "
 	"Settings); assignments to less-preferred shifts score lower.",
@@ -276,7 +364,7 @@ def shift_preference_objective(ctx: RuleContext) -> None:
 	ctx.add_objective(
 		pulp.lpSum(
 			(-1 + data.shift_preferences.get(e, {}).get(s, 0.0)) * var
-			for (e, s, _d, _b), var in ctx.x.items()
+			for (e, _r, s, _d, _b), var in ctx.x.items()
 		)
 	)
 
@@ -308,7 +396,7 @@ def compile_custom_rule(rule_name: str, code: str) -> Callable[[RuleContext], No
 	reaches this point (enforced by the data loader), so it executes with normal
 	Python semantics — an Optimization Rule document is as trusted as app code.
 	"""
-	namespace: dict = {"pulp": pulp, "itertools": itertools, "cname": _cname}
+	namespace: dict = {"pulp": pulp, "itertools": itertools, "cname": _cname, "vname": _vname}
 	try:
 		# source: ../autoshift/doctype/optimization_rule/optimization_rule.json
 		# developer must ensure that no unauthorized user can add/edit/validate rules

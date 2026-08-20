@@ -76,9 +76,29 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "Discipline Designation Branch Config",
+   "label": "Discipline Branch Config",
    "link_count": 0,
-   "link_to": "Discipline Designation Branch Config",
+   "link_to": "Discipline Branch Config",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Scheduling Role",
+   "link_count": 0,
+   "link_to": "Scheduling Role",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Employee Scheduling Role",
+   "link_count": 0,
+   "link_to": "Employee Scheduling Role",
    "link_type": "DocType",
    "onboard": 0,
    "type": "Link"

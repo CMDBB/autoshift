@@ -1,16 +1,14 @@
 {
  "actions": [],
- "autoname": "format:{discipline}-{employee_type}-{branch}",
+ "autoname": "format:{discipline}-{branch}",
  "creation": "2026-06-08 00:00:00",
  "doctype": "DocType",
  "document_type": "Setup",
  "engine": "InnoDB",
  "field_order": [
   "discipline",
-  "employee_type",
   "branch",
   "column_break_1",
-  "max_rooms_for_employee_type",
   "rooms_num",
   "section_break_qjqo",
   "shift_types"
@@ -22,14 +20,6 @@
    "in_list_view": 1,
    "label": "Discipline",
    "options": "Department",
-   "reqd": 1
-  },
-  {
-   "fieldname": "employee_type",
-   "fieldtype": "Link",
-   "in_list_view": 1,
-   "label": "Employee Type",
-   "options": "Designation",
    "reqd": 1
   },
   {
@@ -45,13 +35,6 @@
    "fieldtype": "Column Break"
   },
   {
-   "fieldname": "max_rooms_for_employee_type",
-   "fieldtype": "Int",
-   "in_list_view": 1,
-   "label": "Max Rooms Per Employee",
-   "reqd": 1
-  },
-  {
    "fieldname": "rooms_num",
    "fieldtype": "Int",
    "in_list_view": 1,
@@ -63,17 +46,18 @@
    "fieldtype": "Section Break"
   },
   {
+   "description": "Shift Types the optimizer schedules in this discipline and branch. A Shift Type listed on no config row is treated as a non-clinical variant and excluded.",
    "fieldname": "shift_types",
    "fieldtype": "Table MultiSelect",
    "label": "Shift Types",
-   "options": "Discipline Designation Branch Config Shift Type"
+   "options": "Discipline Branch Config Shift Type"
   }
  ],
  "links": [],
- "modified": "2026-06-24 09:34:37.637186",
+ "modified": "2026-08-19 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Autoshift",
- "name": "Discipline Designation Branch Config",
+ "name": "Discipline Branch Config",
  "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [

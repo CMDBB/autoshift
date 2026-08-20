@@ -2,7 +2,7 @@
 
 Autoshift is a Frappe app that automatically assigns employees to shifts using Mixed Integer Linear Programming (MILP). It integrates with Frappe HR data (employees, shift types, leave applications, holidays) and produces an optimised schedule that maximises room utilisation while respecting staff FTE targets and shift preferences.
 
-Autoshift is organisation-agnostic: disciplines, branches, designations, room counts and
+Autoshift is organisation-agnostic: disciplines, branches, scheduling roles, room counts and
 rules are all records you create in the desk (see [One-time Setup](#one-time-setup)), not
 constants in the code. Nothing about any particular practice ships in this repo — if you
 are migrating off a legacy system, that is a separate concern (for ZaWin, see the companion
@@ -41,21 +41,52 @@ Before running the optimiser, configure the following three areas in the Frappe 
 | Bounded Holiday List | Holiday list used for 1-week / 2-week / 4-week planning modes |
 | Unbounded Holiday List | Holiday list used for Unbounded planning mode |
 
-### 2. Discipline Designation Branch Config
+### 2. Discipline Branch Config
 
-**Autoshift → Discipline Designation Branch Config** — one record per *(discipline, designation, branch)* combination.
+**Autoshift → Discipline Branch Config** — one record per *(discipline, branch)* combination.
 
 | Field | Description |
 |---|---|
 | Discipline | Department (e.g. Dental, Hygiene) |
-| Employee Type | Frappe designation that maps to this discipline |
 | Branch | Branch / location name |
-| Rooms Num | Number of treatment rooms at this branch for this discipline |
-| Max Rooms for Employee Type | Maximum rooms one employee of this designation can staff simultaneously |
+| Number of Rooms | Number of treatment rooms at this branch for this discipline |
+| Shift Types | Which Shift Types the optimiser schedules here; one listed nowhere is excluded as non-clinical |
 
 At least one record is required; the optimiser will throw if none are found.
 
-### 3. Employee Settings *(optional per employee)*
+### 3. Scheduling Roles
+
+**Autoshift → Scheduling Role** — the optimiser's unit of *capability*. A role names exactly
+one discipline, and an employee may hold several — which is how somebody who works two
+disciplines (say an assistant who also does prophylaxis) is scheduled without either
+discipline over-stating its capacity.
+
+| Field | Description |
+|---|---|
+| Role Name | e.g. "Ortho Assistant" |
+| Discipline | The Department this role staffs |
+| Max Rooms Per Holder | Rooms one holder covers simultaneously in a single slot |
+
+**Autoshift → Employee Scheduling Role** — one record per employee-capability pair.
+
+| Field | Description |
+|---|---|
+| Employee | Link to Employee |
+| Scheduling Role | The capability they hold |
+| Agreed FTE % in Role | *Optional.* The informally agreed share of their time in this role. Blank means no expectation. |
+| Max Rooms Override | *Optional.* Overrides the role's figure for this person (e.g. an apprentice covering one chair, not three) |
+| Valid From / Valid To | *Optional.* Time-boxes a capability acquired or dropped mid-year |
+
+**An employee with no Scheduling Role is not scheduled at all.** This is how non-clinical
+staff stay out of scope — `Employee.department` and `Employee.designation` are payroll data
+and are not read by the optimiser.
+
+The Agreed FTE % is deliberately soft: the solver is *penalised* for deviating from it
+(see the "Agreed role FTE split" objective rule) but never forbidden, because these splits
+are normally an informal expectation rather than an entitlement. If you do need it enforced,
+add the non-standard **Agreed role FTE ceiling** constraint rule to your ruleset.
+
+### 4. Employee Settings *(optional per employee)*
 
 **Autoshift → Employee Settings** — one record per employee to override defaults.
 
@@ -68,11 +99,11 @@ At least one record is required; the optimiser will throw if none are found.
 
 Employees without an Employee Settings record use a uniform shift preference and their `custom_fte` field value (set directly on the Employee doctype) for the FTE target.
 
-### 4. Employee FTE
+### 5. Employee FTE
 
 On each **Employee** record, fill in the **FTE %** field (0–100). This determines the target number of shifts for the planning period. Employees default to 100 % FTE if the field is blank.
 
-### 5. Optimization Rules & Rulesets
+### 6. Optimization Rules & Rulesets
 
 The constraints a run enforces — and the objective terms it maximises — are documents, not
 hardcoded behaviour.
@@ -220,27 +251,37 @@ The Input Hash is only ever recorded on a run that actually went through a real 
 The MILP model is built with [PuLP](https://coin-or.github.io/pulp/) and solved by the embedded COIN-OR CBC binary.
 
 **Decision variables**
-- `x[employee, shift, day, branch]` ∈ {0, 1} — whether an employee is assigned to a shift on a day at a branch
+- `x[employee, role, shift, day, branch]` ∈ {0, 1} — whether an employee works a shift on a day
+  at a branch, *in one of their Scheduling Roles*. Variables exist only for roles the employee
+  actually holds, so eligibility is structural rather than a constraint — there is nothing to
+  forbid, because there is nothing to set.
 - `active_rooms[discipline, shift, day, branch]` ∈ ℤ≥0 — rooms staffed in each slot
 
-**Constraints** — supplied by the run's Optimization Ruleset (see [One-time Setup §5](#5-optimization-rules--rulesets)),
+**Constraints** — supplied by the run's Optimization Ruleset (see [One-time Setup §6](#6-optimization-rules--rulesets)),
 one Optimization Rule document per constraint group. The built-in constraint rules:
 
-1. At most one shift per employee per day
+1. At most one shift per employee per day, summed across every role they hold — a second
+   role widens *where* somebody can work, never *how much*
 2. Approved and speculated leaves block assignments
 3. Existing Shift Assignments honored per the run's mode: fixed (`Use`), soft warm-start
    (`Weigh`), or disregarded (`Ignore`)
-4. Max rooms per employee per slot (from Discipline Designation Branch Config)
-5. Room coverage: staff headcount must support the number of active rooms
+4. Max rooms per (employee, role) per slot (from Scheduling Role, optionally overridden per
+   Employee Scheduling Role)
+5. Room coverage: the roles assigned in a discipline must support its number of active rooms
 6. FTE ceiling: assigned shifts ≤ (1 + tolerance) × target, for every employee. This is an
    upper bound only. Staying near the target today comes from the objective's preference term
    pulling assignments up, not from a hard minimum.
+7. *(non-standard, opt-in)* Agreed role FTE ceiling: the hard reading of an agreed split —
+   a role's shifts ≤ (1 + tolerance) × its agreed figure
 
 **Objective (maximise)** — also supplied by the ruleset; each objective rule's term is
 scaled by its row weight. The built-in objective rules:
 
 - Room utilisation: `weight × Σ active_rooms`
-- Shift preferences: `weight × Σ pref[employee, shift] × x[employee, shift, day, branch]`
+- Shift preferences: `weight × Σ pref[employee, shift] × x[...]`
+- Agreed role FTE split: `−weight × Σ |assigned[employee, role] − agreed[employee, role]|`,
+  linearised with a pair of non-negative slack variables per pair. Only pairs whose Employee
+  Scheduling Role names an agreed figure contribute.
 
 Validated Custom Code rules can add further constraints and/or objective terms
 (`ctx.add_objective(expr)`) on top of — or instead of — the built-ins.
@@ -254,7 +295,7 @@ Current modelling limitations (revisit if the underlying assumption stops holdin
 - **No AM/PM fairness term.** The objective only optimises room utilisation and shift
   preference; nothing currently balances how AM vs. PM shifts are distributed across
   employees.
-- **Room counts are static for the whole planning period.** Discipline Designation Branch
+- **Room counts are static for the whole planning period.** Discipline Branch
   Config doesn't support rooms going offline for part of a run (e.g. maintenance, partial
   closures).
 - **Leave Application is the only day-level blocker.** There's no modelling for on-call
@@ -345,7 +386,8 @@ power the in-browser lint of Custom Code rules. `bench setup requirements` (or a
 ### Adding dev data
 
 `dump-dev-data` / `seed-dev-data` move **Autoshift's own configuration** between sites —
-Holiday List, Discipline Designation Branch Config, Employee Settings and Optimizer
+Holiday List, Scheduling Role, Discipline Branch Config, Employee Scheduling Role,
+Employee Settings and Optimizer
 Settings. They deliberately do *not* cover Company, Branch, Department, Designation, Shift
 Type or Employee: those are upstream HR data, and the records these link to must already
 exist on the target site before you seed.

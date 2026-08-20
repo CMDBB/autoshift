@@ -42,13 +42,19 @@ def status(prob) -> str:
 	return pulp.LpStatus[prob.status]
 
 
-def objective_breakdown(data: DataPackage, x: dict, active_rooms: dict) -> dict[str, float]:
+def objective_breakdown(
+	data: DataPackage, x: dict, active_rooms: dict, prob: pulp.LpProblem | None = None
+) -> dict[str, float]:
 	"""
 	Per-rule contribution to the (solved) objective, keyed by rule name.
 
 	Re-invokes each selected built-in objective rule against a throwaway problem,
 	reusing the already-solved `x`/`active_rooms` variables so `pulp.value` reflects
-	the real solution. Only built-in rules of kind "objective" are broken out —
+	the real solution. A rule that introduces auxiliary variables (a linearized
+	absolute value, say) creates fresh, unsolved ones on that throwaway problem, so
+	their values are copied back from the solved problem by name — without that they
+	are `None` and the rule silently reports 0.0. Only built-ins of kind "objective"
+	are broken out —
 	constraint rules never call `ctx.add_objective` (0 contribution, skipped), and
 	Custom Code rules don't carry their `rule_kind` in a captured snapshot, so
 	they're left out rather than risk re-running unknown code against the live `x`.
@@ -70,26 +76,40 @@ def objective_breakdown(data: DataPackage, x: dict, active_rooms: dict) -> dict[
 			compile_custom_rule(name, code)(ctx)
 		else:
 			raise AssertionError("impossible")
+		if prob is not None:
+			_adopt_solved_values(ctx.prob, prob)
 		breakdown[name] = pulp.value(pulp.lpSum(ctx.objective_terms)) or 0.0
 	return breakdown
 
 
+def _adopt_solved_values(throwaway: pulp.LpProblem, solved: pulp.LpProblem) -> None:
+	"""Give the throwaway problem's fresh variables the values the real solve found."""
+	solved_values = {v.name: v.varValue for v in solved.variables()}
+	for var in throwaway.variables():
+		if var.varValue is None and var.name in solved_values:
+			var.varValue = solved_values[var.name]
+
+
 def assignment_frame(data: DataPackage, x: dict) -> pd.DataFrame:
-	"""One row per assigned (employee, shift_type, date, branch) slot."""
+	"""One row per assigned (employee, role, shift_type, date, branch) slot."""
 	rows = [
 		{
 			"employee": e,
+			"scheduling_role": r,
 			"shift_type": s,
 			"date": d,
 			"branch": b,
-			"forced": (e, s, d, b) in data.forced,
+			"forced": (e, r, s, d, b) in data.forced,
 			"assigned": pulp.value(var),
 			"opportunity": var.dj,
 		}
-		for (e, s, d, b), var in x.items()
+		for (e, r, s, d, b), var in x.items()
 		if (pulp.value(var) or 0) > 0.0
 	]
-	frame = pd.DataFrame(rows, columns=["employee", "shift_type", "date", "branch", "forced", "assigned"])
+	frame = pd.DataFrame(
+		rows,
+		columns=["employee", "scheduling_role", "shift_type", "date", "branch", "forced", "assigned"],
+	)
 	return frame.sort_values(["date", "shift_type", "branch", "assigned", "employee"]).reset_index(drop=True)
 
 
@@ -137,16 +157,20 @@ def schedule_grid(data: DataPackage, x: dict) -> pd.DataFrame:
 
 	unique_s = {}
 	unique_b = {}
+	unique_r = {}
 
-	for (e, s, d, b), var in x.items():
+	for (e, r, s, d, b), var in x.items():
 		if (pulp.value(var) or 0) <= 0.0:
 			continue
 		if s not in unique_s:
 			unique_s[s] = len(unique_s)
 		if b not in unique_b:
 			unique_b[b] = len(unique_b)
-		cell.setdefault((e, d), []).append(f"{unique_s[s]}@{unique_b[b]}")
-		# cell.setdefault((e, d), []).append(f"{s}@{b}")
+		if r not in unique_r:
+			unique_r[r] = len(unique_r)
+		# role included: with multi-skill staff, which discipline somebody covers is the
+		# part of the cell you cannot infer from shift type and branch
+		cell.setdefault((e, d), []).append(f"{unique_s[s]}@{unique_b[b]}:{unique_r[r]}")
 	for e, d in data.leave_blocked:
 		cell.setdefault((e, d), []).append("LEAVE")
 

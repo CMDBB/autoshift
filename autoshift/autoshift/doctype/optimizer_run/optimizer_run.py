@@ -168,7 +168,7 @@ class OptimizerRun(Document):
 
 		    {
 		      "days": ["YYYY-MM-DD", ...],
-		      "employees": [{"name", "employee_name", "designation", "image"}, ...],
+		      "employees": [{"name", "employee_name", "roles", "image"}, ...],
 		      "events": {employee: {"YYYY-MM-DD": [{"kind", ...}, ...]}},
 		    }
 		"""
@@ -254,6 +254,7 @@ class OptimizerRun(Document):
 					"end_time": _fmt_time(meta.end_time) if meta else "",
 					"branch": s.branch,
 					"shift_location": s.shift_location,
+					"scheduling_role": s.scheduling_role,
 					"forced": bool(s.forced),
 				},
 			)
@@ -326,12 +327,16 @@ class OptimizerRun(Document):
 			frappe.get_all(
 				"Employee",
 				filters={"name": ["in", active]},
-				fields=["name", "employee_name", "designation", "image"],
+				fields=["name", "employee_name", "image"],
 				order_by="employee_name asc",
 			)
 			if active
 			else []
 		)
+		# Roles, not designation: designation is payroll data the optimizer no longer reads,
+		# and the roles are what explain why somebody appears in a given discipline at all.
+		for emp in employees:
+			emp["roles"] = list(data.employee_roles.get(emp["name"], ()))
 
 		return {"days": days, "employees": employees, "events": events}
 

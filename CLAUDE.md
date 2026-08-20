@@ -57,8 +57,16 @@ Doctypes (`autoshift/autoshift/doctype/`):
   not upgraded).
 - **Optimizer Run Slot** — child; one row per assigned shift in a solution.
 - **Optimizer Settings** — singleton: holiday lists.
-- **Discipline Designation Branch Config** — per (discipline, designation, branch): room
-  counts + max-rooms-per-employee.
+- **Discipline Branch Config** (+ child `Discipline Branch Config Shift Type`) — per
+  (discipline, branch): room count + the Shift Types in scope there.
+- **Scheduling Role** — the optimizer's unit of *capability*, and what replaced designation
+  as the scheduling axis: a role names exactly one discipline (Link to `Department`) and a
+  max-rooms-per-holder figure. Designation is payroll data and is no longer read.
+- **Employee Scheduling Role** — the employee x role relation, a **standalone doctype rather
+  than a child table** so `zawin2frappe` can import into it directly. Carries `role_fte` (the
+  *informally* agreed FTE % in that role — blank means no expectation), an optional
+  `max_rooms` override, `active`, and a `valid_from`/`valid_to` window. An employee holding no
+  in-window role is not scheduled at all; that is how non-clinical staff stay out of scope.
 - **Employee Settings** (+ children `Employee Shift Preference`, `Employee Branch Preference`)
   — per-employee shift/branch preference overrides.
 - **Leave Speculation** — child of Optimizer Run; treats a *pending* leave as approved for
@@ -70,7 +78,10 @@ Optimizer engine (`autoshift/optimizer/`, pure-Python where possible for testabi
 1. `types.py` — `DataPackage` dataclass (engine's only input shape), SHA256 `input_hash()`
    for caching, `planning_days()` (raises `NotImplementedError` for `"Unbounded"` mode).
 2. `rules.py` — constraint groups AND objective terms as named rules: `BUILTIN_RULES`
-   registry (six constraint + two objective rules, each with a `kind`), `compile_custom_rule()`
+   registry (seven constraint + three objective rules + `warm_start`, each with a `kind`),
+   `_cname()`/`_vname()` for naming constraints and any auxiliary variables a rule
+   introduces (`role_fte_target_objective` is the first rule to create variables of its own —
+   a linearized absolute deviation), `compile_custom_rule()`
    (exec's Custom Code rule source, expects `apply(ctx)`), `apply_rules()` (applies
    `DataPackage.rules` selection; empty selection = all built-ins at weight 1.0, the
    pre-ruleset behaviour unit tests rely on). Objective rules call `ctx.add_objective(expr)`;
@@ -79,8 +90,13 @@ Optimizer engine (`autoshift/optimizer/`, pure-Python where possible for testabi
    the run's ruleset into `(rule_name, builtin_key, custom_code, weight)` tuples (throws on
    unimplemented/unvalidated rules; sorted by name for hash stability); normalizes
    preferences via temperature-scaled softmax (no weight deviates >50% from uniform).
-4. `model_builder.py` — builds the PuLP MILP. Vars: `x[employee,shift,day,branch]`,
-   `active_rooms[discipline,shift,day,branch]`. Constraints and objective both via
+4. `model_builder.py` — builds the PuLP MILP. Vars: `x[employee,role,shift,day,branch]`,
+   `active_rooms[discipline,shift,day,branch]`. **`x` is built sparse, over the
+   `(employee, role)` pairs each employee actually holds** — so role eligibility is
+   structural, not a rule: a variable for a role somebody cannot work does not exist, so
+   nothing has to forbid it, and the model is no larger than it was before roles. This is the
+   one scheduling policy that is *not* switchable from the ruleset UI. Same precedent as
+   `active_rooms`, whose branch room cap lives in the variable's `upBound`. Constraints and objective both via
    `rules.apply_rules`; the maximized objective is the sum of the accumulated
    `ctx.objective_terms` (empty = constant 0, pure feasibility).
 5. `solver.py` — runs CBC (5s sync, escalates to 3600s background job via
@@ -98,17 +114,17 @@ but does not own them; `Shift Assignment.custom_zawin_key` is owned by `zawin2fr
 `Zawin2Frappe`) and must not be re-added here — two apps shipping the same fieldname under
 different modules fight on every `migrate`.
 
-`Discipline Designation Branch Config.shift_types` (Table MultiSelect, backed by the
-`Discipline Designation Branch Config Shift Type` child doctype) determines which `Shift
-Type`s are in scope for the optimizer — a Shift Type not listed on any config row is treated
-as a non-clinical variant and excluded. This duplicates the shift-type list across every
-(discipline, designation, branch) row rather than tagging Shift Type itself, so
-`data_loader.py` warns (`frappe.log_error`) if rows sharing the same discipline list
-different Shift Types.
+`Discipline Branch Config.shift_types` (Table MultiSelect, backed by the `Discipline Branch
+Config Shift Type` child doctype) determines which `Shift Type`s are in scope for the
+optimizer — a Shift Type not listed on any config row is treated as a non-clinical variant
+and excluded. Keying the config on `(discipline, branch)` rather than the old
+`(discipline, designation, branch)` removed the duplicate rows that used to make one
+discipline's rows disagree about their Shift Types, so `data_loader.py` no longer needs the
+`frappe.log_error` warning it once carried.
 
 CLI (`autoshift/commands.py`): `dump-dev-data` / `seed-dev-data` snapshot and restore **only
-Autoshift's own configuration** (`DEV_DATA_DOCTYPES`: Holiday List, Discipline Designation
-Branch Config, Employee Settings, Optimizer Settings). Company/Branch/Designation/Shift
+Autoshift's own configuration** (`DEV_DATA_DOCTYPES`: Holiday List, Scheduling Role,
+Discipline Branch Config, Employee Scheduling Role, Employee Settings, Optimizer Settings). Company/Branch/Designation/Shift
 Type/Employee are zawin2frappe's job — seeding those here would duplicate it and dump real
 personnel to disk. Both go through `get_doc(...).as_dict()`, not `get_all(fields=["*"])`,
 because the latter returns no child rows (it was silently dropping Employee Settings'
@@ -159,12 +175,13 @@ Consequences for work in this repo:
 
 ## Working conventions
 
-- **Don't hand-edit DocType JSON files** (`autoshift/autoshift/doctype/**/*.json`). Instead, 
-  direct the user to make the change via the Frappe Desk UI in developer mode 
-  (`bench set-config developer_mode 1`, then edit/create the DocType in the browser) — saving
-  there auto-exports the JSON correctly. Enforced by a `PreToolUse` hook in
-  `.claude/settings.json` that denies Edit/Write on these paths. Controller `.py`/`.js` files
-  for the same doctype are not affected.
+- **DocType JSON files may be edited directly.** There used to be a `PreToolUse` hook in
+  `.claude/settings.json` denying Edit/Write on `autoshift/autoshift/doctype/**/*.json` and
+  `autoshift/fixtures/custom_field.json`; it was removed in `51ddfa6` and the restriction no
+  longer applies. Hand-edited JSON must still be *valid* Frappe schema — keep `field_order` in
+  sync with `fields`, keep `name` matching the directory, and prefer round-tripping through
+  the Desk UI in developer mode (`bench set-config developer_mode 1`) when a change is
+  fiddly, since saving there auto-exports a canonical file.
 
 ## Process / repo notes
 

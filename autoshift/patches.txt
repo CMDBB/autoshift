@@ -6,3 +6,5 @@
 # Patches added in this section will be executed after doctypes are migrated
 autoshift.patches.create_standard_optimization_rules
 autoshift.patches.add_objective_rules
+autoshift.patches.migrate_designations_to_scheduling_roles
+autoshift.patches.add_role_rules

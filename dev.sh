@@ -16,6 +16,7 @@ RUN_INTEGRATION_TESTS=true
 RUN_UNIT_TESTS=true
 RUN_LINT=true
 VERBOSE=false
+SITE_NAME="dev.test.localhost"
 
 # Check for pytest recovery mode (if no args and previous failure exists)
 RECOVERY_MODE=false
@@ -32,6 +33,8 @@ Usage: $(basename "$0") [OPTIONS]
 
 Options:
   -r, --reset               Reset the test site (drop and recreate)
+  --site SITENAME           Target site (default: dev.test.localhost)
+                            Non-default sites will be backed up before reset
   -i, --interactive         Interactive mode (prompt for each task)
   --build                   Build assets (default: false)
   --no-build                Skip building assets
@@ -45,8 +48,11 @@ Options:
   -h, --help                Show this message
 
 Examples:
-  # Reset and run all tests
+  # Reset default test site and run all tests
   $(basename "$0") --reset
+
+  # Reset a custom site with backup
+  $(basename "$0") --reset --site my-dev-site
 
   # Run only unit tests (stepwise)
   $(basename "$0") --no-build --no-integration-tests --no-lint
@@ -68,12 +74,21 @@ while [[ $# -gt 0 ]]; do
             RESET=true
             shift
             ;;
+        --site)
+            if [[ $# -lt 2 ]]; then
+                echo -e "${RED}Error: --site requires a site name${NC}" >&2
+                show_usage >&2
+                exit 1
+            fi
+            SITE_NAME="$2"
+            shift 2
+            ;;
         -i|--interactive)
             INTERACTIVE=true
             shift
             ;;
         --build)
-            RUN_BUILD=true
+            RUN_BUILD=!$RESET
             shift
             ;;
         --no-build)
@@ -127,8 +142,11 @@ if [ "$INTERACTIVE" = true ]; then
     read -p "Reset test site? (y/n) [n]: " -r RESET_CHOICE
     [[ $RESET_CHOICE =~ ^[Yy]$ ]] && RESET=true
 
-    read -p "Build assets? (y/n) [y]: " -r BUILD_CHOICE
-    [[ $BUILD_CHOICE =~ ^[Nn]$ ]] && RUN_BUILD=false
+    if [ "$RESET_CHOICE" != true ]; then
+        # if reset is true, build happens anyway
+        read -p "Build assets? (y/n) [y]: " -r BUILD_CHOICE
+        [[ $BUILD_CHOICE =~ ^[Nn]$ ]] && RUN_BUILD=false
+    fi
 
     read -p "Run integration tests? (y/n) [y]: " -r INTEGRATION_CHOICE
     [[ $INTEGRATION_CHOICE =~ ^[Nn]$ ]] && RUN_INTEGRATION_TESTS=false
@@ -149,12 +167,40 @@ fi
 
 # RESET TEST SITE
 if [ "$RESET" = true ]; then
-    echo -e "${YELLOW}→ Resetting test site...${NC}"
+    echo -e "${YELLOW}→ Resetting test site ($SITE_NAME)...${NC}"
     bench setup requirements --dev
-    bench drop-site dev.test.localhost --no-backup --db-root-username root --db-root-password 123 --force || echo "Error occurred during drop site"
-    bench new-site --db-root-username root --db-root-password 123 --admin-password admin dev.test.localhost
-    bench --site dev.test.localhost install-app autoshift
-    bench --site dev.test.localhost set-config allow_tests true
+
+    # Create backup for non-default sites
+    if [ "$SITE_NAME" != "dev.test.localhost" ]; then
+        backup_file="$SITE_NAME-backup-$(date +%s).sql.gz"
+        echo -e "${YELLOW}→ Creating compressed backup...${NC}"
+        bench --site "$SITE_NAME" backup --with-files --backup-path /tmp
+
+        if [ -f "/tmp/$SITE_NAME-*" ]; then
+            latest_backup=$(ls -t /tmp/$SITE_NAME-* 2>/dev/null | head -n1)
+            if [ -n "$latest_backup" ]; then
+                gzip -f "$latest_backup" 2>/dev/null
+                backup_file="${latest_backup}.gz"
+            fi
+        fi
+
+        if [ -f "$backup_file" ]; then
+            backup_size=$(du -h "$backup_file" | cut -f1)
+            echo -e "${GREEN}✓ Backup created${NC}: $backup_file (${backup_size})"
+            echo -e "${YELLOW}⚠ About to reset site '$SITE_NAME'${NC}"
+            read -p "Continue with reset? (y/N) " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                echo -e "${YELLOW}Reset cancelled${NC}"
+                exit 0
+            fi
+        fi
+    fi
+
+    bench drop-site "$SITE_NAME" --no-backup --db-root-username root --db-root-password 123 --force || echo "Error occurred during drop site"
+    bench new-site --db-root-username root --db-root-password 123 --admin-password admin "$SITE_NAME"
+    bench --site "$SITE_NAME" install-app autoshift
+    bench --site "$SITE_NAME" set-config allow_tests true
     bench build
     echo -e "${GREEN}✓ Test site reset${NC}\n"
 fi
@@ -187,7 +233,7 @@ declare -a temp_files=()
 
 if [ "$RUN_INTEGRATION_TESTS" = true ]; then
     start_concurrent_task "Integration Tests" \
-        bench --site dev.test.localhost run-tests --app autoshift
+        bench --site "$SITE_NAME" run-tests --app autoshift
 fi
 
 if [ "$RUN_UNIT_TESTS" = true ]; then

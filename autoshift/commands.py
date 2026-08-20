@@ -11,7 +11,9 @@ from frappe.commands import get_site, pass_context
 #: Ordered by dependency — seeding walks this tuple, not the directory listing.
 DEV_DATA_DOCTYPES = (
 	"Holiday List",
-	"Discipline Designation Branch Config",
+	"Scheduling Role",
+	"Discipline Branch Config",
+	"Employee Scheduling Role",
 	"Employee Settings",
 	"Optimizer Settings",
 )
@@ -57,7 +59,7 @@ def _export_records(doctype: str) -> list[dict]:
 	All records of `doctype` as plain dicts, child tables included.
 
 	Deliberately not `frappe.get_all(fields=["*"])`: that returns only the parent table's
-	columns, so Employee Settings' preference rows and the Discipline Designation Branch
+	columns, so Employee Settings' preference rows and the Discipline Branch
 	Config shift-type selection would silently vanish. Singles have no `tab<Doctype>` table
 	at all (they live in `tabSingles`), so get_all cannot read them either.
 	"""

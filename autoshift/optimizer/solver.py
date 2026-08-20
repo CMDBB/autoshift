@@ -85,18 +85,19 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 			run.set("objective_value", pulp.value(prob.objective) or 0.0)
 			run.set("solution_table", [])
 
-			for (e, s, d, b), var in x.items():
+			for comb, var in x.items():
 				val = pulp.value(var)
 				if val is not None and val > 0.5:
-					is_forced = (e, s, d, b) in data.forced
+					e, r, s, d, b = comb
 					run.append(
 						"solution_table",
 						{
 							"employee": e,
+							"scheduling_role": r,
 							"shift_type": s,
 							"date": str(d),
 							"branch": b,
-							"forced": 1 if is_forced else 0,
+							"forced": 1 if comb in data.forced else 0,
 						},
 					)
 

@@ -30,6 +30,8 @@ IGNORE_TEST_RECORD_DEPENDENCIES = [
 	"Shift Type",
 	"Shift Location",
 	"Branch",
+	"Scheduling Role",
+	"Employee Scheduling Role",
 ]
 
 MONDAY = datetime.date(year=2026, month=6, day=22)
@@ -46,10 +48,12 @@ def pkg(**overrides) -> DataPackage:
 		shift_types=["Day", "Night"],
 		working_days=[MONDAY + datetime.timedelta(days=i) for i in range(7)],
 		branches=["Branch1"],
-		designation={"Alice": "Nurse", "Bob": "Nurse"},
-		department={"Alice": "ER", "Bob": "ER"},
+		roles=["ER Nurse"],
+		role_discipline={"ER Nurse": "ER"},
+		employee_roles={"Alice": ("ER Nurse",), "Bob": ("ER Nurse",)},
 		target_shifts={"Alice": 5, "Bob": 5},
-		max_rpe={"Alice": 1, "Bob": 1},
+		role_target_shifts={},
+		max_rpe={("Alice", "ER Nurse"): 1, ("Bob", "ER Nurse"): 1},
 		rooms={("ER", "Branch1"): 2},
 		disciplines=["ER"],
 		leave_blocked=set(),
@@ -60,6 +64,9 @@ def pkg(**overrides) -> DataPackage:
 		},
 	)
 	base.update(overrides)
+	if "employee_roles" not in overrides:
+		base["employee_roles"] = {e: ("ER Nurse",) for e in base["employees"]}
+		base["max_rpe"] = {(e, "ER Nurse"): 1 for e in base["employees"]}
 	if "shift_preferences" not in overrides and ("shift_types" in overrides or "employees" in overrides):
 		n_shifts: int = len(base["shift_types"])
 		base["shift_preferences"] = {
@@ -104,10 +111,7 @@ class IntegrationTestOptimizerRun(IntegrationTestCase):
 			datapackage_cache_key(self.test_record.name),
 			pkg(
 				employees=["Alice", "Bob", "Caoimhe"],
-				designation={"Alice": "Nurse", "Bob": "Nurse", "Caoimhe": "Nurse"},
-				department={"Alice": "ER", "Bob": "ER", "Caoimhe": "ER"},
 				target_shifts={"Alice": 5, "Bob": 5, "Caoimhe": 5},
-				max_rpe={"Alice": 1, "Bob": 1, "Caoimhe": 1},
 				rooms={("ER", "Branch1"): 1},
 			).dumps(),
 		)
