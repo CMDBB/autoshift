@@ -116,9 +116,9 @@ Custom fields on stock doctypes (`autoshift/fixtures/custom_field.json`), all un
 `Autoshift`: `Shift Location.custom_discipline`, `Shift Location.custom_branch` (Link to
 `Branch` — source of truth for a `Shift Assignment`'s branch via its `shift_location`),
 `Employee.custom_fte`. `zawin2frappe` *populates* `custom_fte` and `custom_branch` on import
-but does not own them; `Shift Assignment.custom_zawin_key` is owned by `zawin2frappe` (module
-`Zawin2Frappe`) and must not be re-added here — two apps shipping the same fieldname under
-different modules fight on every `migrate`.
+but does not own them; `Shift Assignment.custom_zawin_key` and `Employee.custom_initials`
+are owned by `zawin2frappe` (module `Zawin2Frappe`) and must not be re-added here — two apps
+shipping the same fieldname under different modules fight on every `migrate`.
 
 `Discipline Branch Config.shift_types` (Table MultiSelect, backed by the `Discipline Branch
 Config Shift Type` child doctype) determines which `Shift Type`s are in scope for the
