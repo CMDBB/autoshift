@@ -71,8 +71,14 @@ Doctypes (`autoshift/autoshift/doctype/`):
   — per-employee shift/branch preference overrides.
 - **Leave Speculation** — child of Optimizer Run; treats a *pending* leave as approved for
   feasibility analysis only.
-- **Bulk Employee Settings** — tool doctype, batch-creates Employee Settings (sync ≤30
-  employees, async + realtime progress above that).
+- **Bulk Employee Settings** — tool doctype, batch-creates the two per-employee records:
+  **Employee Settings** (preferences) and **Employee Scheduling Role** (the capability that
+  makes someone schedulable at all). One filtered employee list, two actions. Filters are
+  role-based — Company, Discipline, Holds Role, plus a Coverage select for "who is missing
+  one of these" — because department/designation no longer decide scope. Sync ≤30 employees,
+  async + realtime progress above that; an employee who already has the record is skipped,
+  never overwritten. Workers are module-level functions, not methods, so `frappe.enqueue`
+  pickles a reference rather than dragging the Document through.
 
 Optimizer engine (`autoshift/optimizer/`, pure-Python where possible for testability):
 1. `types.py` — `DataPackage` dataclass (engine's only input shape), SHA256 `input_hash()`

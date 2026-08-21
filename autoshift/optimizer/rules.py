@@ -210,7 +210,11 @@ def leave_blocklist(ctx: RuleContext) -> None:
 )
 def use_existing_assignments(ctx: RuleContext) -> None:
 	for comb in ctx.data.forced:
-		ctx.x[comb].fixValue()
+		match ctx.x.get(comb):
+			case None:
+				pass
+			case x:
+				x.fixValue()
 
 
 @builtin_rule(
