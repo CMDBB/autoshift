@@ -54,7 +54,12 @@ Doctypes (`autoshift/autoshift/doctype/`):
   doc per built-in, keeps the Standard Ruleset's rows in sync with the registry, backfills
   `ruleset` on pre-existing runs, and carries the removed `turnover_weight` setting over as
   the Standard Ruleset room-utilization row weight (**breaking**: non-Standard rulesets are
-  not upgraded).
+  not upgraded). `is_system` (hidden Check, read-only, seeded true on the Standard Ruleset)
+  marks a ruleset as app-curated rather than hand-authored — a marker for future tooling, not
+  an edit lock; nothing currently stops hand-editing a system ruleset. `validate()` also runs
+  `BuiltinRule.check_ruleset` over the row set's built-in keys (Custom Code rows are skipped,
+  same as `apply_rules`), so a bad combination — a missing `requires`, or two rules sharing a
+  choice `group` — is now a save-time `frappe.throw`, not just a solve-time one.
 - **Optimizer Run Slot** — child; one row per assigned shift in a solution.
 - **Optimizer Settings** — singleton: holiday lists.
 - **Discipline Branch Config** (+ child `Discipline Branch Config Shift Type`) — per
@@ -91,7 +96,13 @@ Optimizer engine (`autoshift/optimizer/`, pure-Python where possible for testabi
    (exec's Custom Code rule source, expects `apply(ctx)`), `apply_rules()` (applies
    `DataPackage.rules` selection; empty selection = all built-ins at weight 1.0, the
    pre-ruleset behaviour unit tests rely on). Objective rules call `ctx.add_objective(expr)`;
-   the term is scaled by the ruleset row weight.
+   the term is scaled by the ruleset row weight. `BuiltinRule.requires`/`.excludes` (pairwise,
+   hand-authored) and `.group` (a named choice set — `check_ruleset` throws if a ruleset
+   selects more than one member) are code-side dependency-graph metadata, built-ins only;
+   `use_existing_assignments` and `weigh_assignments_objective` share `group="existing_assignments"`
+   — the old `disregard_assignments` run field's `Use`/`Weigh` choice, with `Ignore` now simply
+   "neither rule selected" rather than a third state. Custom Code rules carry none of this
+   metadata and are exempt from every check.
 3. `data_loader.py` — `load(run_doc)` hydrates a `DataPackage` from the Frappe DB; resolves
    the run's ruleset into `(rule_name, builtin_key, custom_code, weight)` tuples (throws on
    unimplemented/unvalidated rules; sorted by name for hash stability); normalizes
@@ -151,6 +162,19 @@ preference tables and the DDBC shift-type selection) and cannot read Singles at 
   `Shift Location.custom_discipline` exist as scaffolding, but `model_builder.py` only tracks
   an aggregate room *count* per discipline/slot — nothing assigns a specific room yet.
   Backlog, same as `Unbounded` mode.
+- **Preset toggle + preview UI for Optimizer Run** (no issue filed yet). The start of
+  "automatic" runs: a panel, seeded from the run's `ruleset`, that groups rules
+  human-readably (choice groups as radios, everything else as toggles) and re-solves for a
+  live schedule preview on change (reusing the existing sync-then-background `solve()` path
+  and `get_schedule_events()` rendering — both already exist). Toggling a system
+  (`is_system`) ruleset auto-duplicates it into a user ruleset on first edit; toggling a user
+  ruleset edits it in place. Depends on the choice-group mechanism in `rules.py` (above) and
+  `Optimization Ruleset.is_system`, both already in place.
+- **Dependency-graph inference for Custom Code rules** (no issue filed yet). `requires` /
+  `excludes` / `group` are built-in-only, hand-authored in `rules.py`; a Custom Code rule
+  declares none of it, so a user ruleset combining custom rules gets no compatibility
+  checking at all. Backlog idea: statically introspect a Custom Code rule's `ctx.data.*` /
+  `ctx.x` access to suggest (not enforce) likely conflicts. No design work started.
 
 ## App boundary
 

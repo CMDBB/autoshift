@@ -435,6 +435,26 @@ def test_unknown_builtin_key_raises():
 		build(pkg(rules=(("Mystery Rule", "no_such_rule", "", 1.0),)))
 
 
+def test_conflicting_choice_group_members_raise():
+	rules = builtin_specs(*(STANDARD_RULES | {"weigh_assignments_objective"}))
+	with pytest.raises(ValueError, match="mutually exclusive"):
+		build(pkg(rules=rules))
+
+
+def test_choice_group_permits_the_other_member_alone():
+	rules = builtin_specs(
+		*((STANDARD_RULES - {"use_existing_assignments"}) | {"weigh_assignments_objective"})
+	)
+	prob, _, _ = solve(pkg(rules=rules))
+	assert status(prob) == "Optimal"
+
+
+def test_choice_group_permits_neither_member():
+	rules = builtin_specs(*(STANDARD_RULES - {"use_existing_assignments"}))
+	prob, _, _ = solve(pkg(rules=rules))
+	assert status(prob) == "Optimal"
+
+
 def test_rule_without_implementation_raises():
 	with pytest.raises(ValueError, match="no implementation"):
 		build(pkg(rules=(("Someday Rule", "", "", 1.0),)))

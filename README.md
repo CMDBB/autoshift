@@ -165,17 +165,19 @@ automatically; add the objective rules to your own rulesets yourself.
 |---|---|
 | Planning Mode | `1-week`, `2-week`, `4-week`, or `Unbounded` |
 | Start Date | First Monday of the planning period (any day for Unbounded) |
-| Existing Shift Assignments | `Use` = fix already-submitted assignments; `Ignore` = start fresh; `Weigh` = treat as soft preference |
 | Optimization Ruleset | Which rules constrain this run; defaults to **Standard Ruleset** (all built-in rules) |
 | Pending Leaves to Treat as Approved | Optional: select pending Leave Applications to block as if approved |
 
 Save the document. Status is **Draft**.
 
+How existing Shift Assignments are treated is no longer a run field — it's a choice of
+which rules the run's Ruleset includes: `Honor existing Shift Assignments` fixes them as
+hard constraints, `Objective: Conserve Existing Assignments` treats them as a soft
+warm-start the solver may override, and including neither disregards them.
+
 > **Not yet usable:** `Unbounded` planning mode is selectable in the UI but raises
 > `NotImplementedError` when you try to solve — only `1-week`/`2-week`/`4-week` are
-> implemented today. All three Existing Shift Assignments modes work: `Use` fixes existing
-> assignments as hard constraints, `Weigh` uses them as a soft warm-start the solver may
-> override, `Ignore` disregards them.
+> implemented today.
 
 ### Step 2 — Solve
 
@@ -229,7 +231,7 @@ flowchart LR
 
 ## Re-running, Restarting, and Stopping a Run
 
-Optimizer Runs are **immutable** once solving starts: there is no in-place reset, cancel, or re-solve of the same document. Instead, every form (except Draft) shows **Re-run (New Copy)**, which creates a brand-new Draft run with the same Planning Mode, Start Date, Existing Shift Assignments setting, and Leave Speculations, and takes you to it. The original run is left exactly as it was — a permanent record of what was tried and what happened.
+Optimizer Runs are **immutable** once solving starts: there is no in-place reset, cancel, or re-solve of the same document. Instead, every form (except Draft) shows **Re-run (New Copy)**, which creates a brand-new Draft run with the same Planning Mode, Start Date, Optimization Ruleset, and Leave Speculations, and takes you to it. The original run is left exactly as it was — a permanent record of what was tried and what happened.
 
 This single action covers every case:
 - **Re-run a Failed run** — diagnose via the Solver Log, then duplicate and click Solve again.
@@ -263,8 +265,9 @@ one Optimization Rule document per constraint group. The built-in constraint rul
 1. At most one shift per employee per day, summed across every role they hold — a second
    role widens *where* somebody can work, never *how much*
 2. Approved and speculated leaves block assignments
-3. Existing Shift Assignments honored per the run's mode: fixed (`Use`), soft warm-start
-   (`Weigh`), or disregarded (`Ignore`)
+3. Existing Shift Assignments honored per the ruleset's choice of rules: fixed
+   (`Honor existing Shift Assignments`), soft warm-start
+   (`Objective: Conserve Existing Assignments`), or disregarded (neither rule included)
 4. Max rooms per (employee, role) per slot (from Scheduling Role, optionally overridden per
    Employee Scheduling Role)
 5. Room coverage: the roles assigned in a discipline must support its number of active rooms

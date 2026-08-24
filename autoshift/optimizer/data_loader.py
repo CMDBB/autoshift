@@ -337,9 +337,8 @@ def load(run_doc) -> DataPackage:
 				d += datetime.timedelta(days=1)
 
 	# ── Forced assignments ────────────────────────────────────────────────────
-	if run_doc.disregard_assignments == "Weigh":
-		flags.add(DataPackage.WEIGH_ASSIGNMENTS)
-
+	# Which of these are honored, weighed, or ignored is a ruleset choice now
+	# (use_existing_assignments / weigh_assignments_objective), not a run-level flag.
 	forced: set[tuple[str, str, str, datetime.date, str]] = set()
 	existing = frappe.get_all(
 		"Shift Assignment",

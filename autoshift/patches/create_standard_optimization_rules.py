@@ -54,6 +54,7 @@ def execute():
 				"doctype": "Optimization Ruleset",
 				"ruleset_name": STANDARD_RULESET_NAME,
 				"description": "A minimal set of built-in rules that is guaranteed to be feasible for any problem.",
+				"is_system": 1,
 				"rules": [
 					{"rule": name, "weight": 1.0}
 					for key, name in rule_doc_names.items()
@@ -68,7 +69,11 @@ def execute():
 		# reset every hand-tuned weight to 1.0.
 		standard = frappe.get_doc("Optimization Ruleset", STANDARD_RULESET_NAME)
 		wanted = {name for key, name in rule_doc_names.items() if key in STANDARD_RULES and name}
-		if {row.rule for row in standard.rules} != wanted:
+		needs_save = {row.rule for row in standard.rules} != wanted
+		if not standard.is_system:
+			standard.is_system = 1
+			needs_save = True
+		if needs_save:
 			# Preserve the weights of rows that survive; only genuinely new rules default to 1.0.
 			weights = {row.rule: row.weight for row in standard.rules}
 			standard.rules = []

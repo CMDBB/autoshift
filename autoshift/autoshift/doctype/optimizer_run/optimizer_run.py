@@ -143,7 +143,6 @@ class OptimizerRun(Document):
 		new_run = frappe.new_doc("Optimizer Run")
 		new_run.set("mode", self.mode)  # ty:ignore[unresolved-attribute]
 		new_run.set("date", self.date)  # ty:ignore[unresolved-attribute]
-		new_run.set("disregard_assignments", self.disregard_assignments)  # ty:ignore[unresolved-attribute]
 		new_run.set("ruleset", self.ruleset)  # ty:ignore[unresolved-attribute]
 		new_run.set("type", "Copy")
 		for row in self.get("leaves_speculations") or []:

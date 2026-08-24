@@ -73,6 +73,12 @@ class BuiltinRule:
 	excludes: dict[str, str]
 	requires: dict[str, str]
 	kind: str = KIND_CONSTRAINT
+	# Choice group: at most one rule sharing a given group may appear in a ruleset. Unlike
+	# `excludes` (pairwise, hand-authored per rule) a group names the whole mutually-exclusive
+	# set in one place, and "none of them" is always a legal choice — there is no rule that
+	# means "ignore". Built-in only; Custom Code rules have no group and are never checked
+	# against one (`check_ruleset` only looks rules up by builtin key).
+	group: str | None = None
 
 	@staticmethod
 	def check_ruleset(ruleset: set[str]) -> None:
@@ -86,6 +92,18 @@ class BuiltinRule:
 				if req not in ruleset:
 					raise ValueError((reason or "{r} requires {req}").format(r=rule, req=req))
 
+		groups: dict[str, list[str]] = {}
+		for rule in ruleset:
+			group = BUILTIN_RULES[rule].group if rule in BUILTIN_RULES else None
+			if group:
+				groups.setdefault(group, []).append(rule)
+		for group, members in groups.items():
+			if len(members) > 1:
+				raise ValueError(
+					f"{' and '.join(sorted(members))} are mutually exclusive choices in the "
+					f"{group!r} group; a ruleset may include at most one."
+				)
+
 
 BUILTIN_RULES: dict[str, BuiltinRule] = {}  # empty -> filled by the builtin_rule decorator
 STANDARD_RULES: set[str] = set()  # idem
@@ -98,6 +116,7 @@ def builtin_rule(
 	standard: bool = False,
 	requires: dict[FunctionType, str] | None = None,
 	excludes: dict[FunctionType, str] | None = None,
+	group: str | None = None,
 ):
 	"""Register a function as a built-in optimization rule."""
 
@@ -110,6 +129,7 @@ def builtin_rule(
 			kind=kind,
 			requires={k.__name__: v for k, v in (requires or {}).items()},
 			excludes={k.__name__: v for k, v in (excludes or {}).items()},
+			group=group,
 		)
 		if standard:
 			STANDARD_RULES.add(fn.__name__)
@@ -207,6 +227,7 @@ def leave_blocklist(ctx: RuleContext) -> None:
 	"Shift Assignments already on the books are honored.",
 	standard=True,
 	requires={warm_start: "{r} doesn't set its values, include {req}"},
+	group="existing_assignments",
 )
 def use_existing_assignments(ctx: RuleContext) -> None:
 	for comb in ctx.data.forced:
@@ -375,9 +396,13 @@ def shift_preference_objective(ctx: RuleContext) -> None:
 
 @builtin_rule(
 	"Objective: Conserve Existing Assignments",
-	"Promote tie-breaking towards existing assignments with small reward.",
+	"Promote tie-breaking towards existing assignments with small reward. Mutually exclusive "
+	"with 'Honor existing Shift Assignments': that rule fixes them as hard constraints, which "
+	"would make this soft reward a no-op. Neither rule present means existing assignments are "
+	"disregarded entirely.",
 	kind=KIND_OBJECTIVE,
 	standard=False,
+	group="existing_assignments",
 )
 def weigh_assignments_objective(ctx: RuleContext) -> None:
 	data = ctx.data
