@@ -85,6 +85,29 @@ Doctypes (`autoshift/autoshift/doctype/`):
   never overwritten. Workers are module-level functions, not methods, so `frappe.enqueue`
   pickles a reference rather than dragging the Document through.
 
+**Optimizer Studio** (`autoshift/optimizer_studio.py` + Desk Page
+`autoshift/autoshift/page/optimizer_studio/`, linked from the Autoshift workspace as a
+shortcut) — a workspace-level abstraction over Optimizer Run + Optimization Ruleset, and
+the first "automatic"-run surface: Planning Mode / Start Date / a human-readable panel of
+rule toggles (choice groups as radios incl. an explicit "None", everything else as
+checkboxes with a weight input on Objective/Mixed rules), a "Populate From Run" link
+picker to seed the panel from an existing run's configuration, and a "Preview Schedule"
+primary action. Deliberately duplicates a couple of Optimizer Run's own fields (mode,
+date) in the page toolbar rather than being a form tab — it's meant to abstract *over*
+runs, not edit one. Every preview writes into one ruleset per user (`Studio Draft —
+<user>`, `is_system=0`), overwritten in place on each click rather than proliferating a
+ruleset per click; a system (`is_system=1`) preset is never edited directly, only copied
+into the draft. Solving reuses `OptimizerRun.solve()` unchanged (so the same
+sync-then-background-job escalation applies), and each preview really does create an
+Optimizer Run — with `type="Automatic"`, which the workspace's Optimizer Run quick list
+already filtered out before this existed. "Save Ruleset As" promotes the draft to a
+permanent name via `frappe.copy_doc`. The schedule-grid renderer itself
+(`autoshift-schedule-grid`/`build_html`/chip styling) was extracted out of
+`optimizer_run.js` into `autoshift/public/js/schedule_grid.js` (loaded via
+`frappe.require`, namespaced `autoshift.schedule_grid`) so the Optimizer Run form and
+Optimizer Studio render identically off the same `{days, employees, events}` shape both
+`get_schedule_events()` and Studio's `preview()`/`get_run_status()` return.
+
 Optimizer engine (`autoshift/optimizer/`, pure-Python where possible for testability):
 1. `types.py` — `DataPackage` dataclass (engine's only input shape), SHA256 `input_hash()`
    for caching, `planning_days()` (raises `NotImplementedError` for `"Unbounded"` mode).
@@ -162,14 +185,6 @@ preference tables and the DDBC shift-type selection) and cannot read Singles at 
   `Shift Location.custom_discipline` exist as scaffolding, but `model_builder.py` only tracks
   an aggregate room *count* per discipline/slot — nothing assigns a specific room yet.
   Backlog, same as `Unbounded` mode.
-- **Preset toggle + preview UI for Optimizer Run** (no issue filed yet). The start of
-  "automatic" runs: a panel, seeded from the run's `ruleset`, that groups rules
-  human-readably (choice groups as radios, everything else as toggles) and re-solves for a
-  live schedule preview on change (reusing the existing sync-then-background `solve()` path
-  and `get_schedule_events()` rendering — both already exist). Toggling a system
-  (`is_system`) ruleset auto-duplicates it into a user ruleset on first edit; toggling a user
-  ruleset edits it in place. Depends on the choice-group mechanism in `rules.py` (above) and
-  `Optimization Ruleset.is_system`, both already in place.
 - **Dependency-graph inference for Custom Code rules** (no issue filed yet). `requires` /
   `excludes` / `group` are built-in-only, hand-authored in `rules.py`; a Custom Code rule
   declares none of it, so a user ruleset combining custom rules gets no compatibility

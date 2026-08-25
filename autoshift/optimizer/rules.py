@@ -263,25 +263,25 @@ def one_branch_per_shift(ctx: RuleContext) -> None:
 def room_coverage(ctx: RuleContext) -> None:
 	"""Note that the branch room cap is modeled by the variable bound."""
 	data = ctx.data
-
-	# (employee, role) pairs grouped by the role's discipline. Built once: the inner loop
-	# runs per active_rooms key, and rescanning every employee there was already the
-	# hottest part of this rule before roles multiplied the pairs.
-	pairs_by_discipline: dict[str, list[tuple[str, str]]] = {}
+	ROLE = str
+	EMPLOYEE = str
+	DISCIPLINE = str
+	k_r_es: dict[DISCIPLINE, dict[ROLE, list[EMPLOYEE]]] = {}
 	for e in data.employees:
 		for r in data.employee_roles.get(e, ()):
-			pairs_by_discipline.setdefault(data.role_discipline.get(r, ""), []).append((e, r))
+			k = data.role_discipline.get(r, "")
+			k_r_es.setdefault(k, {}).setdefault(r, []).append(e)
 
 	for k, s, d, b in ctx.active_rooms:
 		# lpSum([])=0 (no need for a condition)
-		ctx.prob += (
-			pulp.lpSum(
-				data.max_rpe.get((e, r), 1) * ctx.x[(e, r, s, d, b)]
-				for e, r in pairs_by_discipline.get(k, ())
+		r_es = k_r_es.get(k, {})
+		for r, es in r_es.items():
+			# active_rooms[k] is the minimum staffing of all the roles that work in k at that time
+			ctx.prob += (
+				pulp.lpSum(data.max_rpe.get((e, r), 1) * ctx.x[(e, r, s, d, b)] for e in es)
+				>= ctx.active_rooms[(k, s, d, b)],
+				_cname("room_coverage", k, s, d, b, r),
 			)
-			== ctx.active_rooms[(k, s, d, b)],
-			_cname("room_coverage", k, s, d, b),
-		)
 
 
 @builtin_rule(

@@ -1,7 +1,7 @@
 {
  "app": "autoshift",
  "charts": [],
- "content": "[{\"id\":\"qUFnSCk4-8\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">Optimizer</span>\",\"col\":12}},{\"id\":\"16kR2EavJE\",\"type\":\"quick_list\",\"data\":{\"quick_list_name\":\"Optimizer Run\",\"col\":12}},{\"id\":\"8GRm_ygwFs\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"uwKHYkUujp\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Configurations</b></span>\",\"col\":12}},{\"id\":\"GXtcU6X9ix\",\"type\":\"card\",\"data\":{\"card_name\":\"Optimizer Settings\",\"col\":6}},{\"id\":\"PlwQsvArE8\",\"type\":\"card\",\"data\":{\"card_name\":\"Optimization Data\",\"col\":6}}]",
+ "content": "[{\"id\":\"qUFnSCk4-8\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">Optimizer</span>\",\"col\":12}},{\"id\":\"opStudioSC1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Optimizer Studio\",\"col\":4}},{\"id\":\"16kR2EavJE\",\"type\":\"quick_list\",\"data\":{\"quick_list_name\":\"Optimizer Run\",\"col\":12}},{\"id\":\"8GRm_ygwFs\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"uwKHYkUujp\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Configurations</b></span>\",\"col\":12}},{\"id\":\"GXtcU6X9ix\",\"type\":\"card\",\"data\":{\"card_name\":\"Optimizer Settings\",\"col\":6}},{\"id\":\"PlwQsvArE8\",\"type\":\"card\",\"data\":{\"card_name\":\"Optimization Data\",\"col\":6}}]",
  "creation": "2026-06-12 11:50:02.644895",
  "custom_blocks": [],
  "docstatus": 0,
@@ -120,7 +120,15 @@
  ],
  "roles": [],
  "sequence_id": 0.0,
- "shortcuts": [],
+ "shortcuts": [
+  {
+   "hidden": 0,
+   "color": "Blue",
+   "label": "Optimizer Studio",
+   "link_to": "optimizer-studio",
+   "type": "Page"
+  }
+ ],
  "title": "Autoshift",
  "type": "Workspace"
 }
