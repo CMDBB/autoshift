@@ -251,7 +251,10 @@ if [ "$RUN_LINT" = true ]; then
         bash -c 'pre-commit run -a && pre-commit run -a'
 
     start_concurrent_task "Semgrep" \
-        uv run semgrep scan --config ./frappe-semgrep-rules/rules --config r/python.lang.correctness -q
+        uv run semgrep scan \
+        --config ./frappe-semgrep-rules/rules \
+        --config r/python.lang.correctness \
+        -q --error
 fi
 
 # Wait for all concurrent tasks and show progress
