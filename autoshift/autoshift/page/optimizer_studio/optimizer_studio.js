@@ -410,6 +410,7 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 				<button class="btn btn-default btn-xs op-open-run">${__("Open Run")}</button>
 				<button class="btn btn-default btn-xs op-save-ruleset">${__("Save Ruleset As…")}</button>
 			</div>
+			<div class="op-stats"></div>
 			<div class="op-grid"></div>
 		`);
 		$result.find(".op-open-run").on("click", () => {
@@ -417,6 +418,9 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 		});
 		$result.find(".op-save-ruleset").on("click", () => this.save_ruleset_as());
 
+		frappe.require("/assets/autoshift/js/run_stats.js", () => {
+			autoshift.run_stats.render($result.find(".op-stats"), () => message.statistics);
+		});
 		frappe.require("/assets/autoshift/js/schedule_grid.js", () => {
 			autoshift.schedule_grid.render($result.find(".op-grid"), () => message.schedule);
 		});

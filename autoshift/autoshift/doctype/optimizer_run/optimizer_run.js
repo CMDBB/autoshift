@@ -27,8 +27,30 @@ function render_schedule_grid(frm) {
 	});
 }
 
+function render_run_stats(frm) {
+	const field = frm.fields_dict.stats_html;
+	if (!field) return;
+
+	let $wrapper = field.$wrapper.find(".autoshift-run-stats");
+	if (!$wrapper.length) {
+		$wrapper = $("<div></div>").appendTo(field.$wrapper);
+	}
+
+	if (!["Solved", "Approved", "Committed"].includes(frm.doc.status)) {
+		$wrapper.empty();
+		return;
+	}
+
+	frappe.require("/assets/autoshift/js/run_stats.js", () => {
+		autoshift.run_stats.render($wrapper, () =>
+			frm.call("get_run_statistics").then((r) => r.message)
+		);
+	});
+}
+
 frappe.ui.form.on("Optimizer Run", {
 	refresh(frm) {
+		render_run_stats(frm);
 		render_schedule_grid(frm);
 
 		if (frm.doc.status === "Failed") {

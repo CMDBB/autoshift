@@ -60,7 +60,14 @@ Doctypes (`autoshift/autoshift/doctype/`):
   `BuiltinRule.check_ruleset` over the row set's built-in keys (Custom Code rows are skipped,
   same as `apply_rules`), so a bad combination — a missing `requires`, or two rules sharing a
   choice `group` — is now a save-time `frappe.throw`, not just a solve-time one.
-- **Optimizer Run Slot** — child; one row per assigned shift in a solution.
+- **Optimizer Run Slot** — child; one row per assigned shift in a solution (the `x`
+  decision variables that came back 1).
+- **Optimizer Run Coverage** — child; the `active_rooms` counterpart to the above. One row
+  per (discipline, branch, date, shift) slot with `staffed_rooms` vs `capacity`, written by
+  the solver alongside the slots. Zero-staffed rows are kept on purpose — an empty slot is
+  the thing a planner needs to see. Runs solved before this table existed still report
+  coverage: `_derive_coverage_matrix` reconstructs the same numbers from the assignment
+  slots (verified to match the persisted table exactly on a re-solve).
 - **Optimizer Settings** — singleton: holiday lists.
 - **Discipline Branch Config** (+ child `Discipline Branch Config Shift Type`) — per
   (discipline, branch): room count + the Shift Types in scope there.
@@ -83,7 +90,12 @@ Doctypes (`autoshift/autoshift/doctype/`):
   one of these" — because department/designation no longer decide scope. Sync ≤30 employees,
   async + realtime progress above that; an employee who already has the record is skipped,
   never overwritten. Workers are module-level functions, not methods, so `frappe.enqueue`
-  pickles a reference rather than dragging the Document through.
+  pickles a reference rather than dragging the Document through. The **inline path reports
+  its result in the response**, not over realtime (`_run(realtime=False)`): a bench whose
+  socketio is down — a common dev state — otherwise leaves the caller with no feedback at
+  all, which reads as the tool having silently done nothing. A large selection also falls
+  back to running inline when `autoshift.utils.background_workers_alive()` finds no worker
+  registered, since the queued job would otherwise sit in redis forever.
 
 **Optimizer Studio** (`autoshift/optimizer_studio.py` + Desk Page
 `autoshift/autoshift/page/optimizer_studio/`, linked from the Autoshift workspace as a
@@ -108,6 +120,22 @@ permanent name via `frappe.copy_doc`. The schedule-grid renderer itself
 Optimizer Studio render identically off the same `{days, employees, events}` shape both
 `get_schedule_events()` and Studio's `preview()`/`get_run_status()` return.
 
+**Run statistics** (`OptimizerRun.get_run_statistics()` + `autoshift/public/js/run_stats.js`,
+namespaced `autoshift.run_stats`, same load-once/share pattern as the schedule grid) — the
+answer to "is this schedule actually full, and if not, why". Renders above the grid on the
+Optimizer Run form's Schedule View tab and in Studio's preview result. Reports room-slots
+staffed vs. configured (headline tiles), per-discipline coverage meters, a
+discipline x day grid, employees below their FTE target, and each rule's share of the
+objective (`objective_breakdown`, persisted as JSON by the solver from
+`RuleContext.objective_contributions`; the shares sum to the objective value —
+`test_objective_contributions_attribute_and_sum_to_the_objective` pins that invariant).
+The meters carry a **role-supply bound** (`_role_supply_bounds`): the scarcest Scheduling
+Role's total room-slot supply over the horizon, since `room_coverage` takes the *minimum*
+over a discipline's roles, so one short-staffed role caps the whole discipline no matter
+what the ruleset says. Where that bound is below configured capacity it is drawn as a
+marker on the meter and stated as a warning — this is normally the real reason a schedule
+looks empty, and it is not something the ruleset can fix.
+
 Optimizer engine (`autoshift/optimizer/`, pure-Python where possible for testability):
 1. `types.py` — `DataPackage` dataclass (engine's only input shape), SHA256 `input_hash()`
    for caching, `planning_days()` (raises `NotImplementedError` for `"Unbounded"` mode).
@@ -122,6 +150,10 @@ Optimizer engine (`autoshift/optimizer/`, pure-Python where possible for testabi
    the term is scaled by the ruleset row weight. `BuiltinRule.requires`/`.excludes` (pairwise,
    hand-authored) and `.group` (a named choice set — `check_ruleset` throws if a ruleset
    selects more than one member) are code-side dependency-graph metadata, built-ins only;
+   `BuiltinRule.default_weight` is the weight a *freshly seeded* ruleset row gets (only
+   meaningful on Objective/Mixed rules); the seeding never overwrites a weight already on a
+   row, so hand-tuned rulesets keep their own figures and changing a default needs a patch
+   (`set_room_utilization_default_weight`) to reach existing sites.
    `use_existing_assignments` and `weigh_assignments_objective` share `group="existing_assignments"`
    — the old `disregard_assignments` run field's `Use`/`Weigh` choice, with `Ignore` now simply
    "neither rule selected" rather than a third state. Custom Code rules carry none of this
@@ -141,7 +173,10 @@ Optimizer engine (`autoshift/optimizer/`, pure-Python where possible for testabi
    `ctx.objective_terms` (empty = constant 0, pure feasibility).
 5. `solver.py` — runs CBC (5s sync, escalates to 3600s background job via
    `frappe.enqueue(queue="long")` on timeout); caches by input hash against prior runs in
-   `{Solved, Failed, Approved, Committed}`.
+   `{Solved, Failed, Approved, Committed}`. Persists the solution as `solution_table` (`x`),
+   `coverage_table` (`active_rooms`) and `objective_breakdown` (per-rule objective shares).
+   `build()` returns its `RuleContext` as a fifth element so the breakdown can be evaluated
+   against the solved variables — update the sandbox/test call sites if you change that shape.
 6. `committer.py` — converts an Approved run into submitted `Shift Assignment` records.
    **The run→Shift-Assignment link-back is mid-redesign and not finished — see To Be
    Implemented.**
@@ -190,6 +225,48 @@ preference tables and the DDBC shift-type selection) and cannot read Singles at 
   declares none of it, so a user ruleset combining custom rules gets no compatibility
   checking at all. Backlog idea: statically introspect a Custom Code rule's `ctx.data.*` /
   `ctx.x` access to suggest (not enforce) likely conflicts. No design work started.
+
+## Why a schedule used to come out half-empty (2026-08-26)
+
+Three things suppressed fill. Measured on a 1-week, 2-shift, 51-employee run with 140
+configured room-slots; the run-statistics panel above was built to make them visible, and
+it is what isolated them. **Two are fixed**; the third is a real-world limit the panel now
+reports rather than hides.
+
+1. **Fixed — the FTE ceiling formula was a true divide.** `_fulltime_shifts_in_period` used
+   `1 - d.weekday() / 5`, which ramps down across the week (Mon 1.0 ... Fri 0.2, Sun -0.2)
+   and totals **3.0** for a Mon–Fri week. The intent was `1 - d.weekday() // 5` — 1 on a
+   weekday, 0 at the weekend, so **5**. Every employee was capped at ~60% of their real
+   availability. One shift per working day is the attainable maximum, not half of one:
+   `one_shift_per_day` already allows only one shift a day whatever the shift types are.
+2. **Fixed — room utilization could not outbid the cost of an assignment.**
+   `shift_preference_objective` contributes `(-1 + pref) * x`, i.e. `<= 0` for *every*
+   assignment (uniform `pref` is `1/N`). That is deliberate: it doubles as a rough
+   cost-to-company proxy until that becomes its own rule, so it stays at weight 1. But
+   `room_coverage` takes the *minimum* over a discipline's roles, so opening one room costs
+   two or more assignments — at weight 1 the room reward broke even and the solver mostly
+   declined to schedule anyone (**6 of 140** room-slots, 2 of 51 employees). Room
+   utilization now declares `default_weight=3.0`, matching the working calibration that one
+   objective point is loosely ~100 CHF.
+3. **Not a bug — role supply genuinely caps coverage.** Coverage is the minimum over a
+   discipline's roles, so the scarcest role sets the ceiling. Before the fixes all three
+   disciplines sat at *exactly* their role-supply bound (39/39, 7/7, 6/6): the solver was
+   already doing everything possible. No ruleset can beat this; the panel states it as a
+   warning with the limiting role named.
+
+Combined effect on that run, under the **Standard Ruleset**: 6/140 -> **82/140** room-slots
+(154 assignments, 50 of 51 employees scheduled), with Omnipractice now fully staffed at
+60/60 and capacity-bound rather than supply-bound. The residual gap is item 3 — Orthodontics
+12/60 and Sterilization 10/20, both at their role-supply ceiling.
+
+Still open: nothing spreads coverage across days, so a supply-starved discipline clumps
+(that run left Omnipractice at 0/6 one weekday and 6/6 on three others).
+
+`tests/test_optimizer.py::test_objective_less_ruleset_assigns_nobody` **fails on a clean
+checkout**, unrelated to all of the above: with a constant-zero objective every feasible
+point is optimal, so CBC returning one assignment is legal — "no reason to assign" is not
+"will not assign". Decide whether the intended semantics need a small anti-assignment
+epsilon, or whether the assertion should just be relaxed.
 
 ## App boundary
 

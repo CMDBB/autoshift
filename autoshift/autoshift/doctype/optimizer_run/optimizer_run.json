@@ -18,9 +18,13 @@
   "leaves_speculations",
   "section_break_solution",
   "solution_table",
+  "section_break_coverage",
+  "coverage_table",
   "section_break_log",
   "solver_log",
+  "objective_breakdown",
   "schedule_tab",
+  "stats_html",
   "schedule_view_html"
  ],
  "fields": [
@@ -92,6 +96,20 @@
    "read_only": 1
   },
   {
+   "collapsible": 1,
+   "fieldname": "section_break_coverage",
+   "fieldtype": "Section Break",
+   "label": "Room Coverage"
+  },
+  {
+   "description": "The solver's active_rooms result: staffed vs. configured rooms per (discipline, branch, date, shift) slot.",
+   "fieldname": "coverage_table",
+   "fieldtype": "Table",
+   "label": "Room Coverage",
+   "options": "Optimizer Run Coverage",
+   "read_only": 1
+  },
+  {
    "fieldname": "section_break_log",
    "fieldtype": "Section Break",
    "label": "Solver Log"
@@ -100,6 +118,14 @@
    "fieldname": "solver_log",
    "fieldtype": "Long Text",
    "label": "Solver Log",
+   "read_only": 1
+  },
+  {
+   "description": "Each rule's share of the solved objective value, as JSON. Constraint rules contribute nothing and are absent.",
+   "fieldname": "objective_breakdown",
+   "fieldtype": "Code",
+   "label": "Objective Breakdown",
+   "options": "JSON",
    "read_only": 1
   },
   {
@@ -124,6 +150,10 @@
    "fieldname": "schedule_tab",
    "fieldtype": "Tab Break",
    "label": "Schedule View"
+  },
+  {
+   "fieldname": "stats_html",
+   "fieldtype": "HTML"
   },
   {
    "fieldname": "schedule_view_html",

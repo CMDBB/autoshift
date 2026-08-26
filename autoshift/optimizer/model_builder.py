@@ -27,7 +27,7 @@ from .rules import RuleContext, apply_rules
 from .types import DataPackage
 
 
-def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict, str]:
+def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict, str, RuleContext]:
 	prob = pulp.LpProblem("shift_optimizer", pulp.LpMaximize)
 
 	E = data.employees
@@ -78,4 +78,7 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict, str]:
 
 	prob += pulp.lpSum(ctx.objective_terms)
 
-	return prob, x, active_rooms, logs
+	# The ctx rides along for diagnostics: its objective_contributions map each rule's
+	# document name to the terms it contributed, which the solver evaluates against the
+	# solved variables into the run's per-rule objective breakdown.
+	return prob, x, active_rooms, logs, ctx

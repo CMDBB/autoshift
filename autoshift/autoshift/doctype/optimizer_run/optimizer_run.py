@@ -1,10 +1,12 @@
 import colorsys
 import heapq
+import json
 
 import frappe.utils.caching
 from frappe.model.document import Document
 
 from autoshift.optimizer import data_loader, types
+from autoshift.utils import background_workers_alive as _background_workers_alive
 
 # Time given to the synchronous attempt before falling back to a background job.
 SYNC_TIME_LIMIT = 5
@@ -119,6 +121,18 @@ class OptimizerRun(Document):
 		self.set("status", "Solving")
 		timed_out = run_solve(str(self.name), data, time_limit=SYNC_TIME_LIMIT)
 		if timed_out:
+			if not _background_workers_alive():
+				# Without this guard the run would sit in "Solving" forever with the job
+				# rotting in an unserved queue — a dev bench running only `bench serve`
+				# has no workers, and nothing else surfaces that.
+				frappe.throw(
+					frappe._(
+						"This problem needs more than {0}s and would continue as a background "
+						"job, but no background worker is running to pick it up. Start one "
+						"(e.g. <code>bench worker</code>, or run the bench via "
+						"<code>bench start</code>) and solve again."
+					).format(SYNC_TIME_LIMIT)
+				)
 			frappe.enqueue(
 				"autoshift.optimizer.solver.run_solve",
 				run_name=self.name,
@@ -340,6 +354,183 @@ class OptimizerRun(Document):
 		return {"days": days, "employees": employees, "events": events}
 
 	@frappe.whitelist()
+	def get_run_statistics(self):
+		"""Aggregate statistics of a solved run: how full the schedule actually is, and why.
+
+		Returns None unless the run carries a solution. Shape:
+
+		    {
+		      "totals": {room_slots_staffed, room_slots_capacity, assignments,
+		                 assignments_forced, target_shifts, employees_considered,
+		                 employees_scheduled, objective_value},
+		      "coverage": [{discipline, staffed, capacity, supply_bound, limiting_role,
+		                    branches: [{branch, staffed, capacity}]}],
+		      "matrix": [{discipline, branch, date, shift_type, staffed, capacity}],
+		      "employees": [{employee, employee_name, target, assigned}],  # by deficit
+		      "warnings": [{severity, message}],
+		      "objective_breakdown": {rule_name: value} | None,
+		    }
+
+		Coverage comes from the persisted ``coverage_table`` (the solver's actual
+		``active_rooms`` values); runs solved before that table existed fall back to
+		deriving the same numbers from the assignment slots. ``supply_bound`` is the
+		scarcest Scheduling Role's total room-slot supply over the horizon (holders'
+		FTE ceilings x their max-rooms figures) — the reason a discipline cannot fill
+		its configured capacity is almost always that this number is the smaller one.
+		"""
+		if self.status not in ("Solved", "Approved", "Committed"):
+			return None
+
+		data = self.cache_datapackage()
+		slots = self.get("solution_table") or []
+
+		coverage_rows = self.get("coverage_table") or []
+		if coverage_rows:
+			matrix = [
+				{
+					"discipline": row.discipline,
+					"branch": row.branch,
+					"date": str(row.date),
+					"shift_type": row.shift_type,
+					"staffed": int(row.staffed_rooms or 0),
+					"capacity": int(row.capacity or 0),
+				}
+				for row in coverage_rows
+			]
+		else:
+			matrix = _derive_coverage_matrix(data, slots)
+
+		# ── per-discipline coverage summary ─────────────────────────────────────
+		by_disc: dict[str, dict] = {}
+		for cell in matrix:
+			disc = by_disc.setdefault(
+				cell["discipline"],
+				{"discipline": cell["discipline"], "staffed": 0, "capacity": 0, "branches": {}},
+			)
+			disc["staffed"] += cell["staffed"]
+			disc["capacity"] += cell["capacity"]
+			branch = disc["branches"].setdefault(
+				cell["branch"], {"branch": cell["branch"], "staffed": 0, "capacity": 0}
+			)
+			branch["staffed"] += cell["staffed"]
+			branch["capacity"] += cell["capacity"]
+
+		supply_bounds = _role_supply_bounds(data)
+		coverage = []
+		for disc in sorted(by_disc.values(), key=lambda d: d["discipline"]):
+			bound = supply_bounds.get(disc["discipline"])
+			coverage.append(
+				{
+					**disc,
+					"branches": sorted(disc["branches"].values(), key=lambda b: b["branch"]),
+					"supply_bound": bound["supply"] if bound else None,
+					"limiting_role": bound["role"] if bound else None,
+				}
+			)
+
+		# ── employees: assigned vs. FTE target ──────────────────────────────────
+		assigned_per_emp: dict[str, int] = {}
+		for s in slots:
+			assigned_per_emp[s.employee] = assigned_per_emp.get(s.employee, 0) + 1
+		employee_names = (
+			{
+				row.name: row.employee_name
+				for row in frappe.get_all(
+					"Employee",
+					filters={"name": ["in", list(data.employees)]},
+					fields=["name", "employee_name"],
+				)
+			}
+			if data.employees
+			else {}
+		)
+		employee_rows = sorted(
+			(
+				{
+					"employee": e,
+					"employee_name": employee_names.get(e, e),
+					"target": data.target_shifts.get(e, 0),
+					"assigned": assigned_per_emp.get(e, 0),
+				}
+				for e in data.employees
+			),
+			key=lambda r: r["assigned"] - r["target"],
+		)
+
+		# ── warnings ────────────────────────────────────────────────────────────
+		warnings = []
+		with_settings = (
+			set(
+				frappe.get_all(
+					"Employee Settings", filters={"employee": ["in", list(data.employees)]}, pluck="employee"
+				)
+			)
+			if data.employees
+			else set()
+		)
+		missing_settings = len(data.employees) - len(with_settings)
+		if missing_settings:
+			warnings.append(
+				{
+					"severity": "warning",
+					"message": frappe._(
+						"{0} of {1} scheduled employees have no Employee Settings — their shift and "
+						"branch preferences fall back to uniform."
+					).format(missing_settings, len(data.employees)),
+				}
+			)
+		for disc in coverage:
+			if disc["supply_bound"] is not None and disc["supply_bound"] < disc["capacity"]:
+				warnings.append(
+					{
+						"severity": "warning",
+						"message": frappe._(
+							"{0}: configured capacity is {1} room-slots over this horizon, but role "
+							"{2} can supply at most {3} — coverage cannot exceed that, whatever the "
+							"ruleset."
+						).format(
+							disc["discipline"], disc["capacity"], disc["limiting_role"], disc["supply_bound"]
+						),
+					}
+				)
+		under_target = sum(1 for r in employee_rows if r["assigned"] < r["target"])
+		if under_target:
+			warnings.append(
+				{
+					"severity": "info",
+					"message": frappe._(
+						"{0} employee(s) end below their FTE target — once the scarcest role in a "
+						"discipline is exhausted, additional assignments open no rooms and are not made."
+					).format(under_target),
+				}
+			)
+
+		breakdown = None
+		if self.get("objective_breakdown"):
+			try:
+				breakdown = json.loads(self.get("objective_breakdown"))
+			except ValueError:
+				breakdown = None
+
+		return {
+			"totals": {
+				"room_slots_staffed": sum(c["staffed"] for c in matrix),
+				"room_slots_capacity": sum(c["capacity"] for c in matrix),
+				"assignments": len(slots),
+				"assignments_forced": sum(1 for s in slots if s.forced),
+				"target_shifts": sum(data.target_shifts.get(e, 0) for e in data.employees),
+				"employees_considered": len(data.employees),
+				"employees_scheduled": len(assigned_per_emp),
+				"objective_value": self.objective_value,  # ty:ignore[unresolved-attribute]
+			},
+			"coverage": coverage,
+			"matrix": matrix,
+			"employees": employee_rows,
+			"warnings": warnings,
+			"objective_breakdown": breakdown,
+		}
+
+	@frappe.whitelist()
 	def approve(self):
 		if self.status != "Solved":
 			frappe.throw(frappe._("Only Solved runs can be approved."))
@@ -352,3 +543,81 @@ class OptimizerRun(Document):
 		from autoshift.optimizer.committer import commit
 
 		commit(str(self.name))
+
+
+def _derive_coverage_matrix(data, slots) -> list[dict]:
+	"""Reconstruct the room-coverage matrix from assignment slots.
+
+	Fallback for runs solved before the solver persisted ``coverage_table``: rebuilds
+	what ``active_rooms`` must have been under the ``room_coverage`` rule — per slot,
+	the minimum over the discipline's roles of the room-slots their assignees
+	contribute, capped at the branch's configured capacity. Exact for solutions where
+	that rule was selected with the room-utilization objective (the solver never
+	leaves a coverable room unclaimed); an upper bound otherwise.
+	"""
+	roles_per_disc: dict[str, set[str]] = {}
+	for role, disc in data.role_discipline.items():
+		roles_per_disc.setdefault(disc, set()).add(role)
+
+	staffed_by_role: dict[tuple, int] = {}
+	for s in slots:
+		disc = data.role_discipline.get(s.scheduling_role)
+		if not disc:
+			continue
+		key = (disc, s.scheduling_role, str(s.date), s.shift_type, s.branch)
+		staffed_by_role[key] = staffed_by_role.get(key, 0) + data.max_rpe.get(
+			(s.employee, s.scheduling_role), 1
+		)
+
+	matrix = []
+	for disc in data.disciplines:
+		roles = roles_per_disc.get(disc, set())
+		for branch in data.branches:
+			capacity = data.rooms.get((disc, branch), 0)
+			if not capacity:
+				continue
+			for day in data.working_days:
+				for shift_type in data.shift_types:
+					staffed = min(
+						(staffed_by_role.get((disc, r, str(day), shift_type, branch), 0) for r in roles),
+						default=0,
+					)
+					matrix.append(
+						{
+							"discipline": disc,
+							"branch": branch,
+							"date": str(day),
+							"shift_type": shift_type,
+							"staffed": min(staffed, capacity),
+							"capacity": capacity,
+						}
+					)
+	return matrix
+
+
+def _role_supply_bounds(data) -> dict[str, dict]:
+	"""Per discipline: the scarcest role's total room-slot supply over the horizon.
+
+	A discipline's coverage is the minimum over its roles, and each holder can work at
+	most their FTE ceiling (each shift contributing their max-rooms figure), so the
+	scarcest role's supply bounds what any ruleset can staff. Optimistic where an
+	employee holds several roles (counted fully in each) — presented as "at most",
+	never as a promise.
+	"""
+	tol = 0.05  # keep in sync with rules.fte_ceiling
+	bounds: dict[str, dict] = {}
+	for disc in data.disciplines:
+		role_supplies: dict[str, int] = {}
+		for role, role_disc in data.role_discipline.items():
+			if role_disc != disc:
+				continue
+			supply = 0
+			for e in data.employees:
+				if role in data.employee_roles.get(e, ()):
+					ceiling = int((1 + tol) * data.target_shifts.get(e, 0))
+					supply += data.max_rpe.get((e, role), 1) * ceiling
+			role_supplies[role] = supply
+		if role_supplies:
+			limiting = min(role_supplies, key=lambda r: role_supplies[r])
+			bounds[disc] = {"role": limiting, "supply": role_supplies[limiting], "roles": role_supplies}
+	return bounds

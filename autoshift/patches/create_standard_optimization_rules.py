@@ -56,7 +56,7 @@ def execute():
 				"description": "A minimal set of built-in rules that is guaranteed to be feasible for any problem.",
 				"is_system": 1,
 				"rules": [
-					{"rule": name, "weight": 1.0}
+					{"rule": name, "weight": BUILTIN_RULES[key].default_weight}
 					for key, name in rule_doc_names.items()
 					if key in STANDARD_RULES
 				],
@@ -74,12 +74,16 @@ def execute():
 			standard.is_system = 1
 			needs_save = True
 		if needs_save:
-			# Preserve the weights of rows that survive; only genuinely new rules default to 1.0.
+			# Preserve the weights of rows that survive; only genuinely new rules take the
+			# rule's declared default.
 			weights = {row.rule: row.weight for row in standard.rules}
 			standard.rules = []
 			for key, name in rule_doc_names.items():
 				if key in STANDARD_RULES and name:
-					standard.append("rules", {"rule": name, "weight": weights.get(name, 1.0)})
+					standard.append(
+						"rules",
+						{"rule": name, "weight": weights.get(name, BUILTIN_RULES[key].default_weight)},
+					)
 			standard.save(ignore_permissions=True)
 
 	# Runs from before the ruleset field existed were solved with exactly the

@@ -56,12 +56,19 @@ class RuleContext:
 	# objective terms accumulated by the applied rules; model_builder sums these
 	# into the problem's (maximized) objective after all rules have run
 	objective_terms: list = field(default_factory=list)
-	# ruleset row weight of the rule currently being applied (set by apply_rules)
+	# the same terms keyed by the contributing rule's document name, so a solved
+	# problem can report each rule's share of the objective (see solver.run_solve)
+	objective_contributions: dict[str, list] = field(default_factory=dict)
+	# ruleset row weight / document name of the rule currently being applied
+	# (both set by apply_rules)
 	_current_weight: float = 1.0
+	_current_rule: str = ""
 
 	def add_objective(self, term) -> None:
 		"""Contribute a term to the maximized objective, scaled by the rule's ruleset weight."""
-		self.objective_terms.append(self._current_weight * term)
+		weighted = self._current_weight * term
+		self.objective_terms.append(weighted)
+		self.objective_contributions.setdefault(self._current_rule or "(unattributed)", []).append(weighted)
 
 
 @dataclass(frozen=True)
@@ -73,6 +80,13 @@ class BuiltinRule:
 	excludes: dict[str, str]
 	requires: dict[str, str]
 	kind: str = KIND_CONSTRAINT
+	# Weight a freshly-seeded Optimization Ruleset row gets for this rule. Only meaningful
+	# on Objective/Mixed rules (a constraint rule's weight is a no-op), and only a *default*:
+	# the seeding never overwrites a weight already on a row, so a hand-tuned ruleset keeps
+	# its own figure. Objective units are loosely calibrated against each other, so a rule
+	# whose natural scale differs from the others declares it here rather than relying on
+	# every ruleset author to discover it.
+	default_weight: float = 1.0
 	# Choice group: at most one rule sharing a given group may appear in a ruleset. Unlike
 	# `excludes` (pairwise, hand-authored per rule) a group names the whole mutually-exclusive
 	# set in one place, and "none of them" is always a legal choice — there is no rule that
@@ -117,6 +131,7 @@ def builtin_rule(
 	requires: dict[FunctionType, str] | None = None,
 	excludes: dict[FunctionType, str] | None = None,
 	group: str | None = None,
+	default_weight: float = 1.0,
 ):
 	"""Register a function as a built-in optimization rule."""
 
@@ -130,6 +145,7 @@ def builtin_rule(
 			requires={k.__name__: v for k, v in (requires or {}).items()},
 			excludes={k.__name__: v for k, v in (excludes or {}).items()},
 			group=group,
+			default_weight=default_weight,
 		)
 		if standard:
 			STANDARD_RULES.add(fn.__name__)
@@ -341,6 +357,11 @@ def role_fte_ceiling(ctx: RuleContext) -> None:
 	kind=KIND_OBJECTIVE,
 	standard=True,
 	requires={room_coverage: "{r} requires {req}, otherwise the solver will just staff rooms for free."},
+	# One objective point is loosely ~100 CHF, which puts a staffed room at 3. At weight 1
+	# this rule cannot outbid the per-assignment cost the preference objective charges:
+	# `room_coverage` takes the *minimum* over a discipline's roles, so opening one room
+	# costs two or more assignments, and the schedule collapses to near-empty.
+	default_weight=3.0,
 )
 def room_utilization_objective(ctx: RuleContext) -> None:
 	ctx.add_objective(pulp.lpSum(ctx.active_rooms.values()))
@@ -472,6 +493,7 @@ def apply_rules(ctx: RuleContext) -> str:
 	logs = io.StringIO()
 	for name, builtin_key, code, weight in specs:
 		ctx._current_weight = weight
+		ctx._current_rule = name
 		try:
 			if builtin_key:
 				rule = BUILTIN_RULES.get(builtin_key)
@@ -489,4 +511,5 @@ def apply_rules(ctx: RuleContext) -> str:
 				raise ValueError(f"Optimization Rule {name!r} has no implementation and cannot be used.")
 		finally:
 			ctx._current_weight = 1.0
+			ctx._current_rule = ""
 	return logs.getvalue()

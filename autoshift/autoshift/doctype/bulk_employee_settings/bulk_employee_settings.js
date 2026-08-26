@@ -36,40 +36,65 @@ frappe.ui.form.on("Bulk Employee Settings", {
 	// hrms.notify_bulk_action_status only knows success and failure, and renders an
 	// empty dialog when handed neither. Both actions here skip employees that already
 	// have the record, so a run can legitimately produce only skips.
+	report_bulk_result(frm, message, doctype) {
+		const success = message.success || [];
+		const failure = message.failure || [];
+		const skipped = message.skipped || [];
+
+		if (success.length || failure.length) {
+			hrms.notify_bulk_action_status(doctype, failure, success);
+			if (skipped.length) {
+				frappe.show_alert(
+					{
+						message: __("{0} employee(s) already had {1}; skipped.", [
+							skipped.length,
+							doctype,
+						]),
+						indicator: "blue",
+					},
+					7
+				);
+			}
+		} else if (skipped.length) {
+			frappe.msgprint({
+				title: __("Nothing to do"),
+				indicator: "blue",
+				message: __("All {0} selected employee(s) already have {1}.", [
+					skipped.length,
+					doctype,
+				]),
+			});
+		}
+
+		frm.refresh();
+	},
+
+	// Realtime only carries the queued path's result. An inline run reports through
+	// its own response instead (see handle_bulk_response) — this bench's socketio is
+	// not guaranteed to be up, and a silent success is indistinguishable from the
+	// action never having run.
 	on_bulk_result(frm, event, doctype) {
 		frappe.realtime.off(event);
-		frappe.realtime.on(event, (message) => {
-			const success = message.success || [];
-			const failure = message.failure || [];
-			const skipped = message.skipped || [];
+		frappe.realtime.on(event, (message) =>
+			frm.events.report_bulk_result(frm, message, doctype)
+		);
+	},
 
-			if (success.length || failure.length) {
-				hrms.notify_bulk_action_status(doctype, failure, success);
-				if (skipped.length) {
-					frappe.show_alert(
-						{
-							message: __("{0} employee(s) already had {1}; skipped.", [
-								skipped.length,
-								doctype,
-							]),
-							indicator: "blue",
-						},
-						7
-					);
-				}
-			} else if (skipped.length) {
-				frappe.msgprint({
-					title: __("Nothing to do"),
-					indicator: "blue",
-					message: __("All {0} selected employee(s) already have {1}.", [
-						skipped.length,
-						doctype,
+	handle_bulk_response(frm, message, doctype) {
+		if (!message) return;
+		if (message.queued) {
+			frappe.show_alert(
+				{
+					message: __("Queued for {0} employee(s); this may take a few minutes.", [
+						message.count,
 					]),
-				});
-			}
-
-			frm.refresh();
-		});
+					indicator: "blue",
+				},
+				7
+			);
+			return;
+		}
+		frm.events.report_bulk_result(frm, message, doctype);
 	},
 
 	render_help(frm) {
@@ -166,7 +191,9 @@ frappe.ui.form.on("Bulk Employee Settings", {
 					},
 					freeze: true,
 					freeze_message: __("Creating Employee Settings..."),
-				});
+				}).then((r) =>
+					frm.events.handle_bulk_response(frm, r.message, "Employee Settings")
+				);
 			}
 		);
 	},
@@ -199,7 +226,9 @@ frappe.ui.form.on("Bulk Employee Settings", {
 					},
 					freeze: true,
 					freeze_message: __("Assigning Scheduling Roles..."),
-				});
+				}).then((r) =>
+					frm.events.handle_bulk_response(frm, r.message, "Employee Scheduling Role")
+				);
 			}
 		);
 	},

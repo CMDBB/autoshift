@@ -29,10 +29,10 @@ def solve(
 	data: DataPackage, time_limit: int = 30, msg: bool = False, solve=True
 ) -> tuple[pulp.LpProblem, dict[str, pulp.LpVariable], dict[str, pulp.LpVariable], str]:
 	"""Build and solve the MILP for `data`. Returns (prob, x, active_rooms, logs)."""
-	if isinstance(solve, tuple) and len(solve) == 4:
-		prob, x, active_rooms, logs = solve
+	if isinstance(solve, tuple) and len(solve) >= 4:
+		prob, x, active_rooms, logs = solve[:4]
 	else:
-		prob, x, active_rooms, logs = model_builder.build(data)
+		prob, x, active_rooms, logs, _ctx = model_builder.build(data)
 	if solve:
 		prob.solve(pulp.COIN_CMD(timeLimit=time_limit, msg=msg))
 	return prob, x, active_rooms, logs

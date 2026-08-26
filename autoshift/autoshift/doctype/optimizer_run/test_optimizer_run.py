@@ -122,6 +122,54 @@ class IntegrationTestOptimizerRun(IntegrationTestCase):
 
 	# --- utilities tests ---
 
+	def test_fulltime_shifts_counts_weekdays_only(self):
+		"""One shift per weekday, none at the weekend — the attainable maximum, since
+		`one_shift_per_day` caps an employee at a single shift a day.
+
+		Pinned because this was a true divide (`weekday() / 5`) until 2026-08-26, which
+		ramped the weight down across the week and totalled 3.0 for a Mon-Fri week
+		instead of 5, capping everyone at ~60% of their real availability.
+		"""
+		from autoshift.optimizer.data_loader import _fulltime_shifts_in_period
+
+		week = [MONDAY + datetime.timedelta(days=i) for i in range(7)]
+		self.assertEqual(_fulltime_shifts_in_period(week[:5]), 5)  # Mon-Fri
+		self.assertEqual(_fulltime_shifts_in_period(week), 5)  # weekend adds nothing
+		self.assertEqual(_fulltime_shifts_in_period(week[5:]), 0)  # Sat+Sun only
+		self.assertEqual(_fulltime_shifts_in_period(week * 2), 10)  # scales with horizon
+
+	def test_standard_ruleset_outbids_assignment_cost_for_rooms(self):
+		"""The Standard Ruleset's room-utilization weight must beat what the shift-preference
+		objective charges to open one room.
+
+		`room_coverage` takes the minimum over a discipline's roles, so a room costs at least
+		two assignments; at equal weights the solver mostly declines to schedule anyone.
+		"""
+		from autoshift.optimizer.rules import BUILTIN_RULES
+
+		weights = {
+			row.rule: row.weight
+			for row in frappe.get_all(
+				"Optimization Ruleset Rule",
+				filters={"parent": "Standard Ruleset", "parenttype": "Optimization Ruleset"},
+				fields=["rule", "weight"],
+			)
+		}
+		names = {
+			row.builtin_key: row.name
+			for row in frappe.get_all(
+				"Optimization Rule",
+				filters={"implementation_type": "Built-in"},
+				fields=["name", "builtin_key"],
+			)
+		}
+		rooms = weights.get(names.get("room_utilization_objective"))
+		preferences = weights.get(names.get("shift_preference_objective"))
+		self.assertIsNotNone(rooms, "Standard Ruleset has no room-utilization row")
+		self.assertEqual(rooms, BUILTIN_RULES["room_utilization_objective"].default_weight)
+		if preferences is not None:
+			self.assertGreater(rooms, 2 * preferences)
+
 	def test_unbounded_exceeds_any_bounded_integrated(self):
 		modes = frappe.get_meta("Optimizer Run").get_field("mode").options.split("\n")
 		bounded_max = max(

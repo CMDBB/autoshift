@@ -119,7 +119,7 @@ def _save_draft_ruleset(rows: dict) -> str:
 
 
 @frappe.whitelist()
-def preview(mode: str, date: str, rows, leaves_speculations=None) -> dict:
+def preview(mode: str, date: str, rows: str | dict, leaves_speculations: str | list | None = None) -> dict:
 	"""Materialize the toggle selection into the user's draft ruleset, create a fresh
 	Optimizer Run (``type="Automatic"``) with it, and solve synchronously.
 
@@ -151,6 +151,7 @@ def preview(mode: str, date: str, rows, leaves_speculations=None) -> dict:
 	if status == "Solved":
 		result["schedule"] = run.get_schedule_events()
 		result["objective_value"] = run.objective_value
+		result["statistics"] = run.get_run_statistics()
 	else:
 		result["solver_log"] = run.solver_log or ""
 	return result
@@ -164,6 +165,7 @@ def get_run_status(run: str) -> dict:
 	if doc.status == "Solved":
 		result["schedule"] = doc.get_schedule_events()
 		result["objective_value"] = doc.objective_value
+		result["statistics"] = doc.get_run_statistics()
 	else:
 		result["solver_log"] = doc.solver_log or ""
 	return result

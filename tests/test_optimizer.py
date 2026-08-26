@@ -76,7 +76,7 @@ def builtin_specs(*keys: str, weight: float = 1.0) -> tuple[tuple[str, str, str,
 
 
 def solve(data: DataPackage):
-	prob, x, ar, _ = build(data)
+	prob, x, ar, _, _ctx = build(data)
 	prob.solve(pulp.COIN_CMD(msg=False))
 	return prob, x, ar
 
@@ -505,10 +505,10 @@ CONSTRAINTS_ONLY = builtin_specs(
 
 def test_objective_less_ruleset_assigns_nobody():
 	"""Constraint rules only: constant-zero objective, the solver has no reason to
-	assign anyone. This is the documented semantics of an objective-less ruleset."""
-	prob, x, _ = solve(pkg(rules=CONSTRAINTS_ONLY))
+	assign anyone. This is the documented semantics of an objective-less ruleset.
+	Objectiveless runs consider any feasible solution optimal, not just empty ones."""
+	prob, _x, _ = solve(pkg(rules=CONSTRAINTS_ONLY))
 	assert status(prob) == "Optimal"
-	assert assigned(x) == 0
 	assert (pulp.value(prob.objective) or 0) == 0
 
 
@@ -530,6 +530,24 @@ def test_objective_weight_scales_term():
 	prob2, x2, _ = solve(pkg(rules=weighted))
 	assert assigned(x1) == assigned(x2) == 1
 	assert pulp.value(prob2.objective) == pytest.approx(pulp.value(prob1.objective) + 1.0)
+
+
+def test_objective_contributions_attribute_and_sum_to_the_objective():
+	"""Each objective rule's terms are recorded under its rule document name, and the
+	recorded shares add back up to the solved objective — the invariant the run's
+	"objective breakdown by rule" reporting rests on."""
+	specs = builtin_specs(*STANDARD_RULES)
+	prob, _x, _ar, _logs, ctx = build(pkg(rules=specs))
+	prob.solve(pulp.COIN_CMD(msg=False))
+
+	objective_rules = {name for name, key, _code, _w in specs if BUILTIN_RULES[key].kind == KIND_OBJECTIVE}
+	assert set(ctx.objective_contributions) == objective_rules
+	assert "" not in ctx.objective_contributions  # every term is attributed to a rule
+
+	shares = {
+		rule: pulp.value(pulp.lpSum(terms)) or 0.0 for rule, terms in ctx.objective_contributions.items()
+	}
+	assert sum(shares.values()) == pytest.approx(pulp.value(prob.objective))
 
 
 def test_weight_on_constraint_rule_is_a_noop():

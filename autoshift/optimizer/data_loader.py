@@ -43,18 +43,22 @@ def getdate(*args, **kwargs) -> datetime.date:
 
 
 def _fulltime_shifts_in_period(days) -> float:
-	"""Shifts a 100%-FTE employee works over `days`.
+	"""Shifts a 100%-FTE employee works over `days`: one per weekday, none at the weekend.
 
 	Both the overall FTE ceiling and every agreed per-role split scale this one figure. If
 	they were computed separately and drifted apart, a role target and the ceiling would be
 	denominated differently and the objective would end up fighting the constraint.
 
-	NOTE: the weighting below is inherited and looks wrong — it gives Mon 1.0 falling to
-	Sat 0.0 and Sun -0.2, contradicting the "two shifts per day" it is meant to express.
-	Left as-is deliberately so this change is behaviour-preserving; it is now a one-line
-	fix in one place instead of an expression buried in a loop.
+	One shift per working day is the *attainable* maximum, not half of one: `one_shift_per_day`
+	already caps an employee at a single shift a day whatever the shift types are.
+
+	`weekday() // 5` is 0 on Mon-Fri and 1 on Sat/Sun, so the term is 1 on a weekday and 0
+	at the weekend. It was written with a true divide until 2026-08-26, which ramped the
+	weight down across the week (Mon 1.0 ... Fri 0.2, Sun -0.2) and totalled 3.0 for a
+	Mon-Fri week instead of 5, capping every employee at ~60% of their real availability
+	and starving room coverage.
 	"""
-	return sum(1 - d.weekday() / 5 for d in days)
+	return sum(1 - d.weekday() // 5 for d in days)
 
 
 def _load_rules(run_doc) -> tuple[tuple[str, str, str, float], ...]:
@@ -281,6 +285,15 @@ def load(run_doc) -> DataPackage:
 		employees.append(name)
 		fte_pct = cast(float, emp.custom_fte) or 100.0
 		target_shifts[name] = round(fte_pct / 100.0 * fulltime_shifts)
+
+	# An employee with no Employee Settings document means the same as one whose
+	# preference tables are blank: uniform preferences. Without this backfill the
+	# shift-preference objective read their weights as 0.0 instead of 1/N, silently
+	# taxing every one of their assignments by a full -1 rather than -(N-1)/N.
+	if len(shift_types) > 1:
+		uniform = 1.0 / len(shift_types)
+		for name in employees:
+			shift_preferences.setdefault(name, dict.fromkeys(shift_types, uniform))
 
 	# Agreed per-role splits, on the same scale as the overall ceiling above. Only pairs
 	# whose Employee Scheduling Role names a figure get one — the rest are unconstrained

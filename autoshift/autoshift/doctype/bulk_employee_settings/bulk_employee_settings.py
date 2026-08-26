@@ -25,6 +25,8 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import get_link_to_form
 
+from autoshift.utils import background_workers_alive
+
 COVERAGE_NO_SETTINGS = "Without Employee Settings"
 COVERAGE_NO_ROLE = "Without Any Scheduling Role"
 
@@ -117,8 +119,8 @@ class BulkEmployeeSettings(Document):
 		favourite_shift: str | None = None,
 		shift_preferences: list | None = None,
 		preferred_branch: list | None = None,
-	) -> None:
-		_dispatch(
+	) -> dict:
+		return _dispatch(
 			run_create_settings,
 			employees,
 			dict(
@@ -138,11 +140,11 @@ class BulkEmployeeSettings(Document):
 		max_rooms: int | None = None,
 		valid_from: str | None = None,
 		valid_to: str | None = None,
-	) -> None:
+	) -> dict:
 		if not scheduling_role:
 			frappe.throw(_("Please choose the Scheduling Role to assign."), title=_("No Role Selected"))
 
-		_dispatch(
+		return _dispatch(
 			run_assign_role,
 			employees,
 			dict(
@@ -164,7 +166,8 @@ def run_create_settings(
 	favourite_shift: str | None = None,
 	shift_preferences: list | None = None,
 	preferred_branch: list | None = None,
-) -> None:
+	realtime: bool = True,
+) -> dict:
 	def create(employee_id: str) -> str | None:
 		if frappe.db.exists("Employee Settings", employee_id):
 			return None
@@ -182,12 +185,13 @@ def run_create_settings(
 		doc.insert(ignore_permissions=True)
 		return doc.name
 
-	_run(
+	return _run(
 		employees,
 		create,
 		doctype="Employee Settings",
 		event=EVENT_SETTINGS,
 		title=_("Creating Employee Settings..."),
+		realtime=realtime,
 	)
 
 
@@ -198,7 +202,8 @@ def run_assign_role(
 	max_rooms: int | None = None,
 	valid_from: str | None = None,
 	valid_to: str | None = None,
-) -> None:
+	realtime: bool = True,
+) -> dict:
 	def create(employee_id: str) -> str | None:
 		if frappe.db.exists(
 			"Employee Scheduling Role",
@@ -217,12 +222,13 @@ def run_assign_role(
 		doc.insert(ignore_permissions=True)
 		return doc.name
 
-	_run(
+	return _run(
 		employees,
 		create,
 		doctype="Employee Scheduling Role",
 		event=EVENT_ROLES,
 		title=_("Assigning Scheduling Roles..."),
+		realtime=realtime,
 	)
 
 
@@ -234,23 +240,39 @@ def _employee_ids(employees: list) -> list[str]:
 	return [e["employee"] if isinstance(e, dict) else e for e in employees]
 
 
-def _dispatch(worker, employees: list, kwargs: dict) -> None:
-	"""Run inline for a small selection, queue for a large one."""
+def _dispatch(worker, employees: list, kwargs: dict) -> dict:
+	"""Run inline for a small selection, queue for a large one.
+
+	Returns the ``{"queued": bool, ...}`` outcome the client renders. An inline run
+	reports its result *in the response*, not over realtime: the realtime event still
+	fires for the queued path, but a bench whose socketio is down (a common dev-bench
+	state) would otherwise leave the caller with no feedback at all — which reads as
+	the tool having silently done nothing.
+
+	A large selection also runs inline when no background worker is alive, since the
+	queued job would just sit in redis forever.
+	"""
 	if not employees:
 		frappe.throw(_("Please select at least one employee."), title=_("No Employees Selected"))
 
 	if len(employees) <= INLINE_LIMIT:
-		return worker(**kwargs)
+		return {"queued": False, **worker(realtime=False, **kwargs)}
+
+	if not background_workers_alive():
+		frappe.msgprint(
+			_("No background worker is running — creating {0} records in this request instead.").format(
+				len(employees)
+			),
+			alert=True,
+			indicator="orange",
+		)
+		return {"queued": False, **worker(realtime=False, **kwargs)}
 
 	frappe.enqueue(worker, timeout=3000, **kwargs)
-	frappe.msgprint(
-		_("Creation has been queued. It may take a few minutes."),
-		alert=True,
-		indicator="blue",
-	)
+	return {"queued": True, "count": len(employees)}
 
 
-def _run(employees: list[str], create, doctype: str, event: str, title: str) -> None:
+def _run(employees: list[str], create, doctype: str, event: str, title: str, realtime: bool = True) -> dict:
 	"""Create one record per employee, isolating failures to their own row.
 
 	`create` returns the new docname, or None when the employee already had the
@@ -258,6 +280,9 @@ def _run(employees: list[str], create, doctype: str, event: str, title: str) -> 
 	counting it as a success would claim something was written that was not.
 	Each row gets its own savepoint so one bad record cannot roll back the work
 	already done.
+
+	Returns the outcome either way; `realtime` additionally publishes it, which only
+	the queued path needs (an inline run returns it in the response instead).
 	"""
 	success, failure, skipped = [], [], []
 	savepoint = "before_bulk_autoshift_action"
@@ -281,12 +306,15 @@ def _run(employees: list[str], create, doctype: str, event: str, title: str) -> 
 
 		frappe.publish_progress((i + 1) * 100 / len(employees), title=title)
 
-	frappe.publish_realtime(
-		event,
-		message={"success": success, "failure": failure, "skipped": skipped},
-		doctype="Bulk Employee Settings",
-		after_commit=True,
-	)
+	result = {"success": success, "failure": failure, "skipped": skipped}
+	if realtime:
+		frappe.publish_realtime(
+			event,
+			message=result,
+			doctype="Bulk Employee Settings",
+			after_commit=True,
+		)
+	return result
 
 
 def _roles_by_employee(employees: list[str]) -> dict[str, list[str]]:
