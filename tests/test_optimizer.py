@@ -28,8 +28,6 @@ from autoshift.optimizer.rules import (
 )
 from autoshift.optimizer.types import DataPackage, planning_days
 
-# ── constants & helpers ───────────────────────────────────────────────────────
-
 MON = datetime.date(day=1, month=6, year=2026)  # a known Monday
 
 
@@ -44,23 +42,23 @@ def pkg(**overrides) -> DataPackage:
 	"""
 	disc = "D1"
 	b = "B1"
-	base: dict[str, Any] = dict(
-		flags=set(),
-		employees=["E1"],
-		shift_types=["AM"],
-		working_days=[MON],
-		branches=[b],
-		roles=["R1"],
-		role_discipline={"R1": disc},
-		employee_roles={"E1": ("R1",)},
-		target_shifts={"E1": 1},
-		role_target_shifts={},
-		max_rpe={("E1", "R1"): 1},
-		rooms={(disc, b): 1},
-		disciplines=[disc],
-		leave_blocked=set(),
-		forced=set(),
-	)
+	base: dict[str, Any] = {
+		"flags": set(),
+		"employees": ["E1"],
+		"shift_types": ["AM"],
+		"working_days": [MON],
+		"branches": [b],
+		"roles": ["R1"],
+		"role_discipline": {"R1": disc},
+		"employee_roles": {"E1": ("R1",)},
+		"target_shifts": {"E1": 1},
+		"role_target_shifts": {},
+		"max_rpe": {("E1", "R1"): 1},
+		"rooms": {(disc, b): 1},
+		"disciplines": [disc],
+		"leave_blocked": set(),
+		"forced": set(),
+	}
 	base.update(overrides)
 	if "shift_preferences" not in base:
 		n_shifts: int = len(base["shift_types"])

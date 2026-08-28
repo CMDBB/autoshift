@@ -42,27 +42,27 @@ def pkg(**overrides) -> DataPackage:
 	Minimal valid DataPackage: 1 salaried employee, 1 AM shift, 1 day, 1 branch.
 	Override any field to build specific scenarios.
 	"""
-	base: dict[str, Any] = dict(
-		flags=set(),
-		employees=["Alice", "Bob"],
-		shift_types=["Day", "Night"],
-		working_days=[MONDAY + datetime.timedelta(days=i) for i in range(7)],
-		branches=["Branch1"],
-		roles=["ER Nurse"],
-		role_discipline={"ER Nurse": "ER"},
-		employee_roles={"Alice": ("ER Nurse",), "Bob": ("ER Nurse",)},
-		target_shifts={"Alice": 5, "Bob": 5},
-		role_target_shifts={},
-		max_rpe={("Alice", "ER Nurse"): 1, ("Bob", "ER Nurse"): 1},
-		rooms={("ER", "Branch1"): 2},
-		disciplines=["ER"],
-		leave_blocked=set(),
-		forced=set(),
-		shift_preferences={
+	base: dict[str, Any] = {
+		"flags": set(),
+		"employees": ["Alice", "Bob"],
+		"shift_types": ["Day", "Night"],
+		"working_days": [MONDAY + datetime.timedelta(days=i) for i in range(7)],
+		"branches": ["Branch1"],
+		"roles": ["ER Nurse"],
+		"role_discipline": {"ER Nurse": "ER"},
+		"employee_roles": {"Alice": ("ER Nurse",), "Bob": ("ER Nurse",)},
+		"target_shifts": {"Alice": 5, "Bob": 5},
+		"role_target_shifts": {},
+		"max_rpe": {("Alice", "ER Nurse"): 1, ("Bob", "ER Nurse"): 1},
+		"rooms": {("ER", "Branch1"): 2},
+		"disciplines": ["ER"],
+		"leave_blocked": set(),
+		"forced": set(),
+		"shift_preferences": {
 			"Alice": {"Day": 1.0, "Night": 0.5},
 			"Bob": {"Day": 0.5, "Night": 1.0},
 		},
-	)
+	}
 	base.update(overrides)
 	if "employee_roles" not in overrides:
 		base["employee_roles"] = {e: ("ER Nurse",) for e in base["employees"]}
