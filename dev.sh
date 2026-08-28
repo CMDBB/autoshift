@@ -20,8 +20,9 @@ SITE_NAME="dev.test.localhost"
 
 # Check for pytest recovery mode (if no args and previous failure exists)
 RECOVERY_MODE=false
-LASTFAILED_PATH=".pytest_cache/v/cache/lastfailed"
-if [ $# -eq 0 ] && [ -f $LASTFAILED_PATH ] && [ "$(cat $LASTFAILED_PATH)" != "{}" ]; then
+LASTFAILED_PATH="env/.lastfailed"
+mkdir -p env
+if [ $# -eq 0 ] && [ -f $LASTFAILED_PATH ] && [ "$(cat $LASTFAILED_PATH)" != "2" ]; then
     RECOVERY_MODE=true
     RUN_INTEGRATION_TESTS=false
     RUN_LINT=false
@@ -239,10 +240,10 @@ fi
 if [ "$RUN_UNIT_TESTS" = true ]; then
     if [ "$RECOVERY_MODE" = true ]; then
         start_concurrent_task "Unit Tests (recovery)" \
-            uv run pytest tests/ --sw
+            uv run pytest tests/ --sw || echo $? > "$LASTFAILED_PATH"
     else
         start_concurrent_task "Unit Tests" \
-            uv run pytest tests/ --sw
+            uv run pytest tests/ --sw || echo $? > "$LASTFAILED_PATH"
     fi
 fi
 
