@@ -7,7 +7,7 @@ charges: `room_coverage` takes the *minimum* over a discipline's roles, so openi
 room costs two or more assignments at roughly -0.5 each against a gain of +1, and the
 solver mostly declines to schedule anyone (a real 51-employee week solved to 6 of 140
 room-slots). Weight 3 also matches the working calibration that one objective point is
-loosely ~100 CHF.
+loosely ~100 CHF/h.
 
 Only the app-curated Standard Ruleset (`is_system`) is touched, and only where the weight
 is still the old default — a hand-tuned figure, there or in any other ruleset, is left

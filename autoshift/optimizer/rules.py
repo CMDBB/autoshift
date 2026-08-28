@@ -357,7 +357,7 @@ def role_fte_ceiling(ctx: RuleContext) -> None:
 	kind=KIND_OBJECTIVE,
 	standard=True,
 	requires={room_coverage: "{r} requires {req}, otherwise the solver will just staff rooms for free."},
-	# One objective point is loosely ~100 CHF, which puts a staffed room at 3. At weight 1
+	# One objective point is loosely ~100 CHF/h, which puts a staffed room at 3. At weight 1
 	# this rule cannot outbid the per-assignment cost the preference objective charges:
 	# `room_coverage` takes the *minimum* over a discipline's roles, so opening one room
 	# costs two or more assignments, and the schedule collapses to near-empty.

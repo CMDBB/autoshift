@@ -247,7 +247,7 @@ reports rather than hides.
    two or more assignments — at weight 1 the room reward broke even and the solver mostly
    declined to schedule anyone (**6 of 140** room-slots, 2 of 51 employees). Room
    utilization now declares `default_weight=3.0`, matching the working calibration that one
-   objective point is loosely ~100 CHF.
+   objective point is loosely ~100 CHF/h.
 3. **Not a bug — role supply genuinely caps coverage.** Coverage is the minimum over a
    discipline's roles, so the scarcest role sets the ceiling. Before the fixes all three
    disciplines sat at *exactly* their role-supply bound (39/39, 7/7, 6/6): the solver was
