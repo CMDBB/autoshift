@@ -17,8 +17,44 @@ import frappe
 STANDARD_RULESET_NAME = "Standard Ruleset"
 
 
+def _seed_topics(topic_order, topic_descriptions) -> None:
+	"""
+	Upsert one Scheduling Rule Topic per topic the built-in registry declares.
+
+	Only app-curated (``is_system``) topics are re-synced or removed; a topic somebody
+	created by hand for their Custom Code rules is left entirely alone.
+	"""
+	curated = {
+		doc["name"]: doc["name"]
+		for doc in frappe.get_all("Scheduling Rule Topic", filters={"is_system": 1}, fields=["name"])
+	}
+	for name in set(curated) - set(topic_order):
+		frappe.log(f"Deleting unsupported leftover rule topic {name}")
+		frappe.delete_doc("Scheduling Rule Topic", name, force=True)
+	for order, name in enumerate(topic_order):
+		values = {
+			"doctype": "Scheduling Rule Topic",
+			"topic_name": name,
+			"description": topic_descriptions.get(name, ""),
+			"display_order": order,
+			"is_system": 1,
+		}
+		if frappe.db.exists("Scheduling Rule Topic", name):
+			frappe.get_doc("Scheduling Rule Topic", name).update(values).save(ignore_permissions=True)
+		else:
+			frappe.new_doc(**values).insert(ignore_permissions=True)
+
+
 def execute():
-	from autoshift.optimizer.rules import BUILTIN_RULES, STANDARD_RULES
+	from autoshift.optimizer.rules import (
+		BUILTIN_RULES,
+		STANDARD_RULES,
+		TOPIC_DESCRIPTIONS,
+		TOPIC_ORDER,
+	)
+
+	# before the rules: Optimization Rule.topic links here, so the targets must exist
+	_seed_topics(TOPIC_ORDER, TOPIC_DESCRIPTIONS)
 
 	rule_doc_names = {}
 	existing = {
@@ -38,6 +74,7 @@ def execute():
 			"implementation_type": "Built-in",
 			"builtin_key": key,
 			"rule_kind": rule.kind,
+			"topic": rule.topic,
 		}
 		if key in existing:
 			doc = (

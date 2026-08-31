@@ -9,6 +9,7 @@
   "rule_name",
   "implementation_type",
   "rule_kind",
+  "topic",
   "column_break_status",
   "implemented",
   "validated",
@@ -49,6 +50,14 @@
    "options": "Constraint\nObjective\nMixed\nOther",
    "permlevel": 1,
    "reqd": 1
+  },
+  {
+   "description": "Optional heading this rule is filed under in Optimizer Studio's rule panel. Presentational only — it does not affect which rules may be combined. Synced from code for Built-in rules.",
+   "fieldname": "topic",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Topic",
+   "options": "Scheduling Rule Topic"
   },
   {
    "fieldname": "column_break_status",

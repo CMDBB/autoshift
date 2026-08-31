@@ -32,15 +32,31 @@ def _draft_ruleset_name(user: str | None = None) -> str:
 @frappe.whitelist()
 def get_rule_catalog() -> list[dict]:
 	"""Every usable Optimization Rule, annotated with the built-in dependency-graph
-	metadata (choice group, requires, excludes) needed to render Studio's toggle panel.
-	Custom Code rules carry none of that and are listed as plain standalone toggles.
+	metadata (choice group, requires, excludes) needed to render Studio's toggle panel,
+	plus the topic each rule is filed under so the panel can be sectioned.
+	Custom Code rules carry none of the dependency metadata and are listed as plain
+	standalone toggles; they may still name a topic.
 	"""
 	rules = frappe.get_all(
 		"Optimization Rule",
 		filters={"implemented": 1},
-		fields=["name", "rule_name", "description", "rule_kind", "implementation_type", "builtin_key"],
+		fields=[
+			"name",
+			"rule_name",
+			"description",
+			"rule_kind",
+			"implementation_type",
+			"builtin_key",
+			"topic",
+		],
 		order_by="rule_name asc",
 	)
+	# Topic display order, so Studio's sections read coverage-first rather than
+	# alphabetically. Hand-authored topics default to 0 and sort by name among themselves.
+	topic_order = {
+		t.name: (int(t.display_order or 0), t.name)
+		for t in frappe.get_all("Scheduling Rule Topic", fields=["name", "display_order"])
+	}
 	# builtin_key (rules.py identity) -> Optimization Rule doc name (ruleset row identity),
 	# so a built-in's `requires`/`excludes` (keyed by builtin_key) can be reported in terms
 	# a ruleset row actually uses.
@@ -56,11 +72,26 @@ def get_rule_catalog() -> list[dict]:
 				"description": r.description,
 				"kind": r.rule_kind,
 				"group": builtin.group if builtin else None,
+				"topic": r.topic or None,
+				"topic_order": topic_order.get(r.topic, (0, r.topic or ""))[0],
 				"requires": [key_to_name.get(k, k) for k in builtin.requires] if builtin else [],
 				"excludes": [key_to_name.get(k, k) for k in builtin.excludes] if builtin else [],
 			}
 		)
 	return catalog
+
+
+@frappe.whitelist()
+def check_binding_rule_gap(rows: str | dict) -> dict:
+	"""Would the panel's current selection ignore the site's settled schedules?
+
+	Studio's counterpart to ``OptimizerRun.check_binding_rule_gap``: the selection is not
+	a saved ruleset yet, so the rule documents come straight from the toggle panel.
+	"""
+	from autoshift.optimizer import data_loader
+
+	rows = frappe.parse_json(rows) if isinstance(rows, str) else (rows or {})
+	return data_loader.binding_rule_gap(data_loader.builtin_keys_of(list(rows)))
 
 
 @frappe.whitelist()

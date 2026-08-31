@@ -10,3 +10,4 @@ autoshift.patches.migrate_designations_to_scheduling_roles
 autoshift.patches.add_role_rules
 autoshift.patches.mark_standard_ruleset_system
 autoshift.patches.set_room_utilization_default_weight
+autoshift.patches.add_binding_rule_and_topics

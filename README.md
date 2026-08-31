@@ -66,6 +66,7 @@ discipline over-stating its capacity.
 | Role Name | e.g. "Ortho Assistant" |
 | Discipline | The Department this role staffs |
 | Max Rooms Per Holder | Rooms one holder covers simultaneously in a single slot |
+| Assignments Are Binding | *Optional.* Holders keep exactly the Shift Assignments already on the books — see below |
 
 **Autoshift → Employee Scheduling Role** — one record per employee-capability pair.
 
@@ -75,11 +76,28 @@ discipline over-stating its capacity.
 | Scheduling Role | The capability they hold |
 | Agreed FTE % in Role | *Optional.* The informally agreed share of their time in this role. Blank means no expectation. |
 | Max Rooms Override | *Optional.* Overrides the role's figure for this person (e.g. an apprentice covering one chair, not three) |
+| Binding Override | *Optional.* Overrides the role's Assignments Are Binding for this person. Blank inherits |
 | Valid From / Valid To | *Optional.* Time-boxes a capability acquired or dropped mid-year |
 
 **An employee with no Scheduling Role is not scheduled at all.** This is how non-clinical
 staff stay out of scope — `Employee.department` and `Employee.designation` are payroll data
 and are not read by the optimiser.
+
+**Assignments Are Binding** is for a role whose schedule is settled by its holders rather
+than by the planner — a senior clinician whose week is fixed, say. Their existing Shift
+Assignments become an *input*: over the run's horizon they work exactly what is already on
+the books, and the optimiser may not add, move or drop any of it. A holder whose schedule
+has not settled yet is exempted with **Binding Override = Not Binding** on their Employee
+Scheduling Role, and is then scheduled normally alongside everyone else.
+
+Two things still apply to a bound holder. Approved (and speculated) leave wins over a
+settled assignment: the colliding shift is dropped rather than making the run infeasible,
+and the run-statistics panel reports it so the underlying records can be fixed. And a day
+they have nothing on the books stays empty — "settled" means settled, not "fill the gaps".
+
+The toggle only takes effect if the run's ruleset includes the **Bind settled schedules**
+rule (it is in the Standard Ruleset). The rule is inert while no role is marked binding, so
+it costs nothing on a site that does not use this.
 
 The Agreed FTE % is deliberately soft: the solver is *penalised* for deviating from it
 (see the "Agreed role FTE split" objective rule) but never forbidden, because these splits
@@ -268,6 +286,10 @@ one Optimization Rule document per constraint group. The built-in constraint rul
 3. Existing Shift Assignments honored per the ruleset's choice of rules: fixed
    (`Honor existing Shift Assignments`), soft warm-start
    (`Objective: Conserve Existing Assignments`), or disregarded (neither rule included)
+3b. `Bind settled schedules`: holders of a Scheduling Role marked *Assignments Are Binding*
+   are frozen at their existing assignments — those fixed on, every other variable of theirs
+   fixed off. Orthogonal to the choice in 3 (it is scoped by role, not a fourth global
+   policy), so it composes with either member of that choice
 4. Max rooms per (employee, role) per slot (from Scheduling Role, optionally overridden per
    Employee Scheduling Role)
 5. Room coverage: the roles assigned in a discipline must support its number of active rooms

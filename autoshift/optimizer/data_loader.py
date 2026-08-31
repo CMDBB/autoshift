@@ -112,6 +112,95 @@ def _load_rules(run_doc) -> tuple[tuple[str, str, str, float], ...]:
 	return tuple(specs)
 
 
+def _is_binding(row, role_binding: dict[str, bool]) -> bool:
+	"""Is this Employee Scheduling Role row's schedule settled?
+
+	A blank override inherits the Scheduling Role's ``assignments_binding``, the same
+	convention ``max_rooms`` uses. Shared by :func:`load` and :func:`binding_holders` so
+	the two cannot drift apart.
+	"""
+	if row.binding_override == "Binding":
+		return True
+	if row.binding_override == "Not Binding":
+		return False
+	return role_binding.get(row.scheduling_role, False)
+
+
+def binding_holders() -> dict:
+	"""Employee-role pairs whose assignments are binding, across the whole configuration.
+
+	Horizon-independent (no ``DataPackage``): this answers "does this site use role
+	binding at all", so a run whose ruleset omits ``bind_role_assignments`` can warn that
+	those settled schedules are about to be ignored.
+	"""
+	role_binding = {
+		r.name: bool(r.assignments_binding)
+		for r in frappe.get_all(
+			"Scheduling Role", filters={"active": 1}, fields=["name", "assignments_binding"]
+		)
+	}
+	pairs = [
+		(row.employee, row.scheduling_role)
+		for row in frappe.get_all(
+			"Employee Scheduling Role",
+			filters={"active": 1},
+			fields=["employee", "scheduling_role", "binding_override"],
+		)
+		if _is_binding(row, role_binding)
+	]
+	return {
+		"pairs": len(pairs),
+		"employees": len({employee for employee, _role in pairs}),
+		"roles": sorted({role for _employee, role in pairs}),
+	}
+
+
+def builtin_keys_of(rule_names) -> set[str]:
+	"""The built-in keys the given Optimization Rule documents point at.
+
+	Custom Code rows contribute nothing — they carry no builtin key, and no dependency
+	metadata either (see CLAUDE.md).
+	"""
+	rule_names = list(rule_names or [])
+	if not rule_names:
+		return set()
+	return {
+		key
+		for key in frappe.get_all(
+			"Optimization Rule",
+			filters={"name": ["in", rule_names], "implementation_type": "Built-in"},
+			pluck="builtin_key",
+		)
+		if key
+	}
+
+
+def binding_rule_gap(selected_keys) -> dict:
+	"""Would this rule selection silently ignore the site's settled schedules?
+
+	``{"gap": True, ...}`` when some employee-role pair is marked binding but the
+	selection leaves ``bind_role_assignments`` out — the run will then schedule those
+	people as if their schedule were the planner's to set.
+	"""
+	from autoshift.optimizer.rules import bind_role_assignments
+
+	holders = binding_holders()
+	return {
+		**holders,
+		"gap": bool(holders["pairs"]) and bind_role_assignments.__name__ not in set(selected_keys),
+	}
+
+
+def ruleset_binding_rule_gap(ruleset: str) -> dict:
+	""":func:`binding_rule_gap` for the rules an Optimization Ruleset selects."""
+	names = frappe.get_all(
+		"Optimization Ruleset Rule",
+		filters={"parent": ruleset, "parenttype": "Optimization Ruleset"},
+		pluck="rule",
+	)
+	return binding_rule_gap(builtin_keys_of(names))
+
+
 def load(run_doc) -> DataPackage:
 	start_date = getdate(run_doc.date)
 	mode = run_doc.mode
@@ -150,7 +239,7 @@ def load(run_doc) -> DataPackage:
 	role_rows = frappe.get_all(
 		"Scheduling Role",
 		filters={"active": 1, "discipline": ["in", disciplines]},
-		fields=["name", "discipline", "max_rooms"],
+		fields=["name", "discipline", "max_rooms", "assignments_binding"],
 	)
 	if not role_rows:
 		frappe.throw(
@@ -162,6 +251,8 @@ def load(run_doc) -> DataPackage:
 	roles = sorted(r.name for r in role_rows)
 	role_discipline = {r.name: r.discipline for r in role_rows}
 	role_max_rooms = {r.name: max(int(r.max_rooms or 1), 1) for r in role_rows}
+	# Roles whose holders' schedules are settled by the holders, not by the planner.
+	role_binding = {r.name: bool(r.assignments_binding) for r in role_rows}
 
 	# ── Employee Scheduling Roles ────────────────────────────────────────────
 	# The validity window is filtered in Python: the condition is
@@ -171,7 +262,15 @@ def load(run_doc) -> DataPackage:
 	held_rows = frappe.get_all(
 		"Employee Scheduling Role",
 		filters={"active": 1, "scheduling_role": ["in", roles]},
-		fields=["employee", "scheduling_role", "role_fte", "max_rooms", "valid_from", "valid_to"],
+		fields=[
+			"employee",
+			"scheduling_role",
+			"role_fte",
+			"max_rooms",
+			"binding_override",
+			"valid_from",
+			"valid_to",
+		],
 	)
 
 	def _held_over_horizon(row) -> bool:
@@ -201,6 +300,7 @@ def load(run_doc) -> DataPackage:
 	employee_role_lists: dict[str, list[str]] = {}
 	max_rpe: dict[tuple[str, str], int] = {}
 	role_fte_pct: dict[tuple[str, str], float] = {}
+	binding_pairs: set[tuple[str, str]] = set()
 	for row in held_rows:
 		if row.employee not in active_employees:
 			continue
@@ -209,6 +309,8 @@ def load(run_doc) -> DataPackage:
 		max_rpe[pair] = int(row.max_rooms or role_max_rooms.get(row.scheduling_role, 1))
 		if row.role_fte:
 			role_fte_pct[pair] = float(row.role_fte)
+		if _is_binding(row, role_binding):
+			binding_pairs.add(pair)
 	employee_roles = {e: tuple(sorted(rs)) for e, rs in employee_role_lists.items()}
 
 	# Employee Settings
@@ -353,6 +455,7 @@ def load(run_doc) -> DataPackage:
 	# Which of these are honored, weighed, or ignored is a ruleset choice now
 	# (use_existing_assignments / weigh_assignments_objective), not a run-level flag.
 	forced: set[tuple[str, str, str, datetime.date, str]] = set()
+	binding_conflicts: list[tuple[str, str, str, datetime.date, str]] = []
 	existing = frappe.get_all(
 		"Shift Assignment",
 		filters={
@@ -379,7 +482,9 @@ def load(run_doc) -> DataPackage:
 	}
 	# A Shift Assignment records no role, so it is recovered from its location's
 	# discipline: the role the employee holds there. Somebody holding two roles in one
-	# discipline is unusual but legal (differing max-rooms, say); pick deterministically.
+	# discipline is unusual but legal (differing max-rooms, say); pick deterministically,
+	# preferring a binding role so a settled schedule is attributed to the role that is
+	# actually settled rather than to whichever one sorts first.
 	roles_by_employee_discipline: dict[tuple[str, str], list[str]] = {}
 	for name, held in employee_roles.items():
 		for role in held:
@@ -408,11 +513,20 @@ def load(run_doc) -> DataPackage:
 			frappe.throw(
 				frappe._(
 					"{0} holds no Scheduling Role in discipline {1}, but Shift Assignment {2} "
-					"places them there. Give them the role, or set this run's Existing Shift "
-					"Assignments to Ignore."
+					"places them there. Give them the role, or drop both existing-assignment "
+					"rules from this run's ruleset."
 				).format(frappe.bold(sa.employee), frappe.bold(discipline), sa.name)
 			)
-		forced.add((sa.employee, sorted(candidates)[0], sa.shift_type, getdate(sa.start_date), str(branch)))
+		role = sorted(candidates, key=lambda r: ((sa.employee, r) not in binding_pairs, r))[0]
+		day = getdate(sa.start_date)
+		comb = (sa.employee, role, sa.shift_type, day, str(branch))
+		# Approved (or speculated) leave wins over an assignment already on the books —
+		# forcing both would make the model infeasible. Record it so the run-statistics
+		# panel can tell the planner their data disagrees with itself.
+		if (sa.employee, day) in leave_blocked:
+			binding_conflicts.append(comb)
+			continue
+		forced.add(comb)
 
 	return DataPackage(
 		flags=flags,
@@ -432,4 +546,6 @@ def load(run_doc) -> DataPackage:
 		forced=forced,
 		shift_preferences=shift_preferences,
 		rules=rules,
+		binding_pairs=frozenset(binding_pairs),
+		binding_conflicts=tuple(sorted(binding_conflicts)),
 	)

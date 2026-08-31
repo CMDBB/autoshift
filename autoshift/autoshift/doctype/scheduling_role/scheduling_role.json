@@ -10,6 +10,7 @@
   "discipline",
   "column_break_1",
   "max_rooms",
+  "assignments_binding",
   "active",
   "section_break_description",
   "description"
@@ -46,6 +47,13 @@
    "label": "Max Rooms Per Holder",
    "non_negative": 1,
    "reqd": 1
+  },
+  {
+   "default": "0",
+   "description": "Holders of this role keep exactly the Shift Assignments already on the books: the optimizer may not add, move or drop any of them. For a role whose schedule is settled by its holders rather than by the planner. Requires the \"Bind settled schedules\" rule in the run's ruleset; an individual holder can opt out on their Employee Scheduling Role.",
+   "fieldname": "assignments_binding",
+   "fieldtype": "Check",
+   "label": "Assignments Are Binding"
   },
   {
    "default": "1",

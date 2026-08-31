@@ -12,6 +12,7 @@ import datetime
 import itertools
 import json
 from typing import Any
+from unittest import mock
 
 import pulp
 import pytest
@@ -24,7 +25,9 @@ from autoshift.optimizer.rules import (
 	KIND_MIXED,
 	KIND_OBJECTIVE,
 	STANDARD_RULES,
+	BuiltinRule,
 	leave_blocklist,
+	order_specs,
 )
 from autoshift.optimizer.types import DataPackage, planning_days
 
@@ -456,6 +459,145 @@ def test_choice_group_permits_neither_member():
 def test_rule_without_implementation_raises():
 	with pytest.raises(ValueError, match="no implementation"):
 		build(pkg(rules=(("Someday Rule", "", "", 1.0),)))
+
+
+# ── rule application order ────────────────────────────────────────────────────
+
+
+def titled_specs(*keys: str) -> tuple[tuple[str, str, str, float], ...]:
+	"""
+	Specs named after the rules' real Optimization Rule documents, sorted by that name.
+
+	This is what `data_loader._load_rules` hands the engine on a live run — and it is not
+	the dependency order: `warm_start`'s title ("Use existing Shift Assignments as a
+	baseline") sorts last, so every `fixValue()` rule that depends on it comes first.
+	`builtin_specs` above names each spec after its *key* instead, which happens to order
+	warm_start early and so hides the problem.
+	"""
+	return tuple(sorted((BUILTIN_RULES[k].title, k, "", 1.0) for k in keys))
+
+
+def test_rule_order_honors_existing_assignment_whatever_the_document_names():
+	"""A forced assignment is fixed even though 'Honor…' sorts before 'Use…as a baseline'."""
+	specs = titled_specs("use_existing_assignments", "warm_start", "one_shift_per_day")
+	assert specs[0][1] == "use_existing_assignments", "document-name order must put the dependent first"
+	_prob, x, _ar, _logs, _ctx = build(
+		pkg(forced={("E1", "R1", "AM", MON, "B1")}, rules=specs, shift_types=["AM", "PM"])
+	)
+	var = x[("E1", "R1", "AM", MON, "B1")]
+	assert (var.lowBound, var.upBound) == (1, 1)
+
+
+def test_rule_order_blocks_leave_whatever_the_document_names():
+	"""Same ordering hazard on the leave rule: an unfixed variable would let CBC assign it."""
+	specs = titled_specs(
+		"leave_blocklist", "warm_start", "one_shift_per_day", "room_coverage", "room_utilization_objective"
+	)
+	prob, x, _ = solve(pkg(leave_blocked={("E1", MON)}, rules=specs))
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 0
+
+
+def test_order_specs_leaves_an_independent_selection_alone():
+	specs = builtin_specs("one_shift_per_day", "room_coverage")
+	assert order_specs(specs) == specs
+
+
+def test_order_specs_survives_a_dependency_cycle():
+	"""A cycle emits every spec exactly once rather than looping or dropping rules."""
+	cyclic = {
+		"a": BuiltinRule(key="a", title="A", description="", apply=None, excludes={}, requires={"b": ""}),
+		"b": BuiltinRule(key="b", title="B", description="", apply=None, excludes={}, requires={"a": ""}),
+	}
+	specs = (("A", "a", "", 1.0), ("B", "b", "", 1.0))
+	with mock.patch.dict(BUILTIN_RULES, cyclic, clear=True):
+		assert sorted(order_specs(specs)) == sorted(specs)
+
+
+# ── role binding (settled schedules) ──────────────────────────────────────────
+
+
+BINDING_RULES = builtin_specs("warm_start", "bind_role_assignments", "one_shift_per_day", "room_coverage")
+
+
+def test_binding_role_freezes_the_whole_schedule():
+	"""
+	A bound pair works exactly what is on the books: the existing Monday AM shift stays,
+	and nothing is added on the other day or the other shift type.
+	"""
+	days = days_from(2)
+	prob, x, _ = solve(
+		pkg(
+			working_days=days,
+			shift_types=["AM", "PM"],
+			forced={("E1", "R1", "AM", MON, "B1")},
+			binding_pairs=frozenset({("E1", "R1")}),
+			target_shifts={"E1": 2},
+			rules=BINDING_RULES,
+		)
+	)
+	assert status(prob) == "Optimal"
+	assert (pulp.value(x[("E1", "R1", "AM", MON, "B1")]) or 0) > 0.5
+	assert assigned(x, employee="E1") == 1
+
+
+def test_bound_pair_without_existing_assignments_is_idle():
+	"""Freeze means empty, not free: a bound holder with nothing on the books works nothing."""
+	prob, x, _ = solve(
+		pkg(
+			working_days=days_from(2),
+			binding_pairs=frozenset({("E1", "R1")}),
+			target_shifts={"E1": 2},
+			rules=BINDING_RULES,
+		)
+	)
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 0
+
+
+def test_binding_override_opts_an_employee_out():
+	"""E2 is absent from binding_pairs (a 'Not Binding' override) and is scheduled normally."""
+	disc, b = "D1", "B1"
+	prob, x, _ = solve(
+		pkg(
+			employees=["E1", "E2"],
+			employee_roles={"E1": ("R1",), "E2": ("R1",)},
+			target_shifts={"E1": 1, "E2": 1},
+			max_rpe={("E1", "R1"): 1, ("E2", "R1"): 1},
+			rooms={(disc, b): 2},
+			binding_pairs=frozenset({("E1", "R1")}),
+			rules=BINDING_RULES,
+		)
+	)
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 0  # bound, nothing on the books
+	assert assigned(x, employee="E2") == 1  # opted out, staffs the room
+
+
+def test_binding_rule_is_inert_without_binding_pairs():
+	"""No role marked binding => the rule adds nothing, so the schedule is unchanged."""
+	data = {"working_days": days_from(2), "target_shifts": {"E1": 2}}
+	_prob, with_rule, _ = solve(pkg(**data, rules=BINDING_RULES))
+	_prob2, without, _ = solve(
+		pkg(**data, rules=builtin_specs("warm_start", "one_shift_per_day", "room_coverage"))
+	)
+	assert assigned(with_rule) == assigned(without)
+
+
+def test_binding_composes_with_the_existing_assignment_choices():
+	"""
+	`bind_role_assignments` is deliberately not in the `existing_assignments` choice group:
+	binding is gated by role data, not a third global policy, so it must combine with
+	either member.
+	"""
+	for member in ("use_existing_assignments", "weigh_assignments_objective"):
+		rules = builtin_specs("warm_start", "bind_role_assignments", "one_shift_per_day", member)
+		BuiltinRule.check_ruleset({key for _, key, _, _ in rules})
+
+
+def test_binding_rule_requires_the_warm_start():
+	with pytest.raises(ValueError, match="warm_start"):
+		BuiltinRule.check_ruleset({"bind_role_assignments"})
 
 
 def test_custom_code_without_apply_raises():

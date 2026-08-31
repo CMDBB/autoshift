@@ -74,11 +74,25 @@ Doctypes (`autoshift/autoshift/doctype/`):
 - **Scheduling Role** — the optimizer's unit of *capability*, and what replaced designation
   as the scheduling axis: a role names exactly one discipline (Link to `Department`) and a
   max-rooms-per-holder figure. Designation is payroll data and is no longer read.
+  `assignments_binding` (Check, default off) marks a role whose schedule is settled by its
+  holders rather than by the planner — see "Role binding" below.
 - **Employee Scheduling Role** — the employee x role relation, a **standalone doctype rather
   than a child table** so `zawin2frappe` can import into it directly. Carries `role_fte` (the
   *informally* agreed FTE % in that role — blank means no expectation), an optional
-  `max_rooms` override, `active`, and a `valid_from`/`valid_to` window. An employee holding no
-  in-window role is not scheduled at all; that is how non-clinical staff stay out of scope.
+  `max_rooms` override, a `binding_override` Select (blank inherits the role's
+  `assignments_binding`, same nullable-override convention as `max_rooms`), `active`, and a
+  `valid_from`/`valid_to` window. An employee holding no in-window role is not scheduled at
+  all; that is how non-clinical staff stay out of scope.
+- **Scheduling Rule Topic** — an optional heading an `Optimization Rule` files itself under
+  (`Optimization Rule.topic`, a Link), so Optimizer Studio's toggle panel renders as
+  collapsible sections instead of one flat list. **Orthogonal to `BuiltinRule.group`**: a
+  group is a mutual-exclusion choice set `check_ruleset` enforces, a topic constrains
+  nothing. Built-ins declare theirs in `rules.py` (`TOPIC_*` constants, `TOPIC_ORDER` for
+  display order) and the seeding re-syncs both the topic documents (`is_system=1`) and each
+  rule's `topic` on every migrate; hand-authored topics (`is_system=0`) are never touched,
+  and Custom Code rules may file themselves under any of them. Topics bucket only the
+  *top-level* rules — a rule nested by `requires` follows its parent into whichever section
+  the parent landed in, because the dependency is the more useful thing to see.
 - **Employee Settings** (+ children `Employee Shift Preference`, `Employee Branch Preference`)
   — per-employee shift/branch preference overrides.
 - **Leave Speculation** — child of Optimizer Run; treats a *pending* leave as approved for
@@ -102,8 +116,30 @@ Doctypes (`autoshift/autoshift/doctype/`):
 shortcut) — a workspace-level abstraction over Optimizer Run + Optimization Ruleset, and
 the first "automatic"-run surface: Planning Mode / Start Date / a human-readable panel of
 rule toggles (choice groups as radios incl. an explicit "None", everything else as
-checkboxes with a weight input on Objective/Mixed rules), a "Populate From Run" link
-picker to seed the panel from an existing run's configuration, and a "Preview Schedule"
+checkboxes with a weight input on Objective/Mixed rules).
+**The panel is designed so a failing ruleset is unreachable, not merely rejected later.**
+All three of `check_ruleset`'s failure modes are made structural: a choice group is radios
+(≤1 member); `requires` becomes *nesting* — `index_catalog` builds a forest and a child is
+drawn inside the rule it requires, its checkbox disabled until the parent is on, so the
+parent reads as a fieldset; and `excludes` disables and unchecks its targets. Blocked rows
+are dimmed and carry a `title` tooltip naming the rule that blocked them. The decision half
+(`blocked_reasons(checked)`) is deliberately DOM-free so that invariant is testable on its
+own; `sync_dependencies()` applies it to the DOM and re-runs to a fixpoint, since
+unchecking a parent can orphan a grandchild. Grouped rules are the one thing not nested —
+`existing_assignments`' members have different requirements, so nesting would split the
+radio set — their dependency is enforced dynamically instead. Note that rows nest, so every
+DOM read is scoped to a row's **own** controls (`own_toggle`/`own_weight`); a plain
+`.find()` reaches into child rows and reports a parent as selected whenever a descendant
+is.
+Both solve entry points (the Optimizer Run form's Solve button and Studio's Preview) first
+call a binding-gap check — `OptimizerRun.check_binding_rule_gap` /
+`optimizer_studio.check_binding_rule_gap`, both thin wrappers over
+`data_loader.binding_rule_gap` — and confirm before running when the site marks roles
+binding but the selection omits `bind_role_assignments`. A settled schedule that no rule
+enforces is silently re-planned and nothing downstream would show that, so it has to be
+said before the solve, not after.
+Studio's other pieces: a "Populate From Run" link picker to seed the panel from an existing
+run's configuration, and a "Preview Schedule"
 primary action. Deliberately duplicates a couple of Optimizer Run's own fields (mode,
 date) in the page toolbar rather than being a form tab — it's meant to abstract *over*
 runs, not edit one. Every preview writes into one ruleset per user (`Studio Draft —
@@ -156,8 +192,19 @@ Optimizer engine (`autoshift/optimizer/`, pure-Python where possible for testabi
    (`set_room_utilization_default_weight`) to reach existing sites.
    `use_existing_assignments` and `weigh_assignments_objective` share `group="existing_assignments"`
    — the old `disregard_assignments` run field's `Use`/`Weigh` choice, with `Ignore` now simply
-   "neither rule selected" rather than a third state. Custom Code rules carry none of this
+   "neither rule selected" rather than a third state. `bind_role_assignments` deliberately
+   sits *outside* that group (it is scoped by role data, not a fourth global policy) so it
+   composes with either member. Custom Code rules carry none of this
    metadata and are exempt from every check.
+   **`apply_rules` reorders the specs** via `order_specs` — a stable topological sort over
+   `requires`. `_load_rules` hands them over sorted by *document name* (for `input_hash`
+   stability), which is not the dependency order: `warm_start`'s title sorts last, so every
+   `fixValue()` rule that depends on it used to run first and silently do nothing
+   (`pulp.LpVariable.fixValue` is a no-op while `varValue is None`). That bug made
+   `use_existing_assignments` and `leave_blocklist` inert on every ruleset-driven run —
+   people on approved leave were being scheduled. The unit tests missed it because `pkg()`
+   sets no `rules` and the legacy fallback happens to yield definition order; the regression
+   tests now build specs from the real document titles (`titled_specs`).
 3. `data_loader.py` — `load(run_doc)` hydrates a `DataPackage` from the Frappe DB; resolves
    the run's ruleset into `(rule_name, builtin_key, custom_code, weight)` tuples (throws on
    unimplemented/unvalidated rules; sorted by name for hash stability); normalizes
@@ -206,6 +253,32 @@ because the latter returns no child rows (it was silently dropping Employee Sett
 preference tables and the DDBC shift-type selection) and cannot read Singles at all.
 `capture-datapackage` snapshots a run's resolved `DataPackage` for the sandbox notebook.
 
+## Role binding (settled schedules)
+
+Some roles' holders set their own schedules — a fact about a practice's power structure, so
+**nothing about which roles those are belongs in this repo**. autoshift ships the mechanism,
+defaulting to off; `zawin2frappe` populates `Scheduling Role.assignments_binding` and
+`Employee Scheduling Role.binding_override` from the `cmdb_frappe` profile, and the
+recency-biased statistical inference of *whether* a given person's schedule has actually
+settled lives there too.
+
+Semantics are **freeze-completely**, not "honor what exists": for a bound `(employee, role)`
+pair the `bind_role_assignments` rule calls `fixValue()` on *every* one of their variables,
+so `warm_start`'s 1/0 initialization pins their existing shifts on and everything else off.
+A day they have nothing on the books stays empty — filling those gaps is the free-seat /
+chair-auction question, deliberately out of scope. The loader resolves the pairs into
+`DataPackage.binding_pairs`, and `_load` prefers a binding role when a Shift Assignment's
+role is ambiguous (an employee holding two roles in one discipline), so a settled schedule is
+attributed to the role that is actually settled rather than to whichever sorts first.
+
+**Leave wins.** The loader drops any existing assignment falling on a leave-blocked day
+instead of adding it to `forced` — forcing both would be infeasible — and records it in
+`DataPackage.binding_conflicts`, which `get_run_statistics()` surfaces as a warning
+(`run_stats.js` already styles `severity: "warning"`, so this needed no JS). This applies to
+every employee, not just bound ones: it is the same physical contradiction, and it retires
+the unconditional `ValueError` `warm_start` used to raise for it. That raise is kept as a
+defensive invariant for hand-built packages in tests and `sandbox/`.
+
 ## To be implemented (scaffolding exists; feature path is incomplete, not "broken")
 
 - gh issue #5 **Run → `Shift Assignment` link-back after commit.** `73e98fa` ("start online
@@ -220,11 +293,19 @@ preference tables and the DDBC shift-type selection) and cannot read Singles at 
   `Shift Location.custom_discipline` exist as scaffolding, but `model_builder.py` only tracks
   an aggregate room *count* per discipline/slot — nothing assigns a specific room yet.
   Backlog, same as `Unbounded` mode.
+- **Free-seat / chair auction** (no issue filed yet). Role binding freezes a settled schedule
+  completely, so a bound holder's empty day stays empty. Attributing those free seats — by
+  auction or otherwise — is an active lead, but no design work has started.
 - **Dependency-graph inference for Custom Code rules** (no issue filed yet). `requires` /
   `excludes` / `group` are built-in-only, hand-authored in `rules.py`; a Custom Code rule
   declares none of it, so a user ruleset combining custom rules gets no compatibility
   checking at all. Backlog idea: statically introspect a Custom Code rule's `ctx.data.*` /
-  `ctx.x` access to suggest (not enforce) likely conflicts. No design work started.
+  `ctx.x` access to suggest (not enforce) likely conflicts. No design work started, but
+  **the value went up** once Studio started rendering `requires` as nesting and `excludes`
+  as disabling: a custom rule currently sits flat and unconstrained in a panel where every
+  built-in visibly declares what it depends on, and it is the one way left to reach a
+  ruleset the panel cannot otherwise express. Inferred metadata would feed straight into
+  the existing `index_catalog` / `blocked_reasons` machinery.
 
 ## Why a schedule used to come out half-empty (2026-08-26)
 

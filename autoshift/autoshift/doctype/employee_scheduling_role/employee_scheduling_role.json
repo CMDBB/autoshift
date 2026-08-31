@@ -12,6 +12,7 @@
   "column_break_1",
   "role_fte",
   "max_rooms",
+  "binding_override",
   "section_break_validity",
   "active",
   "column_break_2",
@@ -62,6 +63,13 @@
    "fieldtype": "Int",
    "label": "Max Rooms Override",
    "non_negative": 1
+  },
+  {
+   "description": "Blank inherits Scheduling Role's Assignments Are Binding. Set \"Not Binding\" for a holder whose schedule has not settled yet — they are then scheduled normally while the rest of the role stays frozen.",
+   "fieldname": "binding_override",
+   "fieldtype": "Select",
+   "label": "Binding Override",
+   "options": "\nBinding\nNot Binding"
   },
   {
    "fieldname": "section_break_validity",

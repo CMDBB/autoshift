@@ -59,25 +59,38 @@ frappe.ui.form.on("Optimizer Run", {
 
 		if (frm.doc.status === "Draft") {
 			frm.add_custom_button(__("Solve"), () => {
-				frm.call("check_duplicates").then(
-					({ message: { n: cache_hits_n, cached_runs_list_link: link } }) => {
-						frappe.confirm(
-							cache_hits_n == 0
-								? __(
-										"Run the optimizer? Large problems that don't finish quickly will automatically continue in the background."
-								  )
-								: __(
-										"Identical run detected: {0} {1} already solved this exact input. Run the optimizer anyway?",
-										[cache_hits_n, link]
-								  ),
-							() => {
-								frm.call("solve").then((r) => {
-									frm.reload_doc();
-								});
-							}
-						);
+				Promise.all([
+					frm.call("check_duplicates"),
+					frm.call("check_binding_rule_gap"),
+				]).then(([{ message: duplicates }, { message: binding }]) => {
+					const { n: cache_hits_n, cached_runs_list_link: link } = duplicates;
+					let msg =
+						cache_hits_n == 0
+							? __(
+									"Run the optimizer? Large problems that don't finish quickly will automatically continue in the background."
+							  )
+							: __(
+									"Identical run detected: {0} {1} already solved this exact input. Run the optimizer anyway?",
+									[cache_hits_n, link]
+							  );
+					// A settled schedule that no rule enforces is silently overwritten, and
+					// nothing downstream would show that — so say it before solving, not after.
+					if (binding && binding.gap) {
+						msg =
+							`<p class="text-warning">${__(
+								"{0} employee(s) hold a Scheduling Role whose assignments are binding ({1}), but this ruleset does not include the <b>Bind settled schedules</b> rule. Their settled schedules will be ignored and re-planned from scratch.",
+								[
+									binding.employees,
+									frappe.utils.escape_html(binding.roles.join(", ")),
+								]
+							)}</p>` + `<p>${msg}</p>`;
 					}
-				);
+					frappe.confirm(msg, () => {
+						frm.call("solve").then(() => {
+							frm.reload_doc();
+						});
+					});
+				});
 			}).addClass("btn-primary");
 		}
 

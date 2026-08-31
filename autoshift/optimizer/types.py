@@ -78,6 +78,19 @@ class DataPackage:
 	RULE = tuple[RULE_DOCUMENT_NAME, BUILTIN_KEY, CUSTOM_CODE, WEIGHT]
 	rules: tuple[RULE, ...] = ()
 
+	# (employee, role) pairs whose schedule is settled and not the optimizer's to decide:
+	# the `bind_role_assignments` rule freezes every one of their variables at the warm
+	# start, so they work exactly the Shift Assignments already on the books and nothing
+	# else. Sourced from Scheduling Role.assignments_binding, per-holder overridable via
+	# Employee Scheduling Role.binding_override. Empty unless a role is marked binding.
+	binding_pairs: frozenset[tuple[str, str]] = frozenset()
+
+	# existing Shift Assignments dropped because the employee is on (or speculated on)
+	# leave that day: (employee, role, shift_type, date, branch). Leave wins over a settled
+	# schedule, but a planner needs to be told — the run-statistics panel reports these.
+	# Sorted, so it does not perturb `input_hash` between otherwise identical runs.
+	binding_conflicts: tuple[tuple[str, str, str, datetime.date, str], ...] = ()
+
 	def input_hash(self) -> str:
 		"""
 		Stable hash of every field that influences the MILP solution.
@@ -127,6 +140,11 @@ class DataPackage:
 			],
 			"shift_preferences": self.shift_preferences,
 			"rules": [list(rule) for rule in self.rules],
+			"binding_pairs": [[employee, role] for employee, role in sorted(self.binding_pairs)],
+			"binding_conflicts": [
+				[employee, role, shift_type, date.isoformat(), branch]
+				for employee, role, shift_type, date, branch in self.binding_conflicts
+			],
 		}
 		return json.dumps(payload)
 
@@ -168,6 +186,12 @@ class DataPackage:
 			rules=tuple(
 				(rule[0], rule[1], rule[2], rule[3] if len(rule) > 3 else 1.0)
 				for rule in payload.get("rules", [])
+			),
+			# absent from packages captured before role binding existed: nobody was bound
+			binding_pairs=frozenset((employee, role) for employee, role in payload.get("binding_pairs", [])),
+			binding_conflicts=tuple(
+				(employee, role, shift_type, datetime.date.fromisoformat(date), branch)
+				for employee, role, shift_type, date, branch in payload.get("binding_conflicts", [])
 			),
 		)
 

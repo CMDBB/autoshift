@@ -43,6 +43,30 @@ KIND_OBJECTIVE = "Objective"
 KIND_MIXED = "Mixed"
 KIND_OTHER = "Other"
 
+# Topics: an optional heading a rule files itself under, purely to give Optimizer Studio's
+# toggle panel collapsible sections. Orthogonal to `BuiltinRule.group` — a group is a
+# mutual-exclusion choice set the solver enforces, a topic constrains nothing. Seeded as
+# `Scheduling Rule Topic` documents (is_system) so Custom Code rules can file themselves
+# under one too; TOPIC_ORDER is their display order.
+TOPIC_EXISTING_ASSIGNMENTS = "Existing Assignments"
+TOPIC_AVAILABILITY = "Availability & Workload"
+TOPIC_COVERAGE = "Room Coverage"
+TOPIC_PREFERENCES = "Preferences"
+
+TOPIC_ORDER: tuple[str, ...] = (
+	TOPIC_COVERAGE,
+	TOPIC_AVAILABILITY,
+	TOPIC_EXISTING_ASSIGNMENTS,
+	TOPIC_PREFERENCES,
+)
+
+TOPIC_DESCRIPTIONS: dict[str, str] = {
+	TOPIC_COVERAGE: "How many rooms open, and how hard the schedule tries to fill them.",
+	TOPIC_AVAILABILITY: "When somebody may work at all: leave, one-shift-a-day, and FTE limits.",
+	TOPIC_EXISTING_ASSIGNMENTS: "What the optimizer does with Shift Assignments already on the books.",
+	TOPIC_PREFERENCES: "Whose stated shift and branch preferences the schedule tries to honor.",
+}
+
 
 @dataclass
 class RuleContext:
@@ -93,6 +117,8 @@ class BuiltinRule:
 	# means "ignore". Built-in only; Custom Code rules have no group and are never checked
 	# against one (`check_ruleset` only looks rules up by builtin key).
 	group: str | None = None
+	# Optional presentation-only heading (one of TOPIC_*); see the topic constants above.
+	topic: str | None = None
 
 	@staticmethod
 	def check_ruleset(ruleset: set[str]) -> None:
@@ -132,6 +158,7 @@ def builtin_rule(
 	excludes: dict[FunctionType, str] | None = None,
 	group: str | None = None,
 	default_weight: float = 1.0,
+	topic: str | None = None,
 ):
 	"""Register a function as a built-in optimization rule."""
 
@@ -146,6 +173,7 @@ def builtin_rule(
 			excludes={k.__name__: v for k, v in (excludes or {}).items()},
 			group=group,
 			default_weight=default_weight,
+			topic=topic,
 		)
 		if standard:
 			STANDARD_RULES.add(fn.__name__)
@@ -187,6 +215,7 @@ def _vname(*parts) -> str:
 	"Scheduling Roles. Holding a second role widens where somebody can be scheduled, never "
 	"how much they can work.",
 	standard=True,
+	topic=TOPIC_AVAILABILITY,
 )
 def one_shift_per_day(ctx: RuleContext) -> None:
 	data = ctx.data
@@ -209,6 +238,7 @@ def one_shift_per_day(ctx: RuleContext) -> None:
 	"and is used as a baseline for other rules.",
 	standard=True,
 	kind=KIND_OTHER,
+	topic=TOPIC_EXISTING_ASSIGNMENTS,
 )
 def warm_start(ctx: RuleContext) -> None:
 	data = ctx.data
@@ -225,6 +255,7 @@ def warm_start(ctx: RuleContext) -> None:
 	"assigned a shift on the leave days.",
 	standard=True,
 	requires={warm_start: "{r} doesn't set its values, include {req}"},
+	topic=TOPIC_AVAILABILITY,
 )
 def leave_blocklist(ctx: RuleContext) -> None:
 	data = ctx.data
@@ -244,6 +275,7 @@ def leave_blocklist(ctx: RuleContext) -> None:
 	standard=True,
 	requires={warm_start: "{r} doesn't set its values, include {req}"},
 	group="existing_assignments",
+	topic=TOPIC_EXISTING_ASSIGNMENTS,
 )
 def use_existing_assignments(ctx: RuleContext) -> None:
 	for comb in ctx.data.forced:
@@ -255,9 +287,32 @@ def use_existing_assignments(ctx: RuleContext) -> None:
 
 
 @builtin_rule(
+	"Bind settled schedules",
+	"Holders of a Scheduling Role whose assignments are binding keep exactly the Shift "
+	"Assignments already on the books: the optimizer may not add, move or drop any of them. "
+	"For a role whose schedule is settled by its holders rather than by the planner. "
+	"Individual holders opt out with a Binding Override on their Employee Scheduling Role — "
+	"somebody whose schedule has not settled yet is scheduled normally. Approved leave still "
+	"wins over a settled assignment. Inert until some Scheduling Role is marked binding.",
+	standard=True,
+	requires={warm_start: "{r} fixes variables at their warm-start values, include {req}"},
+	topic=TOPIC_EXISTING_ASSIGNMENTS,
+)
+def bind_role_assignments(ctx: RuleContext) -> None:
+	# warm_start has set every variable to 1 (in `forced`) or 0 (not), so fixing *all* of a
+	# bound pair's variables pins their existing shifts on and everything else off. Freezing
+	# only the `forced` ones would honor what they have without stopping the optimizer
+	# adding more, which is not what "settled" means.
+	for (e, r, *_), var in ctx.x.items():
+		if (e, r) in ctx.data.binding_pairs:
+			var.fixValue()
+
+
+@builtin_rule(
 	"One Branch per Shift",
 	"Employees can't cover more than one branch during a single shift.",
 	standard=False,
+	topic=TOPIC_COVERAGE,
 )
 def one_branch_per_shift(ctx: RuleContext) -> None:
 	data = ctx.data
@@ -275,6 +330,7 @@ def one_branch_per_shift(ctx: RuleContext) -> None:
 	"contributed by the Scheduling Roles assigned in that discipline (each contributes its "
 	"max-rooms figure), capped at the branch's configured room count.",
 	standard=True,
+	topic=TOPIC_COVERAGE,
 )
 def room_coverage(ctx: RuleContext) -> None:
 	"""Note that the branch room cap is modeled by the variable bound."""
@@ -307,6 +363,7 @@ def room_coverage(ctx: RuleContext) -> None:
 	"105% x their FTE-derived target; utilization pressure toward the target "
 	"comes from the objective.",
 	standard=True,
+	topic=TOPIC_AVAILABILITY,
 )
 def fte_ceiling(ctx: RuleContext) -> None:
 	data = ctx.data
@@ -335,6 +392,7 @@ def fte_ceiling(ctx: RuleContext) -> None:
 	"by default, because these splits are normally informal expectations rather than "
 	"entitlements — the objective rule of the same name is the usual way to express them.",
 	standard=False,
+	topic=TOPIC_AVAILABILITY,
 )
 def role_fte_ceiling(ctx: RuleContext) -> None:
 	data = ctx.data
@@ -362,6 +420,7 @@ def role_fte_ceiling(ctx: RuleContext) -> None:
 	# `room_coverage` takes the *minimum* over a discipline's roles, so opening one room
 	# costs two or more assignments, and the schedule collapses to near-empty.
 	default_weight=3.0,
+	topic=TOPIC_COVERAGE,
 )
 def room_utilization_objective(ctx: RuleContext) -> None:
 	ctx.add_objective(pulp.lpSum(ctx.active_rooms.values()))
@@ -374,6 +433,7 @@ def room_utilization_objective(ctx: RuleContext) -> None:
 	"agreed figure are unpenalized, and bounded only by the employee's overall FTE ceiling.",
 	kind=KIND_OBJECTIVE,
 	standard=True,
+	topic=TOPIC_AVAILABILITY,
 )
 def role_fte_target_objective(ctx: RuleContext) -> None:
 	"""Absolute deviation, linearized.
@@ -404,6 +464,7 @@ def role_fte_target_objective(ctx: RuleContext) -> None:
 	"Settings); assignments to less-preferred shifts score lower.",
 	kind=KIND_OBJECTIVE,
 	standard=True,
+	topic=TOPIC_PREFERENCES,
 )
 def shift_preference_objective(ctx: RuleContext) -> None:
 	data = ctx.data
@@ -424,6 +485,7 @@ def shift_preference_objective(ctx: RuleContext) -> None:
 	kind=KIND_OBJECTIVE,
 	standard=False,
 	group="existing_assignments",
+	topic=TOPIC_EXISTING_ASSIGNMENTS,
 )
 def weigh_assignments_objective(ctx: RuleContext) -> None:
 	data = ctx.data
@@ -480,6 +542,51 @@ def _get_legacy_ruleset(ctx: RuleContext) -> tuple[DataPackage.RULE, ...]:
 	return tuple((rule.title, key, "", 1.0) for key, rule in BUILTIN_RULES.items() if key in STANDARD_RULES)
 
 
+def order_specs(specs: tuple[DataPackage.RULE, ...]) -> tuple[DataPackage.RULE, ...]:
+	"""
+	Order rule specs so a rule runs after every built-in it ``requires``.
+
+	``DataPackage.rules`` arrives sorted by *document name* (``data_loader._load_rules``
+	sorts that way to keep ``DataPackage.input_hash`` stable), which has nothing to do
+	with the dependency graph: ``warm_start``'s title sorts last among the standard
+	rules, so every ``fixValue()`` rule that depends on it used to run first and do
+	nothing at all — ``pulp.LpVariable.fixValue`` is a silent no-op while ``varValue``
+	is ``None``. ``requires`` declared the dependency but nothing enforced it as an
+	order.
+
+	Stable topological sort: a spec is emitted once every built-in it requires (and
+	that is actually part of this selection — ``check_ruleset`` has already rejected
+	missing ones) has been emitted, preserving the incoming order as the tiebreak so
+	the result stays deterministic. Custom Code rules declare no metadata, so they
+	simply keep their position. A dependency cycle falls back to the incoming order
+	rather than dropping rules or looping forever.
+	"""
+	selected = {key for _, key, _, _ in specs if key}
+	emitted: set[str] = set()
+
+	def is_ready(spec: DataPackage.RULE) -> bool:
+		rule = BUILTIN_RULES.get(spec[1])
+		if rule is None:  # Custom Code (or an unknown key apply_rules will reject)
+			return True
+		# only wait on requirements that are part of this selection; check_ruleset has
+		# already rejected a selection missing one
+		return not (rule.requires.keys() & selected) - emitted
+
+	pending = list(specs)
+	ordered: list[DataPackage.RULE] = []
+	while pending:
+		# partitioning `pending` in place keeps the incoming order as the tiebreak
+		ready = [spec for spec in pending if is_ready(spec)]
+		blocked = [spec for spec in pending if not is_ready(spec)]
+		if not ready:  # cycle among `requires` — emit the rest as they came
+			ordered.extend(pending)
+			break
+		ordered.extend(ready)
+		emitted.update(spec[1] for spec in ready if spec[1])
+		pending = blocked
+	return tuple(ordered)
+
+
 def apply_rules(ctx: RuleContext) -> str:
 	"""
 	Apply the rules selected in ``ctx.data.rules`` to the problem.
@@ -487,9 +594,13 @@ def apply_rules(ctx: RuleContext) -> str:
 	Each spec's weight scales the objective terms the rule contributes (via
 	``ctx.add_objective``); constraint rules are unaffected by it. An empty
 	selection applies every built-in rule at weight 1.0 (pre-ruleset behaviour).
+
+	Rules are applied in dependency order (see :func:`order_specs`), not in the
+	order the specs arrive.
 	"""
 	specs = ctx.data.rules or _get_legacy_ruleset(ctx)
 	BuiltinRule.check_ruleset({key for _, key, _, _ in specs})
+	specs = order_specs(specs)
 	logs = io.StringIO()
 	for name, builtin_key, code, weight in specs:
 		ctx._current_weight = weight

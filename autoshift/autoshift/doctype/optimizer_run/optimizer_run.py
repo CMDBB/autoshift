@@ -13,8 +13,9 @@ SYNC_TIME_LIMIT = 5
 
 
 def datapackage_cache_key(run_name) -> str:
-	# v2: packages cached before DataPackage.rules existed deserialize without it
-	return f"DataPackage:v2:{run_name}"
+	# v3: packages cached before role binding existed carry no binding_pairs /
+	# binding_conflicts, so a stale entry would silently unfreeze a settled schedule
+	return f"DataPackage:v3:{run_name}"
 
 
 # Approximate hue (HSV degrees) of each named "Roster Color" on Shift Type, so a
@@ -104,6 +105,14 @@ class OptimizerRun(Document):
 			"n": len(cached_names),
 			"cached_runs_list_link": frappe.utils.get_filtered_list_link("Optimizer Run", cached_names),
 		}
+
+	@frappe.whitelist()
+	def check_binding_rule_gap(self):
+		"""Does this run's ruleset omit the binding rule while the site marks roles binding?
+
+		Cheap config query — no DataPackage, so it is safe to call before solving.
+		"""
+		return data_loader.ruleset_binding_rule_gap(self.ruleset)  # ty:ignore[unresolved-attribute]
 
 	@frappe.whitelist()
 	def solve(self):
@@ -361,12 +370,13 @@ class OptimizerRun(Document):
 
 		    {
 		      "totals": {room_slots_staffed, room_slots_capacity, assignments,
-		                 assignments_forced, target_shifts, employees_considered,
-		                 employees_scheduled, objective_value},
+		                 assignments_forced, assignments_bound, target_shifts,
+		                 employees_considered, employees_scheduled, objective_value},
 		      "coverage": [{discipline, staffed, capacity, supply_bound, limiting_role,
 		                    branches: [{branch, staffed, capacity}]}],
 		      "matrix": [{discipline, branch, date, shift_type, staffed, capacity}],
 		      "employees": [{employee, employee_name, target, assigned}],  # by deficit
+		      "binding_conflicts": [{employee, scheduling_role, shift_type, date, branch}],
 		      "warnings": [{severity, message}],
 		      "objective_breakdown": {rule_name: value} | None,
 		    }
@@ -493,6 +503,25 @@ class OptimizerRun(Document):
 						),
 					}
 				)
+		if data.binding_conflicts:
+			sample = ", ".join(
+				f"{employee} ({date})"
+				for employee, _role, _shift, date, _branch in data.binding_conflicts[:3]
+			)
+			warnings.append(
+				{
+					"severity": "warning",
+					"message": frappe._(
+						"{0} existing Shift Assignment(s) fall on a day the employee is on leave and "
+						"were dropped — leave wins over a settled schedule. Fix the underlying "
+						"records if that is not what should happen: {1}{2}"
+					).format(
+						len(data.binding_conflicts),
+						sample,
+						"…" if len(data.binding_conflicts) > 3 else "",
+					),
+				}
+			)
 		under_target = sum(1 for r in employee_rows if r["assigned"] < r["target"])
 		if under_target:
 			warnings.append(
@@ -518,6 +547,9 @@ class OptimizerRun(Document):
 				"room_slots_capacity": sum(c["capacity"] for c in matrix),
 				"assignments": len(slots),
 				"assignments_forced": sum(1 for s in slots if s.forced),
+				"assignments_bound": sum(
+					1 for s in slots if (s.employee, s.scheduling_role) in data.binding_pairs
+				),
 				"target_shifts": sum(data.target_shifts.get(e, 0) for e in data.employees),
 				"employees_considered": len(data.employees),
 				"employees_scheduled": len(assigned_per_emp),
@@ -526,6 +558,16 @@ class OptimizerRun(Document):
 			"coverage": coverage,
 			"matrix": matrix,
 			"employees": employee_rows,
+			"binding_conflicts": [
+				{
+					"employee": employee,
+					"scheduling_role": role,
+					"shift_type": shift_type,
+					"date": str(date),
+					"branch": branch,
+				}
+				for employee, role, shift_type, date, branch in data.binding_conflicts
+			],
 			"warnings": warnings,
 			"objective_breakdown": breakdown,
 		}
