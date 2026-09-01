@@ -24,7 +24,6 @@
   "solver_log",
   "objective_breakdown",
   "schedule_tab",
-  "stats_html",
   "schedule_view_html"
  ],
  "fields": [
@@ -150,10 +149,6 @@
    "fieldname": "schedule_tab",
    "fieldtype": "Tab Break",
    "label": "Schedule View"
-  },
-  {
-   "fieldname": "stats_html",
-   "fieldtype": "HTML"
   },
   {
    "fieldname": "schedule_view_html",

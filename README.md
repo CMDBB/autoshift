@@ -207,9 +207,41 @@ Status becomes **Solved** on success or **Failed** if no feasible schedule exist
 
 ### Step 3 — Review the Solution
 
-The **Assigned Slots** table shows the full schedule: employee, shift type, date, branch, and whether the slot was forced from an existing Shift Assignment. The **Objective Value** shows the raw MILP objective score (higher is better).
+The **Schedule View** tab carries four ways of reading the run, and is up in every state —
+including a Draft you have not solved yet and a run that failed.
 
-Check the **Solver Log** section for CBC solver output if you need to diagnose infeasibility.
+| Pane | What it answers |
+|---|---|
+| **Week** | *Is the practice covered?* A one-week wall chart: treatment rooms down the page, days across. Always available. |
+| **Statistics** | *Is the schedule full, and if not, why?* Coverage meters, FTE gaps, each rule's share of the objective. |
+| **Roster** | *What did this person get?* The per-employee grid, with existing assignments and leave alongside. |
+| **Solver Log** | CBC's raw output, for diagnosing infeasibility. Available on a failed run too. |
+
+The **Week** chart is built entirely from your configuration: one band per *(branch,
+discipline)* from **Discipline Branch Config**, as many numbered rows as it has rooms, and
+one column per **Scheduling Role** of that discipline. So an unstaffed room is a blank row
+and a role nobody covers is a blank column — you can see a gap without reading a number.
+Use ◀ ▶ to move between weeks.
+
+Before the run is solved the chart shows the **Shift Assignments already on the books**.
+Once it is solved, each cell says what the run did with that half-day:
+
+| | |
+|---|---|
+| **Kept** | already on the books, and the run scheduled it again |
+| **Added** | proposed by the run; nothing on the books for it |
+| **Dropped** | on the books, and the run did **not** schedule it |
+| → | kept, but moved — hover for what changed |
+| ★ | pinned rather than chosen (a binding role, or an existing assignment being honoured) |
+
+Anyone the chart cannot place — a role with no Discipline Branch Config, a branch with no
+config, a Shift Type the config omits — appears under **Unplaced** with the reason stated
+above the chart, so nobody is ever quietly missing. People on leave that week are listed
+under the chart: usually the answer to why a room is empty.
+
+The **Assigned Slots** table on the first tab remains the raw record: employee, shift type,
+date, branch, and whether the slot was forced. The **Objective Value** is the raw MILP
+score (higher is better).
 
 ### Step 4 — Approve
 
