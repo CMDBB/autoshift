@@ -20,11 +20,11 @@ empty until somebody covers it. That emptiness is the point — the chart's job 
 to show what the configuration says *should* be staffed next to what actually
 is.
 
-The one judgement here is lane order, and it is `max_rooms` descending then
-name. A role whose holder covers more rooms sorts left, which puts a
-practitioner ahead of an assistant wherever that is how the numbers fall — a
-property of the site's own data, not a fact this package asserts about anybody's
-job.
+The one judgement here is lane order, and it is `Scheduling Role`'s optional
+`display_order_key` first, then `max_rooms` descending, then name — see
+`lane_sort_key`. Left to itself it is a property of the site's own data, not a
+fact this package asserts about anybody's job; where the derived order reads
+wrong, the key is the site's way of saying so.
 """
 
 from __future__ import annotations
@@ -88,6 +88,35 @@ def shift_type_order() -> list[str]:
 	return [row.name for row in sorted(rows, key=lambda r: (r.start_time or _NO_START_TIME, r.name))]
 
 
+#: Fields `lane_sort_key` reads. Kept next to it so a caller cannot select too
+#: few and get a silently different order.
+ROLE_ORDER_FIELDS = ["name", "display_order_key", "max_rooms"]
+
+
+def lane_sort_key(role) -> tuple[int, int, str]:
+	"""Where a Scheduling Role's column sits within its band.
+
+	`display_order_key` leads: an optional hand-set position, defaulting to 0, so
+	a negative value pulls a role ahead of every role nobody has ordered. Then
+	`max_rooms` descending — a role whose holder covers more rooms sorts left,
+	which puts a practitioner ahead of an assistant wherever that is how the
+	numbers happen to fall. Then name, so the chart is stable between rebuilds.
+
+	`source.infer_role` breaks its ties on the same key, so a Shift Assignment
+	whose role cannot be determined lands in the leftmost lane the employee could
+	plausibly have worked rather than an arbitrary one.
+	"""
+	return (int(role.display_order_key or 0), -(role.max_rooms or 0), role.name)
+
+
+def role_order() -> dict[str, tuple[int, int, str]]:
+	"""Every active role's lane sort key, by role name."""
+	return {
+		role.name: lane_sort_key(role)
+		for role in frappe.get_all("Scheduling Role", filters={"active": 1}, fields=ROLE_ORDER_FIELDS)
+	}
+
+
 def _config_shift_types() -> dict[str, set[str]]:
 	"""Discipline Branch Config name -> the Shift Types it puts in scope."""
 	out: dict[str, set[str]] = {}
@@ -109,15 +138,13 @@ def derive() -> Layout:
 	roles = frappe.get_all(
 		"Scheduling Role",
 		filters={"active": 1},
-		fields=["name", "role_name", "discipline", "max_rooms"],
+		fields=[*ROLE_ORDER_FIELDS, "role_name", "discipline"],
 	)
 	by_discipline: dict[str, list] = {}
 	for role in roles:
 		by_discipline.setdefault(role.discipline, []).append(role)
-	# max_rooms descending, then name. See the module docstring: this is the only
-	# ordering judgement in the derivation and it is made out of the site's data.
 	for group in by_discipline.values():
-		group.sort(key=lambda r: (-(r.max_rooms or 0), r.name))
+		group.sort(key=lane_sort_key)
 
 	labels = _department_labels({c.discipline for c in configs if c.discipline})
 	scoped = _config_shift_types()

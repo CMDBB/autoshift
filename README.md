@@ -66,6 +66,7 @@ discipline over-stating its capacity.
 | Role Name | e.g. "Ortho Assistant" |
 | Discipline | The Department this role staffs |
 | Max Rooms Per Holder | Rooms one holder covers simultaneously in a single slot |
+| Display Order Key | *Optional.* Where this role's column sits in the week wall chart — see below |
 | Assignments Are Binding | *Optional.* Holders keep exactly the Shift Assignments already on the books — see below |
 
 **Autoshift → Employee Scheduling Role** — one record per employee-capability pair.
@@ -82,6 +83,13 @@ discipline over-stating its capacity.
 **An employee with no Scheduling Role is not scheduled at all.** This is how non-clinical
 staff stay out of scope — `Employee.department` and `Employee.designation` are payroll data
 and are not read by the optimiser.
+
+**Display Order Key** affects presentation only, never the schedule. The week wall chart
+draws one column per role of a discipline, ordered by this key (default 0), then by Max
+Rooms Per Holder descending, then by name. Leave it alone unless the derived order reads
+wrong: setting a practitioner role to **-1** puts it ahead of every role still on 0, which
+is how you get the practitioner column to the left of the assistant one. It also breaks the
+tie when a Shift Assignment's role has to be inferred, so the chart and the inference agree.
 
 **Assignments Are Binding** is for a role whose schedule is settled by its holders rather
 than by the planner — a senior clinician whose week is fixed, say. Their existing Shift

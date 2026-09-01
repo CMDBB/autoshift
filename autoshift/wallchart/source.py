@@ -24,6 +24,7 @@ from collections import defaultdict
 
 import frappe
 
+from . import layout
 from .chart import KIND_ADDED, KIND_EXISTING, Slot, week_dates
 
 #: `Employee.custom_initials` belongs to zawin2frappe (see CLAUDE.md, "Custom
@@ -112,25 +113,27 @@ def _in_window(row: dict, day: datetime.date) -> bool:
 	return not (to and frappe.utils.getdate(to) < day)
 
 
-def _role_rank(name: str, role_max_rooms: dict[str, int]) -> tuple:
-	"""Same order the chart's lanes use, so an inference lands in the leftmost
-	lane the employee could plausibly have worked rather than an arbitrary one."""
-	return (-(role_max_rooms.get(name) or 0), name)
+#: Sort key for a role that is no longer active, so it ranks after every role
+#: the chart actually draws a lane for.
+_UNRANKED = (2**31, 0, "")
 
 
 def infer_role(
 	candidates: list[str],
 	discipline: str | None,
 	role_disciplines: dict[str, str | None],
-	role_max_rooms: dict[str, int],
+	role_order: dict[str, tuple],
 ) -> tuple[str | None, bool]:
 	"""Pick the role an employee most likely worked. Returns (role, certain).
 
 	A Shift Assignment names a Shift Location and a location names exactly one
 	discipline, so the discipline narrows the field first — which settles most
 	people outright. What survives is genuinely ambiguous (an assistant who also
-	holds Sterilization) and is decided by lane order, flagged uncertain. The
-	chart draws an uncertain placement differently rather than pretending.
+	holds Sterilization) and is broken by `layout.lane_sort_key`, the same order
+	the chart's lanes use, so the guess lands in the leftmost lane the employee
+	could plausibly have worked rather than an arbitrary one. It is flagged
+	uncertain either way and the chart draws it differently rather than
+	pretending.
 	"""
 	if not candidates:
 		return None, False
@@ -138,7 +141,7 @@ def infer_role(
 	pool = narrowed or candidates
 	if len(pool) == 1:
 		return pool[0], bool(narrowed) or len(candidates) == 1
-	return sorted(pool, key=lambda r: _role_rank(r, role_max_rooms))[0], False
+	return sorted(pool, key=lambda r: (role_order.get(r, _UNRANKED), r))[0], False
 
 
 def from_shift_assignments(monday: datetime.date, employees: list[str] | None = None) -> list[Slot]:
@@ -169,9 +172,7 @@ def from_shift_assignments(monday: datetime.date, employees: list[str] | None = 
 	branches = _location_branches()
 	disciplines = _location_disciplines()
 	role_disciplines = _role_disciplines()
-	role_max_rooms = {
-		r.name: r.max_rooms for r in frappe.get_all("Scheduling Role", fields=["name", "max_rooms"])
-	}
+	role_order = layout.role_order()
 	held = _held_roles(names)
 
 	slots: list[Slot] = []
@@ -188,9 +189,7 @@ def from_shift_assignments(monday: datetime.date, employees: list[str] | None = 
 				for held_row in held.get(row["employee"], [])
 				if _in_window(held_row, day)
 			]
-			role, certain = infer_role(
-				candidates, disciplines.get(location), role_disciplines, role_max_rooms
-			)
+			role, certain = infer_role(candidates, disciplines.get(location), role_disciplines, role_order)
 			slots.append(
 				Slot(
 					date=day,
@@ -232,11 +231,7 @@ def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 	needs_inference = any(not row["scheduling_role"] for row in rows)
 	disciplines = _location_disciplines() if needs_inference else {}
 	role_disciplines = _role_disciplines() if needs_inference else {}
-	role_max_rooms = (
-		{r.name: r.max_rooms for r in frappe.get_all("Scheduling Role", fields=["name", "max_rooms"])}
-		if needs_inference
-		else {}
-	)
+	role_order = layout.role_order() if needs_inference else {}
 	held = _held_roles(names) if needs_inference else {}
 
 	slots: list[Slot] = []
@@ -256,7 +251,7 @@ def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 				candidates,
 				disciplines.get(row["shift_location"] or ""),
 				role_disciplines,
-				role_max_rooms,
+				role_order,
 			)
 		slots.append(
 			Slot(

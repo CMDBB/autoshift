@@ -10,6 +10,7 @@
   "discipline",
   "column_break_1",
   "max_rooms",
+  "display_order_key",
   "assignments_binding",
   "active",
   "section_break_description",
@@ -47,6 +48,13 @@
    "label": "Max Rooms Per Holder",
    "non_negative": 1,
    "reqd": 1
+  },
+  {
+   "default": "0",
+   "description": "Where this role's column sits in the week wall chart, within its discipline. Lower sorts further left; leave at 0 unless you want to override the default order (most rooms per holder first, then name). Negative values sort ahead of every unset role.",
+   "fieldname": "display_order_key",
+   "fieldtype": "Int",
+   "label": "Display Order Key"
   },
   {
    "default": "0",

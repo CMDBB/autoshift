@@ -180,8 +180,12 @@ structurally cannot, coverage being a fact about rooms.
   `Shift Type.start_time`. A band is drawn only in the sections its config's `shift_types`
   actually list. So there is no layout file to keep in sync, and an unstaffed room is a
   blank row while an uncovered role is a blank column — which is the diagnostic.
-  Lane order is `max_rooms` descending then name: a property of the site's data, not a
-  claim this repo makes about anyone's job.
+  Lane order is `layout.lane_sort_key`: `Scheduling Role.display_order_key` (Int, default
+  0, so a negative value pulls a role ahead of every unordered one), then `max_rooms`
+  descending, then name. Left alone it is a property of the site's data rather than a
+  claim this repo makes about anyone's job; the key is how a site overrides it.
+  `source.infer_role` breaks its ties on the *same* key, so an inferred role lands in the
+  leftmost lane the employee could plausibly have worked.
 - Anything no band claims (a role with no config, a branch with no config, a Shift Type the
   config omits) lands in an **`Unplaced`** band with the reason stated. The chart never
   quietly loses somebody.
