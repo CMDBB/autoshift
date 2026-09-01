@@ -154,12 +154,64 @@ permanent name via `frappe.copy_doc`. The schedule-grid renderer itself
 `optimizer_run.js` into `autoshift/public/js/schedule_grid.js` (loaded via
 `frappe.require`, namespaced `autoshift.schedule_grid`) so the Optimizer Run form and
 Optimizer Studio render identically off the same `{days, employees, events}` shape both
-`get_schedule_events()` and Studio's `preview()`/`get_run_status()` return.
+`get_schedule_events()` and Studio's `preview()`/`get_run_status()` return. It is now the
+**Roster** pane of the shared schedule view below, no longer the primary visualization.
+
+**The schedule view** (`autoshift/public/js/schedule_view.js`, namespaced
+`autoshift.schedule_view`) — one tab bar, **Week / Statistics / Roster / Solver Log**,
+rendered by both the Optimizer Run form (into `schedule_view_html`; the second HTML field
+`stats_html` was removed) and Optimizer Studio's result area. Panes load lazily on first
+click and are cached. Statistics and Roster need a solved run and are *disabled with a
+tooltip* rather than hidden — a tab that vanishes reads as a missing feature. Solver Log
+needs only a run, so a **Failed** run's log is reachable, which the old solved-runs-only
+guard made impossible. Studio's `preview()`/`get_run_status()` therefore return
+`solver_log` on every outcome (shared `_run_result`), not only on failure.
+
+**The week wall chart** (`autoshift/wallchart/`, namespaced `autoshift.wall_chart` in
+`autoshift/public/js/wall_chart.js`) — the default pane and the **only always-on** one: it
+renders on a Draft, on a Failed run and in Studio before the first preview, because it
+falls back to the submitted `Shift Assignment`s on the books. Rooms down the page, days
+across; it answers "is Tuesday morning covered", which the per-employee roster grid
+structurally cannot, coverage being a fact about rooms.
+- **The layout is derived, never declared.** `layout.derive()` reads it out of the
+  configuration: one **band** per `Discipline Branch Config` row — i.e. per (branch,
+  discipline) — `rooms_num` numbered **rows**, one **lane** per active `Scheduling Role` in
+  that discipline, and one stacked **section** per `Shift Type`, ordered by
+  `Shift Type.start_time`. A band is drawn only in the sections its config's `shift_types`
+  actually list. So there is no layout file to keep in sync, and an unstaffed room is a
+  blank row while an uncovered role is a blank column — which is the diagnostic.
+  Lane order is `layout.lane_sort_key`: `Scheduling Role.display_order_key` (Int, default
+  0, so a negative value pulls a role ahead of every unordered one), then `max_rooms`
+  descending, then name. Left alone it is a property of the site's data rather than a
+  claim this repo makes about anyone's job; the key is how a site overrides it.
+  `source.infer_role` breaks its ties on the *same* key, so an inferred role lands in the
+  leftmost lane the employee could plausibly have worked.
+- Anything no band claims (a role with no config, a branch with no config, a Shift Type the
+  config omits) lands in an **`Unplaced`** band with the reason stated. The chart never
+  quietly loses somebody.
+- With a run, the cells are a **diff against the books** — `kept` / `added` / `dropped`,
+  plus `changed` ("was at …") on a kept half-day the run moved. `chart.merge` matches on
+  `(employee, date, shift_type)` and deliberately **not** on role: a Shift Assignment
+  records no role so `source.infer_role` guesses one, and matching on the guess would
+  report a re-plan every time it disagreed with the solver.
+- All seven days are always drawn; weekends and `Holiday List` days are dimmed, and days
+  outside the run's own `planning_days` window are dimmed differently — an empty Sunday is
+  nothing, a day the run never considered is a scope question, an empty working day is a
+  finding. People on approved (or speculated) leave get a strip under the chart rather than
+  a cell: they are the answer to "why is this chair empty".
+- Split like the optimizer package: `chart.py` is Frappe-free (dataclasses + placement,
+  covered by `tests/test_wallchart.py`), `layout.py` and `source.py` read the DB, `api.py`
+  holds the whitelisted `get_week_chart(week, run, mode)`. Cells print initials —
+  `Employee.custom_initials` where zawin2frappe has installed it (read, never shipped
+  here), otherwise derived from the name, so it works on a bench that has never seen the
+  import.
+- Generalized from `cmdb_frappe/planning/`, which stays where it is: that sheet's bands,
+  its practitioner/assistant tandem and its numbered chairs are one practice's paper.
 
 **Run statistics** (`OptimizerRun.get_run_statistics()` + `autoshift/public/js/run_stats.js`,
 namespaced `autoshift.run_stats`, same load-once/share pattern as the schedule grid) — the
-answer to "is this schedule actually full, and if not, why". Renders above the grid on the
-Optimizer Run form's Schedule View tab and in Studio's preview result. Reports room-slots
+answer to "is this schedule actually full, and if not, why". Now the **Statistics** pane of
+the shared schedule view rather than a block above the grid. Reports room-slots
 staffed vs. configured (headline tiles), per-discipline coverage meters, a
 discipline x day grid, employees below their FTE target, and each rule's share of the
 objective (`objective_breakdown`, persisted as JSON by the solver from
@@ -395,7 +447,9 @@ Consequences for work in this repo:
   `linter.yml` runs pre-commit, Frappe's Semgrep correctness rules, and `pip-audit`, gated on
   PRs. They however cannot be run locally, and don't cover everything.
 - `tests/test_optimizer.py` is a pure-Python unit suite (no Frappe context) covering
-  planning-day generation, hashing, every MILP constraint group. The doctype-level
+  planning-day generation, hashing, every MILP constraint group; `tests/test_wallchart.py`
+  is the same bargain for `wallchart/chart.py` (placement, overflow, the run-vs-books
+  merge). The doctype-level
   `IntegrationTestCase` stubs (`employee_settings`, `optimizer_settings`) are
   left as autogenerated by frappe, except for `test_optimizer_run.py` and
   `test_optimization_rule.py` (the developer-only implementation/validation gate).

@@ -178,27 +178,30 @@ def preview(mode: str, date: str, rows: str | dict, leaves_speculations: str | l
 	run.insert(ignore_permissions=True)
 
 	status = run.solve()
-	result = {"run": run.name, "status": status, "ruleset": ruleset_name}
-	if status == "Solved":
-		result["schedule"] = run.get_schedule_events()
-		result["objective_value"] = run.objective_value
-		result["statistics"] = run.get_run_statistics()
-	else:
-		result["solver_log"] = run.solver_log or ""
-	return result
+	return _run_result(run, status) | {"ruleset": ruleset_name}
 
 
 @frappe.whitelist()
 def get_run_status(run: str) -> dict:
 	"""Poll a previewed run that escalated to the background solver."""
-	doc = frappe.get_doc("Optimizer Run", run)
-	result = {"status": doc.status}
-	if doc.status == "Solved":
+	return _run_result(frappe.get_doc("Optimizer Run", run))
+
+
+def _run_result(doc, status: str | None = None) -> dict:
+	"""What Studio needs to draw a previewed run, whatever state it ended in.
+
+	`status` is `solve()`'s own return value where the caller has one, so this does
+	not depend on when `solve()` happens to reload the document.
+
+	The solver log travels with every outcome, not just a failure: it backs the
+	shared schedule view's Solver Log tab, which is available on a solved run too.
+	"""
+	status = status or doc.status
+	result = {"run": doc.name, "status": status, "solver_log": doc.solver_log or ""}
+	if status in {"Solved", "Approved", "Committed"}:
 		result["schedule"] = doc.get_schedule_events()
 		result["objective_value"] = doc.objective_value
 		result["statistics"] = doc.get_run_statistics()
-	else:
-		result["solver_log"] = doc.solver_log or ""
 	return result
 
 

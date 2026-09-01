@@ -1,57 +1,49 @@
 // Copyright (c) 2026, CMDBB and contributors
 // For license information, please see license.txt
 
-// NOTE: no `import` here, deliberately — see bulk_employee_settings.js. The schedule
-// grid rendering itself lives in public/js/schedule_grid.js, shared with Optimizer
-// Studio, and is loaded on demand via frappe.require().
+// NOTE: no `import` here, deliberately — see bulk_employee_settings.js. The rendering
+// itself lives in public/js/schedule_view.js (the tab shell) and the panes it loads,
+// all shared with Optimizer Studio and pulled in on demand via frappe.require().
 
-function render_schedule_grid(frm) {
+function render_schedule_view(frm) {
 	const field = frm.fields_dict.schedule_view_html;
 	if (!field) return;
 
-	let $wrapper = field.$wrapper.find(".autoshift-schedule-grid");
+	let $wrapper = field.$wrapper.find(".autoshift-schedule-view");
 	if (!$wrapper.length) {
-		$wrapper = $("<div></div>").appendTo(field.$wrapper);
+		$wrapper = $('<div class="autoshift-schedule-view"></div>').appendTo(field.$wrapper);
 	}
 
-	// Only solved-and-later runs have a schedule worth visualizing.
-	if (!["Solved", "Approved", "Committed"].includes(frm.doc.status)) {
-		$wrapper.empty();
-		return;
-	}
-
-	frappe.require("/assets/autoshift/js/schedule_grid.js", () => {
-		autoshift.schedule_grid.render($wrapper, () =>
-			frm.call("get_schedule_events").then((r) => r.message)
-		);
-	});
-}
-
-function render_run_stats(frm) {
-	const field = frm.fields_dict.stats_html;
-	if (!field) return;
-
-	let $wrapper = field.$wrapper.find(".autoshift-run-stats");
-	if (!$wrapper.length) {
-		$wrapper = $("<div></div>").appendTo(field.$wrapper);
-	}
-
-	if (!["Solved", "Approved", "Committed"].includes(frm.doc.status)) {
-		$wrapper.empty();
-		return;
-	}
-
-	frappe.require("/assets/autoshift/js/run_stats.js", () => {
-		autoshift.run_stats.render($wrapper, () =>
-			frm.call("get_run_statistics").then((r) => r.message)
-		);
+	// Rendered in every state, unsaved Drafts included. The Week tab reads the
+	// Shift Assignments on the books when the run has nothing of its own to show,
+	// and a run that failed to solve is precisely the one whose week needs looking
+	// at — which the old solved-runs-only guard made impossible.
+	frappe.require("/assets/autoshift/js/schedule_view.js", () => {
+		autoshift.schedule_view.render($wrapper, {
+			run: frm.is_new() ? null : frm.doc.name,
+			status: frm.doc.status,
+			week: frm.doc.date || null,
+			week_chart: (week) =>
+				frappe
+					.call({
+						method: "autoshift.wallchart.api.get_week_chart",
+						args: {
+							week,
+							run: frm.is_new() ? null : frm.doc.name,
+							mode: frm.doc.mode || "Bounded",
+						},
+					})
+					.then((r) => r.message),
+			statistics: () => frm.call("get_run_statistics").then((r) => r.message),
+			schedule: () => frm.call("get_schedule_events").then((r) => r.message),
+			solver_log: () => frm.doc.solver_log || "",
+		});
 	});
 }
 
 frappe.ui.form.on("Optimizer Run", {
 	refresh(frm) {
-		render_run_stats(frm);
-		render_schedule_grid(frm);
+		render_schedule_view(frm);
 
 		if (frm.doc.status === "Failed") {
 			frm.disable_save();

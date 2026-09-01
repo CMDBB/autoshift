@@ -64,6 +64,7 @@ function inject_studio_styles() {
 			border: 1px solid var(--border-color); border-radius: var(--border-radius);
 			padding: 0.15rem 0.5rem; margin: 0.15rem 0.3rem 0.15rem 0; font-size: var(--text-sm);
 		}
+		.optimizer-studio .op-result { margin-top: 1.5rem; border-top: 1px solid var(--border-color); padding-top: 1rem; }
 		.optimizer-studio .op-result-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
 	`;
 	const style = document.createElement("style");
@@ -84,6 +85,11 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 		this.setup_body();
 		this.page.set_primary_action(__("Preview Schedule"), () => this.preview());
 		this.load_catalog();
+		// The week is up before anything has been previewed, showing the Shift
+		// Assignments already on the books. Iterating on a ruleset means comparing
+		// against what the week currently looks like, and that comparison should
+		// not have to wait for a solve to succeed.
+		this.render_schedule_view(null, null);
 	}
 
 	setup_fields() {
@@ -102,6 +108,10 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 			label: __("Start Date"),
 			fieldtype: "Date",
 			reqd: 1,
+			// Moving the date moves the week view with it, and drops any preview
+			// still on screen: that run solved a different fortnight, and leaving
+			// its diff under a new date would compare two unrelated things.
+			change: () => this.reset_result(),
 		});
 
 		// One-shot: picking a run copies its configuration into the panel below, it
@@ -635,42 +645,63 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 
 	render_result(message) {
 		const $result = this.$body.find(".op-result");
-
-		if (message.status !== "Solved") {
-			let html = `<div style="margin-top:1rem;">
-				<div class="text-muted" style="margin-bottom:0.5rem;">${__("Run {0}: {1}", [
-					frappe.utils.escape_html(message.run),
-					frappe.utils.escape_html(message.status),
-				])}</div>`;
-			if (message.solver_log) {
-				html += `<pre style="background:var(--bg-light);border:1px solid var(--border-color);border-radius:var(--border-radius);padding:0.75rem;font-size:var(--text-xs);overflow-x:auto;max-height:20rem;overflow-y:auto;">${frappe.utils.escape_html(
-					message.solver_log
-				)}</pre>`;
-			}
-			html += `</div>`;
-			$result.html(html);
-			return;
-		}
-
-		$result.html(`
-			<div class="op-result-header">
-				<div>${__("Objective")}: ${frappe.utils.escape_html(String(message.objective_value))}</div>
-				<button class="btn btn-default btn-xs op-open-run">${__("Open Run")}</button>
-				<button class="btn btn-default btn-xs op-save-ruleset">${__("Save Ruleset As…")}</button>
-			</div>
-			<div class="op-stats"></div>
-			<div class="op-grid"></div>
-		`);
+		const header = [
+			`<div>${__("Run {0}", [frappe.utils.escape_html(message.run)])}: ${
+				message.status === "Solved"
+					? `${__("Objective")} ${frappe.utils.escape_html(
+							String(message.objective_value)
+					  )}`
+					: frappe.utils.escape_html(message.status)
+			}</div>`,
+			`<button class="btn btn-default btn-xs op-open-run">${__("Open Run")}</button>`,
+			`<button class="btn btn-default btn-xs op-save-ruleset">${__(
+				"Save Ruleset As…"
+			)}</button>`,
+		].join("");
+		$result.find(".op-result-header").remove();
+		$(`<div class="op-result-header">${header}</div>`).prependTo($result);
 		$result.find(".op-open-run").on("click", () => {
 			frappe.set_route("Form", "Optimizer Run", message.run);
 		});
 		$result.find(".op-save-ruleset").on("click", () => this.save_ruleset_as());
 
-		frappe.require("/assets/autoshift/js/run_stats.js", () => {
-			autoshift.run_stats.render($result.find(".op-stats"), () => message.statistics);
-		});
-		frappe.require("/assets/autoshift/js/schedule_grid.js", () => {
-			autoshift.schedule_grid.render($result.find(".op-grid"), () => message.schedule);
+		// Same tabbed view the Optimizer Run form shows, on the run this preview
+		// just created. A failed preview keeps the Week tab and its solver log
+		// rather than collapsing to a bare error, which is when they matter most.
+		this.render_schedule_view(message, message.run);
+	}
+
+	reset_result() {
+		this.$body.find(".op-result .op-result-header").remove();
+		this.render_schedule_view(null, null);
+	}
+
+	render_schedule_view(message, run) {
+		const $result = this.$body.find(".op-result");
+		// Classed on creation, not by the renderer: two calls landing before the
+		// first frappe.require resolves would otherwise each append their own.
+		let $view = $result.find(".autoshift-schedule-view");
+		if (!$view.length) {
+			$view = $('<div class="autoshift-schedule-view"></div>').appendTo($result);
+		}
+		const date = this.date_field.get_value();
+		frappe.require("/assets/autoshift/js/schedule_view.js", () => {
+			autoshift.schedule_view.render($view, {
+				run,
+				status: message ? message.status : null,
+				week: date || null,
+				week_chart: (week) =>
+					frappe
+						.call({
+							method: "autoshift.wallchart.api.get_week_chart",
+							args: { week, run, mode: this.mode_field.get_value() || "Bounded" },
+						})
+						.then((r) => r.message),
+				// Already in hand from the preview call — no second round trip.
+				statistics: () => (message ? message.statistics : null),
+				schedule: () => (message ? message.schedule : null),
+				solver_log: () => (message ? message.solver_log || "" : ""),
+			});
 		});
 	}
 
