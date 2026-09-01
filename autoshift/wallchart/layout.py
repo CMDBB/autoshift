@@ -148,9 +148,20 @@ def derive() -> Layout:
 
 	labels = _department_labels({c.discipline for c in configs if c.discipline})
 	scoped = _config_shift_types()
+	min_keys = {
+		c.name: min(
+			d.get("display_order_key")
+			for d in frappe.get_all(
+				"Scheduling Role",
+				filters={"active": 1, "discipline": c.discipline},
+				fields=["display_order_key"],
+			)
+		)
+		for c in configs
+	}
 
 	bands = []
-	for config in sorted(configs, key=lambda c: (c.branch or "", c.discipline or "")):
+	for config in sorted(configs, key=lambda c: (min_keys[c.name], c.branch or "", c.discipline or "")):
 		lanes = tuple(
 			Lane(role.name, role.role_name or role.name) for role in by_discipline.get(config.discipline, [])
 		)
