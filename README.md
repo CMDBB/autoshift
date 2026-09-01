@@ -98,6 +98,14 @@ the books, and the optimiser may not add, move or drop any of it. A holder whose
 has not settled yet is exempted with **Binding Override = Not Binding** on their Employee
 Scheduling Role, and is then scheduled normally alongside everyone else.
 
+Their week does not have to be entered by hand for every week. If a bound holder has a
+**Shift Schedule** and a **Shift Schedule Assignment** (stock HR's way of recording a
+repeating week — a shift type, a frequency, the weekdays it falls on), autoshift creates the
+missing Shift Assignments from it: the wall chart offers to when you land on a week that has
+none, and both Solve and Preview say how many they are about to create before running. See
+[Where a settled week comes from](#where-a-settled-week-comes-from) for why autoshift does
+this rather than HR's own nightly job.
+
 Two things still apply to a bound holder. Approved (and speculated) leave wins over a
 settled assignment: the colliding shift is dropped rather than making the run infeasible,
 and the run-statistics panel reports it so the underlying records can be fixed. And a day
@@ -106,6 +114,28 @@ they have nothing on the books stays empty — "settled" means settled, not "fil
 The toggle only takes effect if the run's ruleset includes the **Bind settled schedules**
 rule (it is in the Standard Ruleset). The rule is inert while no role is marked binding, so
 it costs nothing on a site that does not use this.
+
+#### Where a settled week comes from
+
+Stock HR is supposed to generate the Shift Assignments from a Shift Schedule on a nightly
+job, and it does — as long as the frequency is *Every Week*. For anything longer it takes its
+week boundary from the schedule's **Create Shifts After** date and then moves that date
+forward as it goes, so the next night's run resumes mid-pattern and the cycle drifts until a
+four-week rota is firing most weeks. A fortnightly Friday or a four-week orthodontic rota
+therefore cannot be switched on as it stands, and the import writes those schedules disabled
+and marked *DO NOT ENABLE*.
+
+Autoshift reads the schedules directly instead and creates the records itself, correctly
+phased, at the two moments you would want it to: when the wall chart shows a week that has
+none, and before a run solves a horizon that has none. Nothing existing is touched — a day
+already covered is left alone — and **Create Shifts After** is never modified, because it is
+also what fixes a rota's phase. Creating them before a solve is not optional: binding freezes
+a person against exactly these records, so a horizon without them would freeze them to an
+empty week.
+
+This is a workaround for an HR bug, not a feature autoshift wants to own. The day the
+nightly job anchors its weeks properly, enabling the Shift Schedule Assignments does the same
+work and this can go.
 
 The Agreed FTE % is deliberately soft: the solver is *penalised* for deviating from it
 (see the "Agreed role FTE split" objective rule) but never forbidden, because these splits
@@ -199,7 +229,12 @@ Save the document. Status is **Draft**.
 How existing Shift Assignments are treated is no longer a run field — it's a choice of
 which rules the run's Ruleset includes: `Honor existing Shift Assignments` fixes them as
 hard constraints, `Objective: Conserve Existing Assignments` treats them as a soft
-warm-start the solver may override, and including neither disregards them.
+warm-start the solver may override, and including neither disregards them. **The Standard
+Ruleset includes neither**, so by default the books are a tie-break and not a constraint: a
+practice's own history is rarely feasible under the rest of the ruleset — weeks worked
+short-handed, double-booked or against the current room configuration — and pinning it makes
+the run unsolvable rather than realistic. The people whose week genuinely is not yours to set
+are handled by `Bind settled schedules` instead.
 
 > **Not yet usable:** `Unbounded` planning mode is selectable in the UI but raises
 > `NotImplementedError` when you try to solve — only `1-week`/`2-week`/`4-week` are
@@ -325,7 +360,8 @@ one Optimization Rule document per constraint group. The built-in constraint rul
 2. Approved and speculated leaves block assignments
 3. Existing Shift Assignments honored per the ruleset's choice of rules: fixed
    (`Honor existing Shift Assignments`), soft warm-start
-   (`Objective: Conserve Existing Assignments`), or disregarded (neither rule included)
+   (`Objective: Conserve Existing Assignments`), or disregarded (neither rule included —
+   which is what the Standard Ruleset does)
 3b. `Bind settled schedules`: holders of a Scheduling Role marked *Assignments Are Binding*
    are frozen at their existing assignments — those fixed on, every other variable of theirs
    fixed off. Orthogonal to the choice in 3 (it is scoped by role, not a fourth global

@@ -116,8 +116,8 @@ def _is_binding(row, role_binding: dict[str, bool]) -> bool:
 	"""Is this Employee Scheduling Role row's schedule settled?
 
 	A blank override inherits the Scheduling Role's ``assignments_binding``, the same
-	convention ``max_rooms`` uses. Shared by :func:`load` and :func:`binding_holders` so
-	the two cannot drift apart.
+	convention ``max_rooms`` uses. Shared by :func:`load` and
+	:func:`configured_binding_pairs` so the two cannot drift apart.
 	"""
 	if row.binding_override == "Binding":
 		return True
@@ -126,12 +126,13 @@ def _is_binding(row, role_binding: dict[str, bool]) -> bool:
 	return role_binding.get(row.scheduling_role, False)
 
 
-def binding_holders() -> dict:
-	"""Employee-role pairs whose assignments are binding, across the whole configuration.
+def configured_binding_pairs() -> list[tuple[str, str]]:
+	"""Every (employee, Scheduling Role) pair the configuration marks binding.
 
-	Horizon-independent (no ``DataPackage``): this answers "does this site use role
-	binding at all", so a run whose ruleset omits ``bind_role_assignments`` can warn that
-	those settled schedules are about to be ignored.
+	Horizon-independent and cheap — two small config tables, no ``DataPackage``. Used
+	wherever the question is "whose schedule is not the planner's to set" rather than
+	"what does this run see": the binding-rule gap check, and ``autoshift.rota``, which
+	materialises exactly these people's Shift Schedules.
 	"""
 	role_binding = {
 		r.name: bool(r.assignments_binding)
@@ -139,7 +140,7 @@ def binding_holders() -> dict:
 			"Scheduling Role", filters={"active": 1}, fields=["name", "assignments_binding"]
 		)
 	}
-	pairs = [
+	return [
 		(row.employee, row.scheduling_role)
 		for row in frappe.get_all(
 			"Employee Scheduling Role",
@@ -148,6 +149,16 @@ def binding_holders() -> dict:
 		)
 		if _is_binding(row, role_binding)
 	]
+
+
+def binding_holders() -> dict:
+	"""Counts off :func:`configured_binding_pairs`, for the pre-solve gap warning.
+
+	This answers "does this site use role binding at all", so a run whose ruleset omits
+	``bind_role_assignments`` can warn that those settled schedules are about to be
+	ignored.
+	"""
+	pairs = configured_binding_pairs()
 	return {
 		"pairs": len(pairs),
 		"employees": len({employee for employee, _role in pairs}),
@@ -456,6 +467,8 @@ def load(run_doc) -> DataPackage:
 	# (use_existing_assignments / weigh_assignments_objective), not a run-level flag.
 	forced: set[tuple[str, str, str, datetime.date, str]] = set()
 	binding_conflicts: list[tuple[str, str, str, datetime.date, str]] = []
+	unresolved_assignments: list[tuple[str, datetime.date, str]] = []
+	binding_employees = {employee for employee, _role in binding_pairs}
 	existing = frappe.get_all(
 		"Shift Assignment",
 		filters={
@@ -490,33 +503,49 @@ def load(run_doc) -> DataPackage:
 		for role in held:
 			roles_by_employee_discipline.setdefault((name, role_discipline[role]), []).append(role)
 
+	def _unresolvable(sa, reason: str) -> None:
+		"""An existing assignment this run cannot place.
+
+		For a bound employee this is fatal: their schedule is *input*, and quietly
+		dropping a day of it would freeze them to a week they do not work. For anybody
+		else it is a data-quality observation, not a reason to refuse to plan — the
+		practice's own history is patchy, most of it is disregarded now anyway, and a
+		single mis-filed location used to be able to abort the whole run. Recorded, and
+		reported by the run-statistics panel.
+		"""
+		message = frappe._("Shift Assignment {0}: {1}").format(sa.name, reason)
+		if sa.employee in binding_employees:
+			frappe.throw(message)
+		unresolved_assignments.append((sa.employee, getdate(sa.start_date), reason))
+
 	for sa in existing:
 		location = locations.get(sa.shift_location) or frappe._dict()
 		branch = location.get("custom_branch")
 		if not branch:
-			frappe.throw(
-				frappe._(
-					"Shift Assignment {0} has no Shift Location with a Branch set; cannot "
-					"resolve which branch it belongs to."
-				).format(sa.name)
+			_unresolvable(
+				sa,
+				frappe._("no Shift Location with a Branch set, so it names no branch"),
 			)
+			continue
 		discipline = location.get("custom_discipline")
 		if not discipline:
-			frappe.throw(
-				frappe._(
-					"Shift Location {0} (on Shift Assignment {1}) has no Discipline set; cannot "
-					"resolve which Scheduling Role the shift was worked in."
-				).format(sa.shift_location, sa.name)
+			_unresolvable(
+				sa,
+				frappe._("Shift Location {0} has no Discipline set, so it names no Scheduling Role").format(
+					sa.shift_location
+				),
 			)
+			continue
 		candidates = roles_by_employee_discipline.get((sa.employee, discipline))
 		if not candidates:
-			frappe.throw(
+			_unresolvable(
+				sa,
 				frappe._(
-					"{0} holds no Scheduling Role in discipline {1}, but Shift Assignment {2} "
-					"places them there. Give them the role, or drop both existing-assignment "
-					"rules from this run's ruleset."
-				).format(frappe.bold(sa.employee), frappe.bold(discipline), sa.name)
+					"{0} holds no Scheduling Role in discipline {1}, but the assignment places "
+					"them there — give them the role, or correct the Shift Location"
+				).format(sa.employee, discipline),
 			)
+			continue
 		role = sorted(candidates, key=lambda r: ((sa.employee, r) not in binding_pairs, r))[0]
 		day = getdate(sa.start_date)
 		comb = (sa.employee, role, sa.shift_type, day, str(branch))
@@ -548,4 +577,5 @@ def load(run_doc) -> DataPackage:
 		rules=rules,
 		binding_pairs=frozenset(binding_pairs),
 		binding_conflicts=tuple(sorted(binding_conflicts)),
+		unresolved_assignments=tuple(sorted(set(unresolved_assignments))),
 	)

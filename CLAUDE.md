@@ -137,7 +137,9 @@ call a binding-gap check — `OptimizerRun.check_binding_rule_gap` /
 `data_loader.binding_rule_gap` — and confirm before running when the site marks roles
 binding but the selection omits `bind_role_assignments`. A settled schedule that no rule
 enforces is silently re-planned and nothing downstream would show that, so it has to be
-said before the solve, not after.
+said before the solve, not after. The same confirm carries the count from
+`check_pending_bound_shifts` and creates those records before solving — see "Materialising
+settled schedules" below.
 Studio's other pieces: a "Populate From Run" link picker to seed the panel from an existing
 run's configuration, and a "Preview Schedule"
 primary action. Deliberately duplicates a couple of Optimizer Run's own fields (mode,
@@ -199,6 +201,8 @@ structurally cannot, coverage being a fact about rooms.
   nothing, a day the run never considered is a scope question, an empty working day is a
   finding. People on approved (or speculated) leave get a strip under the chart rather than
   a cell: they are the answer to "why is this chair empty".
+- A week whose bound practitioners have no Shift Assignments yet carries a banner offering
+  to create them (`pending_bound` in the payload, `autoshift.rota` does the work).
 - Split like the optimizer package: `chart.py` is Frappe-free (dataclasses + placement,
   covered by `tests/test_wallchart.py`), `layout.py` and `source.py` read the DB, `api.py`
   holds the whitelisted `get_week_chart(week, run, mode)`. Cells print initials —
@@ -331,6 +335,78 @@ every employee, not just bound ones: it is the same physical contradiction, and 
 the unconditional `ValueError` `warm_start` used to raise for it. That raise is kept as a
 defensive invariant for hand-built packages in tests and `sandbox/`.
 
+**Everyone else's books are disregarded.** `use_existing_assignments` ("Honor existing Shift
+Assignments") left `STANDARD_RULES` (patch `rebind_standard_ruleset_to_settled_schedules`
+re-runs the seeding, which syncs the Standard Ruleset's rows to that set and preserves every
+surviving row's hand-tuned weight). Pinning every employee to the books made most historical
+weeks *infeasible* under the rest of the ruleset — weeks worked short-handed, double-booked
+or off-config — which is what the wall chart surfaced once Studio made those weeks easy to
+look at. The rule still exists and Studio still offers it; the books are otherwise a
+`warm_start` tie-break, and only people whose schedule is genuinely not the planner's to set
+are frozen. Correspondingly the loader no longer `frappe.throw`s on an existing assignment it
+cannot place (no branch or discipline on its Shift Location, or the employee holds no
+Scheduling Role in that discipline): it records the reason in
+`DataPackage.unresolved_assignments` and carries on — **except for a bound employee**, where
+it still throws, because their schedule is *input* and quietly dropping a day of it would
+freeze them to a week they do not work.
+
+## Materialising settled schedules (`autoshift/rota/`)
+
+A settled week is a **rule**, and stock HR has somewhere to put a rule: a `Shift Schedule`
+(shift type + frequency + weekdays) plus a `Shift Schedule Assignment` joining it to a person.
+zawin2frappe emits those for every bound practitioner. HRMS's nightly
+`process_auto_shift_creation` is supposed to turn them into the `Shift Assignment` records
+everything here reads — and **cannot, for any cycle longer than a week**: `create_shifts`
+takes its week boundary from `create_shifts_after` and then overwrites that field with the
+last *shift's* end date, so the nightly job resumes mid-pattern and the cycle collapses
+toward weekly (measured by zawin2frappe: `Every 4 Weeks` firing on weeks 0, 4, 4, 5, 8, 9,
+10, 11, 12). So zawin2frappe emits a rota **`enabled = 0`, `shift_status = "Inactive"`,
+tagged `DO NOT ENABLE`** — leaving the people whose schedule is *least* the planner's to set
+with no Shift Assignments at all for any week the import did not already cover, and
+`bind_role_assignments` freezing them against exactly that emptiness.
+
+`autoshift/rota/` expands the schedule itself and creates the missing records on demand.
+**It is a workaround for someone else's bug and is signposted as one throughout** — the
+upstream issue is not in active development, which is what makes it worth carrying; the day
+`create_shifts` anchors its weeks properly this package is deleted and `enabled = 1` does the
+same job.
+
+- `cycle.py` is Frappe-free (`Rota` + `occurrences`, covered by `tests/test_rota.py`), a
+  corrected re-implementation of `create_shifts`: the weekdays in `repeat_on_days`, one week
+  in every `cycle_weeks`, counting weeks from the one after `create_shifts_after`. One
+  deliberate divergence — weeks are ISO (Monday-based) where `create_shifts` chops arbitrary
+  seven-day blocks; the two agree whenever the anchor is a Sunday, which is what
+  zawin2frappe's own phase anchoring produces.
+- `create_shifts_after` is **never written**. It is the phase anchor as well as the handover
+  boundary (nothing is generated on or before it — those records are the import's), and
+  moving it *is* the upstream bug. Idempotency comes from comparing against what is on the
+  books instead, which needs no high-water mark.
+- `enabled` / `shift_status` are **ignored**: they are HRMS's switches for HRMS's generator,
+  and a rota is off precisely because that generator would run it wrongly. Records are
+  created `Active` and link back via `Shift Assignment.shift_schedule_assignment`.
+- Coverage is keyed on `(employee, date)` or `(employee, date, shift_type)` according to
+  `HR Settings.allow_multiple_shift_assignments` — the same switch
+  `validate_same_date_multiple_shifts` reads — so nothing is ever offered that HRMS would
+  then refuse. Under the one-a-day rule (this practice's setting; see
+  `cmdb_frappe/docs/frappe-setup.md` §4, "nobody works both halves of a day") a day already
+  carrying the *other* half counts as covered rather than as a conflict: the schedule's AM/PM
+  label is fitted from history, the record on the books is recorded.
+- One record per day rather than per run of consecutive days, and a savepoint per row, so a
+  refusal costs that day and not the span. Failures are collected and reported, never fatal.
+
+Three surfaces, each a thin wrapper over `materialize.pending` / `.materialize`, mirroring how
+`binding_rule_gap` is wrapped, and sharing one browser-side helper
+(`autoshift/public/js/rota.js`, namespaced `autoshift.rota`, `frappe.require`d like the other
+shared panes — `create()` is deliberately not called `materialize`, so it does not read like
+the server module its thunks call). The wall chart carries `pending_bound` in every
+`get_week_chart` payload (so landing on an ungenerated week costs no extra round trip and is
+the moment it offers to generate it), and both solve entry points —
+`OptimizerRun.check_pending_bound_shifts` / `materialize_bound_shifts` and
+`optimizer_studio.check_pending_bound_shifts` / `materialize_bound_shifts` — report the count
+in their existing pre-solve confirm and create the records before solving. Creation at solve
+time is **not optional**: binding freezes people against exactly those records, so declining
+would silently re-plan the one group whose week is settled.
+
 ## To be implemented (scaffolding exists; feature path is incomplete, not "broken")
 
 - gh issue #5 **Run → `Shift Assignment` link-back after commit.** `73e98fa` ("start online
@@ -449,7 +525,8 @@ Consequences for work in this repo:
 - `tests/test_optimizer.py` is a pure-Python unit suite (no Frappe context) covering
   planning-day generation, hashing, every MILP constraint group; `tests/test_wallchart.py`
   is the same bargain for `wallchart/chart.py` (placement, overflow, the run-vs-books
-  merge). The doctype-level
+  merge) and `tests/test_rota.py` for `rota/cycle.py` (cycle phase, the handover boundary).
+  The doctype-level
   `IntegrationTestCase` stubs (`employee_settings`, `optimizer_settings`) are
   left as autogenerated by frappe, except for `test_optimizer_run.py` and
   `test_optimization_rule.py` (the developer-only implementation/validation gate).

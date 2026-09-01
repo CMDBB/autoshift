@@ -361,6 +361,9 @@ def test_nothing_balances_am_and_pm_across_employees():
 		max_rpe={("E1", "R1"): 1, ("E2", "R1"): 1},
 		rooms={(disc, b): 2},
 		forced=forced_e1,
+		# "Honor existing Shift Assignments" is no longer standard, so the forcing this
+		# test leans on has to be asked for. What it is actually about is unchanged.
+		rules=builtin_specs(*(STANDARD_RULES | {"use_existing_assignments"})),
 	)
 	prob, x, _ = solve(data)
 	assert status(prob) == "Optimal"
@@ -437,23 +440,36 @@ def test_unknown_builtin_key_raises():
 
 
 def test_conflicting_choice_group_members_raise():
-	rules = builtin_specs(*(STANDARD_RULES | {"weigh_assignments_objective"}))
+	rules = builtin_specs(*(STANDARD_RULES | {"use_existing_assignments", "weigh_assignments_objective"}))
 	with pytest.raises(ValueError, match="mutually exclusive"):
 		build(pkg(rules=rules))
 
 
 def test_choice_group_permits_the_other_member_alone():
-	rules = builtin_specs(
-		*((STANDARD_RULES - {"use_existing_assignments"}) | {"weigh_assignments_objective"})
-	)
+	rules = builtin_specs(*(STANDARD_RULES | {"weigh_assignments_objective"}))
 	prob, _, _ = solve(pkg(rules=rules))
 	assert status(prob) == "Optimal"
 
 
 def test_choice_group_permits_neither_member():
-	rules = builtin_specs(*(STANDARD_RULES - {"use_existing_assignments"}))
-	prob, _, _ = solve(pkg(rules=rules))
+	"""Which is what the Standard Ruleset now does, so this is the default path."""
+	assert not {"use_existing_assignments", "weigh_assignments_objective"} & STANDARD_RULES
+	prob, _, _ = solve(pkg(rules=builtin_specs(*STANDARD_RULES)))
 	assert status(prob) == "Optimal"
+
+
+def test_the_standard_set_does_not_pin_everyone_to_the_books():
+	"""A practice's own history is rarely feasible under the rest of the ruleset.
+
+	Weeks worked short-handed, double-booked or off-config pin the model into
+	infeasibility, which is what made most historical weeks unsolvable. Only the
+	people whose schedule is genuinely not the planner's to set are frozen now, and
+	that is `bind_role_assignments` — which is standard, and inert until a
+	Scheduling Role is marked binding.
+	"""
+	assert "use_existing_assignments" not in STANDARD_RULES
+	assert "warm_start" in STANDARD_RULES
+	assert "bind_role_assignments" in STANDARD_RULES
 
 
 def test_rule_without_implementation_raises():

@@ -16,10 +16,12 @@ duplicate any of that; a bad toggle combination surfaces as the same error a han
 ruleset would raise on save.
 """
 
+import itertools
 import json
 
 import frappe
 
+from autoshift.optimizer import types
 from autoshift.optimizer.rules import BUILTIN_RULES
 
 DRAFT_RULESET_PREFIX = "Studio Draft"
@@ -92,6 +94,34 @@ def check_binding_rule_gap(rows: str | dict) -> dict:
 
 	rows = frappe.parse_json(rows) if isinstance(rows, str) else (rows or {})
 	return data_loader.binding_rule_gap(data_loader.builtin_keys_of(list(rows)))
+
+
+def _planning_window(mode: str, date: str):
+	"""(first day, last day) for a mode/date pair, truncated as the loader truncates it."""
+	days = list(itertools.islice(types.planning_days(frappe.utils.getdate(date), mode), 100))
+	return days[0], days[-1]
+
+
+@frappe.whitelist()
+def check_pending_bound_shifts(mode: str, date: str) -> dict:
+	"""Settled schedules this horizon needs that no Shift Assignment records yet.
+
+	Studio's counterpart to ``OptimizerRun.check_pending_bound_shifts``: the run does not
+	exist yet, so the horizon comes from the toolbar's mode and date.
+	"""
+	from autoshift.rota import materialize as rota
+
+	first, last = _planning_window(mode, date)
+	return {key: value for key, value in rota.pending(first, last).items() if key != "rows"}
+
+
+@frappe.whitelist()
+def materialize_bound_shifts(mode: str, date: str) -> dict:
+	"""Create the Shift Assignments :func:`check_pending_bound_shifts` reports missing."""
+	from autoshift.rota import materialize as rota
+
+	first, last = _planning_window(mode, date)
+	return rota.materialize(first, last)
 
 
 @frappe.whitelist()

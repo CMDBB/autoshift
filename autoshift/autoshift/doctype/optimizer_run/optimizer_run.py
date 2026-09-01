@@ -1,5 +1,6 @@
 import colorsys
 import heapq
+import itertools
 import json
 
 import frappe.utils.caching
@@ -15,7 +16,9 @@ SYNC_TIME_LIMIT = 5
 def datapackage_cache_key(run_name) -> str:
 	# v3: packages cached before role binding existed carry no binding_pairs /
 	# binding_conflicts, so a stale entry would silently unfreeze a settled schedule
-	return f"DataPackage:v3:{run_name}"
+	# v4: adds unresolved_assignments, and the Shift Assignments a run sees can now change
+	# under it (autoshift.rota materialises settled schedules just before a solve)
+	return f"DataPackage:v4:{run_name}"
 
 
 # Approximate hue (HSV degrees) of each named "Roster Color" on Shift Type, so a
@@ -113,6 +116,41 @@ class OptimizerRun(Document):
 		Cheap config query — no DataPackage, so it is safe to call before solving.
 		"""
 		return data_loader.ruleset_binding_rule_gap(self.ruleset)  # ty:ignore[unresolved-attribute]
+
+	def planning_window(self):
+		"""(first day, last day) of this run's horizon.
+
+		Truncated at 100 days exactly as ``data_loader.load`` truncates it, so an
+		``Unbounded`` run reports the span it will actually solve.
+		"""
+		days = list(itertools.islice(types.planning_days(frappe.utils.getdate(self.date), self.mode), 100))
+		return days[0], days[-1]
+
+	@frappe.whitelist()
+	def check_pending_bound_shifts(self):
+		"""Settled schedules this horizon needs that no Shift Assignment records yet.
+
+		HRMS cannot generate them for a rota longer than a week (see ``autoshift.rota``),
+		so the run has to, or ``bind_role_assignments`` would freeze those people to an
+		empty week. Cheap config query — safe to call before solving.
+		"""
+		from autoshift.rota import materialize as rota
+
+		first, last = self.planning_window()
+		found = rota.pending(first, last)
+		return {key: value for key, value in found.items() if key != "rows"}
+
+	@frappe.whitelist()
+	def materialize_bound_shifts(self):
+		"""Create the Shift Assignments :meth:`check_pending_bound_shifts` reports missing."""
+		from autoshift.rota import materialize as rota
+
+		first, last = self.planning_window()
+		result = rota.materialize(first, last)
+		# The package is built from those very records, so a cached one is now stale.
+		if result["created"] and frappe.cache:
+			frappe.cache.delete_value(datapackage_cache_key(self.name))
+		return result
 
 	@frappe.whitelist()
 	def solve(self):
@@ -377,6 +415,7 @@ class OptimizerRun(Document):
 		      "matrix": [{discipline, branch, date, shift_type, staffed, capacity}],
 		      "employees": [{employee, employee_name, target, assigned}],  # by deficit
 		      "binding_conflicts": [{employee, scheduling_role, shift_type, date, branch}],
+		      "unresolved_assignments": [{employee, date, reason}],
 		      "warnings": [{severity, message}],
 		      "objective_breakdown": {rule_name: value} | None,
 		    }
@@ -522,6 +561,24 @@ class OptimizerRun(Document):
 					),
 				}
 			)
+		if data.unresolved_assignments:
+			sample = ", ".join(
+				f"{employee} ({date})" for employee, date, _reason in data.unresolved_assignments[:3]
+			)
+			warnings.append(
+				{
+					"severity": "warning",
+					"message": frappe._(
+						"{0} existing Shift Assignment(s) could not be placed and were ignored — "
+						"their Shift Location names no branch or discipline, or the employee holds "
+						"no Scheduling Role there: {1}{2}"
+					).format(
+						len(data.unresolved_assignments),
+						sample,
+						"…" if len(data.unresolved_assignments) > 3 else "",
+					),
+				}
+			)
 		under_target = sum(1 for r in employee_rows if r["assigned"] < r["target"])
 		if under_target:
 			warnings.append(
@@ -567,6 +624,10 @@ class OptimizerRun(Document):
 					"branch": branch,
 				}
 				for employee, role, shift_type, date, branch in data.binding_conflicts
+			],
+			"unresolved_assignments": [
+				{"employee": employee, "date": str(date), "reason": reason}
+				for employee, date, reason in data.unresolved_assignments
 			],
 			"warnings": warnings,
 			"objective_breakdown": breakdown,

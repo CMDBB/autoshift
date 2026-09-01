@@ -271,8 +271,13 @@ def leave_blocklist(ctx: RuleContext) -> None:
 
 @builtin_rule(
 	"Honor existing Shift Assignments",
-	"Shift Assignments already on the books are honored.",
-	standard=True,
+	"Every Shift Assignment already on the books is pinned on, for every employee. Off by "
+	"default: a practice's own history is rarely feasible under the rest of the ruleset — "
+	"weeks that were worked short-handed, double-booked or off-config pin the model into "
+	"infeasibility — so the books are a soft tie-break unless you say otherwise. To freeze "
+	"only the people whose schedule is genuinely not the planner's to set, use "
+	"<b>Bind settled schedules</b> instead.",
+	standard=False,
 	requires={warm_start: "{r} doesn't set its values, include {req}"},
 	group="existing_assignments",
 	topic=TOPIC_EXISTING_ASSIGNMENTS,

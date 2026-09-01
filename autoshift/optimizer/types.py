@@ -91,6 +91,14 @@ class DataPackage:
 	# Sorted, so it does not perturb `input_hash` between otherwise identical runs.
 	binding_conflicts: tuple[tuple[str, str, str, datetime.date, str], ...] = ()
 
+	# existing Shift Assignments the loader could not place — no branch or discipline on
+	# their Shift Location, or the employee holds no Scheduling Role in that discipline:
+	# (employee, date, reason). They are dropped rather than fatal, because most of the
+	# books are disregarded now and one mis-filed location should not abort a run; a bound
+	# employee is the exception and still throws, since their schedule is input. Sorted,
+	# so it does not perturb `input_hash` between otherwise identical runs.
+	unresolved_assignments: tuple[tuple[str, datetime.date, str], ...] = ()
+
 	def input_hash(self) -> str:
 		"""
 		Stable hash of every field that influences the MILP solution.
@@ -145,6 +153,9 @@ class DataPackage:
 				[employee, role, shift_type, date.isoformat(), branch]
 				for employee, role, shift_type, date, branch in self.binding_conflicts
 			],
+			"unresolved_assignments": [
+				[employee, date.isoformat(), reason] for employee, date, reason in self.unresolved_assignments
+			],
 		}
 		return json.dumps(payload)
 
@@ -192,6 +203,10 @@ class DataPackage:
 			binding_conflicts=tuple(
 				(employee, role, shift_type, datetime.date.fromisoformat(date), branch)
 				for employee, role, shift_type, date, branch in payload.get("binding_conflicts", [])
+			),
+			unresolved_assignments=tuple(
+				(employee, datetime.date.fromisoformat(date), reason)
+				for employee, date, reason in payload.get("unresolved_assignments", [])
 			),
 		)
 

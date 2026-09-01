@@ -17,8 +17,14 @@ and nothing more. The shape is nested to match the drawing order:
       "leaves":   {"YYYY-MM-DD": [{employee, label, leave_type, speculative}]},
       "warnings": [str],
       "totals":   {staffed, capacity, kept, added, dropped},
+      "pending_bound": {first_day, last_day, count, employees, employee_names},
       "run":      {name, status, mode, date, first_day, last_day, compared} | null,
     }
+
+`pending_bound` is what a settled schedule says this week holds but no
+`Shift Assignment` records — see `autoshift.rota`. It rides along on every week
+so navigating to a week nobody has generated yet is the moment the chart offers
+to generate it, which costs no extra round trip.
 
 `rows[row][lane][day]` is a cell or null, because a lane holds at most one person
 per row by construction. Null is a room nobody is in, which is the thing the
@@ -114,6 +120,7 @@ def get_week_chart(week: str | None = None, run: str | None = None, mode: str = 
 		mode = run_doc.mode or mode
 
 	monday = _resolve_week(week, run_doc)
+	week_days = week_dates(monday)
 	existing = source.from_shift_assignments(monday)
 	proposed = source.from_optimizer_run(run, monday) if run_doc else []
 
@@ -125,7 +132,7 @@ def get_week_chart(week: str | None = None, run: str | None = None, mode: str = 
 	first_day, last_day = _planning_window(run_doc)
 
 	days = []
-	for day in week_dates(monday):
+	for day in week_days:
 		iso = day.isoformat()
 		days.append(
 			{
@@ -177,6 +184,7 @@ def get_week_chart(week: str | None = None, run: str | None = None, mode: str = 
 		"leaves": source.leaves(monday, speculated),
 		"warnings": _warnings(chart, structure),
 		"totals": _totals(chart, structure, days),
+		"pending_bound": _pending_bound(week_days[0], week_days[-1]),
 		"run": (
 			{
 				"name": run_doc.name,
@@ -193,6 +201,17 @@ def get_week_chart(week: str | None = None, run: str | None = None, mode: str = 
 			else None
 		),
 	}
+
+
+def _pending_bound(first, last) -> dict:
+	"""Settled schedules this week needs that nothing on the books records.
+
+	Summary only — the chart offers to create them, it does not list them. See
+	`autoshift.rota` for why HRMS is not doing this itself.
+	"""
+	from autoshift.rota import materialize as rota
+
+	return {key: value for key, value in rota.pending(first, last).items() if key != "rows"}
 
 
 def _warnings(chart, structure) -> list[str]:

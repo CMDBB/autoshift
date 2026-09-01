@@ -41,6 +41,49 @@ function render_schedule_view(frm) {
 	});
 }
 
+// Everything a planner has to be told before a solve, in one dialog rather than a stack
+// of them: whether this input has already been solved, whether the ruleset is about to
+// re-plan somebody whose schedule is not the planner's to set, and whether that person's
+// settled week needs writing to the books first (HRMS cannot — see autoshift/rota).
+function confirm_and_solve(frm) {
+	frappe.require("/assets/autoshift/js/rota.js", () => {
+		Promise.all([
+			frm.call("check_duplicates"),
+			frm.call("check_binding_rule_gap"),
+			frm.call("check_pending_bound_shifts"),
+		]).then(([{ message: duplicates }, { message: binding }, { message: pending }]) => {
+			const { n: cache_hits_n, cached_runs_list_link: link } = duplicates;
+			let msg =
+				cache_hits_n == 0
+					? __(
+							"Run the optimizer? Large problems that don't finish quickly will automatically continue in the background."
+					  )
+					: __(
+							"Identical run detected: {0} {1} already solved this exact input. Run the optimizer anyway?",
+							[cache_hits_n, link]
+					  );
+			// A settled schedule that no rule enforces is silently overwritten, and
+			// nothing downstream would show that — so say it before solving, not after.
+			if (binding && binding.gap) {
+				msg =
+					`<p class="text-warning">${__(
+						"{0} employee(s) hold a Scheduling Role whose assignments are binding ({1}), but this ruleset does not include the <b>Bind settled schedules</b> rule. Their settled schedules will be ignored and re-planned from scratch.",
+						[binding.employees, frappe.utils.escape_html(binding.roles.join(", "))]
+					)}</p>` + `<p>${msg}</p>`;
+			}
+			msg = autoshift.rota.pending_note(pending) + msg;
+
+			frappe.confirm(msg, () => {
+				const ready =
+					pending && pending.count
+						? autoshift.rota.create(() => frm.call("materialize_bound_shifts"))
+						: Promise.resolve();
+				ready.then(() => frm.call("solve").then(() => frm.reload_doc()));
+			});
+		});
+	});
+}
+
 frappe.ui.form.on("Optimizer Run", {
 	refresh(frm) {
 		render_schedule_view(frm);
@@ -50,40 +93,9 @@ frappe.ui.form.on("Optimizer Run", {
 		}
 
 		if (frm.doc.status === "Draft") {
-			frm.add_custom_button(__("Solve"), () => {
-				Promise.all([
-					frm.call("check_duplicates"),
-					frm.call("check_binding_rule_gap"),
-				]).then(([{ message: duplicates }, { message: binding }]) => {
-					const { n: cache_hits_n, cached_runs_list_link: link } = duplicates;
-					let msg =
-						cache_hits_n == 0
-							? __(
-									"Run the optimizer? Large problems that don't finish quickly will automatically continue in the background."
-							  )
-							: __(
-									"Identical run detected: {0} {1} already solved this exact input. Run the optimizer anyway?",
-									[cache_hits_n, link]
-							  );
-					// A settled schedule that no rule enforces is silently overwritten, and
-					// nothing downstream would show that — so say it before solving, not after.
-					if (binding && binding.gap) {
-						msg =
-							`<p class="text-warning">${__(
-								"{0} employee(s) hold a Scheduling Role whose assignments are binding ({1}), but this ruleset does not include the <b>Bind settled schedules</b> rule. Their settled schedules will be ignored and re-planned from scratch.",
-								[
-									binding.employees,
-									frappe.utils.escape_html(binding.roles.join(", ")),
-								]
-							)}</p>` + `<p>${msg}</p>`;
-					}
-					frappe.confirm(msg, () => {
-						frm.call("solve").then(() => {
-							frm.reload_doc();
-						});
-					});
-				});
-			}).addClass("btn-primary");
+			frm.add_custom_button(__("Solve"), () => confirm_and_solve(frm)).addClass(
+				"btn-primary"
+			);
 		}
 
 		if (frm.doc.status === "Solving") {

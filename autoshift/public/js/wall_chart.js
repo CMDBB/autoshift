@@ -112,6 +112,13 @@ autoshift.wall_chart.inject_styles = function () {
 			background: var(--bg-light-gray, #fafafa);
 		}
 		.autoshift-wall-chart .awc-empty-note { padding: 0.75rem 0; color: var(--text-muted); }
+		.autoshift-wall-chart .awc-pending {
+			display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+			border-left: 3px solid var(--blue-400, #60a5fa); padding: 0.4rem 0.6rem;
+			margin-bottom: 0.5rem; font-size: var(--text-sm);
+			background: var(--bg-light-gray, #fafafa);
+		}
+		.autoshift-wall-chart .awc-pending-who { color: var(--text-muted); }
 	`;
 	const style = document.createElement("style");
 	style.id = "autoshift-wall-chart-styles";
@@ -204,7 +211,12 @@ function band_markup(band, days, run, width) {
 					if (day_index && !lane_index) cls.push("awc-day-start");
 					return `<th class="${cls.join(" ")}" colspan="${
 						spans[lane_index]
-					}" scope="col">${esc(lane.label)}</th>`;
+					}" scope="col" title="${lane.label}">${esc(
+						lane.label
+							.match(/\b\w/g)
+							.map((c) => c.toUpperCase())
+							.join("")
+					)}</th>`;
 				})
 				.join("")
 		)
@@ -315,6 +327,24 @@ function bar_markup(payload) {
 	</div>`;
 }
 
+// Settled schedules the week is missing. HRMS is supposed to generate these from
+// the Shift Schedule and cannot for a rota longer than a week (see autoshift/rota),
+// so the chart offers to — landing on a week nobody has generated yet is exactly
+// the moment somebody is in a position to say yes.
+function pending_markup(payload) {
+	const pending = payload.pending_bound || {};
+	if (!pending.count) return "";
+	const who = (pending.employee_names || []).join(", ");
+	return `<div class="awc-pending">
+		<span>${__(
+			"{0} settled shift(s) for {1} practitioner(s) fall in this week per their Shift Schedule, but nothing on the books records them.",
+			[pending.count, pending.employees]
+		)}</span>
+		<button type="button" class="btn btn-xs btn-primary awc-materialize">${__("Create them")}</button>
+		<span class="awc-pending-who">${esc(who)}</span>
+	</div>`;
+}
+
 function totals_markup(payload) {
 	const t = payload.totals || {};
 	if (!t.capacity) return "";
@@ -340,12 +370,14 @@ autoshift.wall_chart.build_html = function (payload) {
 		.join("");
 
 	if (!sections) {
-		return `${bar_markup(payload)}${warnings}<div class="awc-empty-note">${__(
+		return `${bar_markup(payload)}${pending_markup(
+			payload
+		)}${warnings}<div class="awc-empty-note">${__(
 			"Nothing to draw for this week. The chart's bands come from Discipline Branch Config — one band per (discipline, branch), as tall as its room count."
 		)}</div>`;
 	}
 
-	return `${bar_markup(payload)}${totals_markup(payload)}${warnings}
+	return `${bar_markup(payload)}${totals_markup(payload)}${pending_markup(payload)}${warnings}
 		<div class="awc-scroll"><table>
 			<thead><tr>
 				<th class="awc-band"></th><th class="awc-ord"></th>${head_markup(days, run, width)}
@@ -398,6 +430,29 @@ autoshift.wall_chart.render = function ($wrapper, fetch, week) {
 		$wrapper
 			.find(".awc-today")
 			.on("click", () => autoshift.wall_chart.render($wrapper, fetch, null));
+		$wrapper.find(".awc-materialize").on("click", () => {
+			const pending = payload.pending_bound;
+			frappe.require("/assets/autoshift/js/rota.js", () => {
+				autoshift.rota
+					.create(() =>
+						frappe.call({
+							method: "autoshift.rota.materialize.materialize_between",
+							args: { first: pending.first_day, last: pending.last_day },
+							freeze: true,
+							freeze_message: __("Creating Shift Assignments…"),
+						})
+					)
+					.then((made) => {
+						if (made) {
+							frappe.show_alert({
+								message: __("{0} Shift Assignment(s) created", [made.created]),
+								indicator: made.created ? "green" : "orange",
+							});
+						}
+						autoshift.wall_chart.render($wrapper, fetch, payload.week);
+					});
+			});
+		});
 		return payload;
 	});
 };
