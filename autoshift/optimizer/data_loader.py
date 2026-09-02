@@ -11,7 +11,6 @@ from typing import cast
 
 import frappe
 import numpy as np
-from frappe.utils import add_days
 from frappe.utils import getdate as _getdate
 
 from .rules import BUILTIN_RULES
@@ -43,6 +42,25 @@ def getdate(*args, **kwargs) -> datetime.date:
 	return result
 
 
+def _fulltime_shifts_in_period(days) -> float:
+	"""Shifts a 100%-FTE employee works over `days`: one per weekday, none at the weekend.
+
+	Both the overall FTE ceiling and every agreed per-role split scale this one figure. If
+	they were computed separately and drifted apart, a role target and the ceiling would be
+	denominated differently and the objective would end up fighting the constraint.
+
+	One shift per working day is the *attainable* maximum, not half of one: `one_shift_per_day`
+	already caps an employee at a single shift a day whatever the shift types are.
+
+	`weekday() // 5` is 0 on Mon-Fri and 1 on Sat/Sun, so the term is 1 on a weekday and 0
+	at the weekend. It was written with a true divide until 2026-08-26, which ramped the
+	weight down across the week (Mon 1.0 ... Fri 0.2, Sun -0.2) and totalled 3.0 for a
+	Mon-Fri week instead of 5, capping every employee at ~60% of their real availability
+	and starving room coverage.
+	"""
+	return sum(1 - d.weekday() // 5 for d in days)
+
+
 def _load_rules(run_doc) -> tuple[tuple[str, str, str, float], ...]:
 	"""
 	Resolve the run's Optimization Ruleset into (rule_name, builtin_key, custom_code,
@@ -50,7 +68,7 @@ def _load_rules(run_doc) -> tuple[tuple[str, str, str, float], ...]:
 	rules whose key is registered in code, or Custom Code rules a developer has
 	validated. Sorted by rule name so two rulesets with the same rules hash identically.
 	"""
-	ruleset = run_doc.get("ruleset")
+	ruleset = run_doc.ruleset
 	if not ruleset:
 		frappe.throw(frappe._("This Optimizer Run has no Optimization Ruleset set."))
 
@@ -94,6 +112,107 @@ def _load_rules(run_doc) -> tuple[tuple[str, str, str, float], ...]:
 	return tuple(specs)
 
 
+def _is_binding(row, role_binding: dict[str, bool]) -> bool:
+	"""Is this Employee Scheduling Role row's schedule settled?
+
+	A blank override inherits the Scheduling Role's ``assignments_binding``, the same
+	convention ``max_rooms`` uses. Shared by :func:`load` and
+	:func:`configured_binding_pairs` so the two cannot drift apart.
+	"""
+	if row.binding_override == "Binding":
+		return True
+	if row.binding_override == "Not Binding":
+		return False
+	return role_binding.get(row.scheduling_role, False)
+
+
+def configured_binding_pairs() -> list[tuple[str, str]]:
+	"""Every (employee, Scheduling Role) pair the configuration marks binding.
+
+	Horizon-independent and cheap — two small config tables, no ``DataPackage``. Used
+	wherever the question is "whose schedule is not the planner's to set" rather than
+	"what does this run see": the binding-rule gap check, and ``autoshift.rota``, which
+	materialises exactly these people's Shift Schedules.
+	"""
+	role_binding = {
+		r.name: bool(r.assignments_binding)
+		for r in frappe.get_all(
+			"Scheduling Role", filters={"active": 1}, fields=["name", "assignments_binding"]
+		)
+	}
+	actives = {e.name for e in frappe.get_all("Employee", filters={"status": "Active"}, fields=["name"])}
+	return [
+		(row.employee, row.scheduling_role)
+		for row in frappe.get_all(
+			"Employee Scheduling Role",
+			filters={"active": 1},
+			fields=["employee", "scheduling_role", "binding_override"],
+		)
+		if _is_binding(row, role_binding) and row.employee in actives
+	]
+
+
+def binding_holders() -> dict:
+	"""Counts off :func:`configured_binding_pairs`, for the pre-solve gap warning.
+
+	This answers "does this site use role binding at all", so a run whose ruleset omits
+	``bind_role_assignments`` can warn that those settled schedules are about to be
+	ignored.
+	"""
+	pairs = configured_binding_pairs()
+	return {
+		"pairs": len(pairs),
+		"employees": len({employee for employee, _role in pairs}),
+		"roles": sorted({role for _employee, role in pairs}),
+	}
+
+
+def builtin_keys_of(rule_names) -> set[str]:
+	"""The built-in keys the given Optimization Rule documents point at.
+
+	Custom Code rows contribute nothing — they carry no builtin key, and no dependency
+	metadata either (see CLAUDE.md).
+	"""
+	rule_names = list(rule_names or [])
+	if not rule_names:
+		return set()
+	return {
+		key
+		for key in frappe.get_all(
+			"Optimization Rule",
+			filters={"name": ["in", rule_names], "implementation_type": "Built-in"},
+			pluck="builtin_key",
+		)
+		if key
+	}
+
+
+def binding_rule_gap(selected_keys) -> dict:
+	"""Would this rule selection silently ignore the site's settled schedules?
+
+	``{"gap": True, ...}`` when some employee-role pair is marked binding but the
+	selection leaves ``bind_role_assignments`` out — the run will then schedule those
+	people as if their schedule were the planner's to set.
+	"""
+	from autoshift.optimizer.rules import bind_role_assignments
+
+	holders = binding_holders()
+	return {
+		**holders,
+		"gap": bool(holders["pairs"]) and bind_role_assignments.__name__ not in set(selected_keys),
+	}
+
+
+def ruleset_binding_rule_gap(ruleset: str) -> dict:
+	""":func:`binding_rule_gap` for the rules an Optimization Ruleset selects."""
+	names = frappe.get_all(
+		"Optimization Ruleset Rule",
+		filters={"parent": ruleset, "parenttype": "Optimization Ruleset"},
+		pluck="rule",
+	)
+	return binding_rule_gap(builtin_keys_of(names))
+
+
 def load(run_doc) -> DataPackage:
 	start_date = getdate(run_doc.date)
 	mode = run_doc.mode
@@ -103,15 +222,13 @@ def load(run_doc) -> DataPackage:
 	# ── Optimizer settings ──────────────────────────────────────────────────
 	settings = frappe.get_single("Optimizer Settings")
 
-	# ── Discipline-Designation-Branch Config ─────────────────────────────────
+	# ── Discipline-Branch Config ─────────────────────────────────────────────
 	config_rows = frappe.get_all(
-		"Discipline Designation Branch Config",
-		fields=["name", "discipline", "employee_type", "branch", "max_rooms_for_employee_type", "rooms_num"],
+		"Discipline Branch Config",
+		fields=["name", "discipline", "branch", "rooms_num"],
 	)
 	if not config_rows:
-		frappe.throw(
-			frappe._("No Discipline Designation Branch Config records found. Please configure them first.")
-		)
+		frappe.throw(frappe._("No Discipline Branch Config records found. Please configure them first."))
 
 	# Build lookup structures from config
 	branches = sorted({r.branch for r in config_rows if r.branch})
@@ -122,19 +239,91 @@ def load(run_doc) -> DataPackage:
 	for r in config_rows:
 		rooms[(r.discipline, r.branch)] = int(r.rooms_num or 0)
 
-	# max_rpe per (designation, discipline) — take max across branches for simplicity
-	max_rpe_by_desig: dict[str, int] = {}
-	for r in config_rows:
-		key = r.employee_type
-		max_rpe_by_desig[key] = max(max_rpe_by_desig.get(key, 0), int(r.max_rooms_for_employee_type or 1))
+	# ── Planning horizon ─────────────────────────────────────────────────────
+	# Needed this early because role validity windows are resolved against it.
+	all_days = list(itertools.islice(_planning_days(start_date, mode), 100))
+	horizon_start, horizon_end = all_days[0], all_days[-1]
+
+	# ── Scheduling Roles ─────────────────────────────────────────────────────
+	# A role names exactly one discipline, and is what makes an employee eligible for
+	# anything. Roles in a discipline with no config row cannot be staffed (there are no
+	# rooms), so they are dropped here rather than producing unusable variables.
+	role_rows = frappe.get_all(
+		"Scheduling Role",
+		filters={"active": 1, "discipline": ["in", disciplines]},
+		fields=["name", "discipline", "max_rooms", "assignments_binding"],
+	)
+	if not role_rows:
+		frappe.throw(
+			frappe._(
+				"No active Scheduling Role exists for any configured discipline. The optimizer "
+				"schedules employees by the roles they hold, so it has nothing to work with."
+			)
+		)
+	roles = sorted(r.name for r in role_rows)
+	role_discipline = {r.name: r.discipline for r in role_rows}
+	role_max_rooms = {r.name: max(int(r.max_rooms or 1), 1) for r in role_rows}
+	# Roles whose holders' schedules are settled by the holders, not by the planner.
+	role_binding = {r.name: bool(r.assignments_binding) for r in role_rows}
+
+	# ── Employee Scheduling Roles ────────────────────────────────────────────
+	# The validity window is filtered in Python: the condition is
+	# "(valid_from unset or <= horizon end) and (valid_to unset or >= horizon start)",
+	# two independent OR groups, which frappe's filters/or_filters pair cannot express.
+	# The row count is one per employee-capability, so this is cheap.
+	held_rows = frappe.get_all(
+		"Employee Scheduling Role",
+		filters={"active": 1, "scheduling_role": ["in", roles]},
+		fields=[
+			"employee",
+			"scheduling_role",
+			"role_fte",
+			"max_rooms",
+			"binding_override",
+			"valid_from",
+			"valid_to",
+		],
+	)
+
+	def _held_over_horizon(row) -> bool:
+		"""Blank ends are open: always held / held indefinitely."""
+		if row.valid_from and getdate(row.valid_from) > horizon_end:
+			return False
+		return not (row.valid_to and getdate(row.valid_to) < horizon_start)
+
+	held_rows = [row for row in held_rows if _held_over_horizon(row)]
 
 	# ── Employees ────────────────────────────────────────────────────────────
-	valid_designations = {r.employee_type for r in config_rows}
-	raw_employees = frappe.get_all(
-		"Employee",
-		filters={"status": "Active", "designation": ["in", list(valid_designations)]},
-		fields=["name", "designation", "department", "custom_fte"],
+	# Scope is "holds at least one in-window Scheduling Role". Employee.department and
+	# .designation are HR/payroll data and play no part: somebody nobody has given a role
+	# is simply not scheduled, which is also how non-clinical staff stay out.
+	role_holders = sorted({row.employee for row in held_rows})
+	raw_employees = (
+		frappe.get_all(
+			"Employee",
+			filters={"status": "Active", "name": ["in", role_holders]},
+			fields=["name", "custom_fte"],
+		)
+		if role_holders
+		else []
 	)
+	active_employees = {emp.name for emp in raw_employees}
+
+	employee_role_lists: dict[str, list[str]] = {}
+	max_rpe: dict[tuple[str, str], int] = {}
+	role_fte_pct: dict[tuple[str, str], float] = {}
+	binding_pairs: set[tuple[str, str]] = set()
+	for row in held_rows:
+		if row.employee not in active_employees:
+			continue
+		pair = (row.employee, row.scheduling_role)
+		employee_role_lists.setdefault(row.employee, []).append(row.scheduling_role)
+		max_rpe[pair] = int(row.max_rooms or role_max_rooms.get(row.scheduling_role, 1))
+		if row.role_fte:
+			role_fte_pct[pair] = float(row.role_fte)
+		if _is_binding(row, role_binding):
+			binding_pairs.add(pair)
+	employee_roles = {e: tuple(sorted(rs)) for e, rs in employee_role_lists.items()}
 
 	# Employee Settings
 	emp_settings = {
@@ -146,40 +335,20 @@ def load(run_doc) -> DataPackage:
 	}
 
 	# ── Shift Types ──────────────────────────────────────────────────────────
-	# Shift Type scope is config-driven via Discipline Designation Branch Config.shift_types
-	# (a Table MultiSelect, backed by the "Discipline Designation Branch Config Shift Type"
-	# child doctype): a Shift Type is in scope if any DDBC row lists it. Excludes non-clinical
-	# variants (design doc §2.2) without needing a field on Shift Type itself.
-	ddbc_shift_type_rows = frappe.get_all(
-		"Discipline Designation Branch Config Shift Type",
+	# Shift Type scope is config-driven via Discipline Branch Config.shift_types (a Table
+	# MultiSelect, backed by the "Discipline Branch Config Shift Type" child doctype): a
+	# Shift Type is in scope if any config row lists it. Excludes non-clinical variants
+	# (design doc §2.2) without needing a field on Shift Type itself.
+	config_shift_type_rows = frappe.get_all(
+		"Discipline Branch Config Shift Type",
 		filters={"parent": ["in", [r.name for r in config_rows]]},
 		fields=["parent", "shift_type"],
 	)
-	shift_types_by_ddbc: dict[str, set[str]] = {}
-	for row in ddbc_shift_type_rows:
-		shift_types_by_ddbc.setdefault(row.parent, set()).add(row.shift_type)
+	shift_types_by_config: dict[str, set[str]] = {}
+	for row in config_shift_type_rows:
+		shift_types_by_config.setdefault(row.parent, set()).add(row.shift_type)
 
-	shift_types = sorted({st for sts in shift_types_by_ddbc.values() for st in sts})
-
-	# the same Shift Type selection has to be re-entered on every DDBC row of a given
-	# discipline (one per designation x branch), so nothing stops two rows of the *same*
-	# discipline from listing different Shift Types. Detect and warn
-	shift_type_variants_by_discipline: dict[str, set[frozenset[str]]] = {}
-	for r in config_rows:
-		shift_type_variants_by_discipline.setdefault(r.discipline, set()).add(
-			frozenset(shift_types_by_ddbc.get(r.name, set()))
-		)
-	for discipline, variants in shift_type_variants_by_discipline.items():
-		if len(variants) > 1:
-			frappe.log_error(
-				title="Inconsistent Shift Types across Discipline Designation Branch Config rows",
-				message=(
-					f"Discipline {discipline!r} has Discipline Designation Branch Config rows "
-					f"with differing Shift Types selections: {[sorted(v) for v in variants]}. "
-					"The optimizer uses the union of all selections for this discipline; "
-					"align the rows to avoid surprises."
-				),
-			)
+	shift_types = sorted({st for sts in shift_types_by_config.values() for st in sts})
 
 	# ── Shift preferences ─────────────────────────────────────────────────────
 	# 3-layer resolution (highest priority first):
@@ -216,43 +385,46 @@ def load(run_doc) -> DataPackage:
 			weights = dict(zip(shift_types, _normalized_weights(raw_arr, delta).tolist(), strict=True))
 			shift_preferences[emp_name] = weights
 
-	employees = []
-	designation: dict[str, str] = {}
-	department: dict[str, str] = {}
+	employees: list[str] = []
 	target_shifts: dict[str, int] = {}
-	max_rpe: dict[str, int] = {}
-	employee_holiday_lists: dict[str, str] = {}
+	role_target_shifts: dict[tuple[str, str], float] = {}
 
-	all_days = list(itertools.islice(_planning_days(start_date, mode), 100))
+	fulltime_shifts = _fulltime_shifts_in_period(all_days)
 
 	for emp in raw_employees:
 		name = emp.name
-		desig = emp.designation or ""
-		if desig not in valid_designations:
+		if not employee_roles.get(name):
 			continue
 
 		employees.append(name)
-		designation[name] = desig
-		department[name] = emp.department or ""
-		employee_holiday_lists[name] = emp.holiday_list or ""
-
 		fte_pct = cast(float, emp.custom_fte) or 100.0
-		fte_fraction = fte_pct / 100.0
-		# Two shifts per day * number of working days * FTE fraction
-		n_slots = len(all_days) * 2
-		target_shifts[name] = round(fte_fraction * n_slots)
+		target_shifts[name] = round(fte_pct / 100.0 * fulltime_shifts)
 
-		max_rpe[name] = max_rpe_by_desig.get(desig, 1)
+	# An employee with no Employee Settings document means the same as one whose
+	# preference tables are blank: uniform preferences. Without this backfill the
+	# shift-preference objective read their weights as 0.0 instead of 1/N, silently
+	# taxing every one of their assignments by a full -1 rather than -(N-1)/N.
+	if len(shift_types) > 1:
+		uniform = 1.0 / len(shift_types)
+		for name in employees:
+			shift_preferences.setdefault(name, dict.fromkeys(shift_types, uniform))
 
-	_holiday_list_name: str = settings.get(f"{'un' if mode == 'Unbounded' else ''}bounded_holiday_list")  # pyright: ignore[reportAssignmentType]
+	# Agreed per-role splits, on the same scale as the overall ceiling above. Only pairs
+	# whose Employee Scheduling Role names a figure get one — the rest are unconstrained
+	# beyond that ceiling, which is the point: these expectations are informal.
+	for (name, role), pct in role_fte_pct.items():
+		if name in target_shifts:
+			role_target_shifts[(name, role)] = pct / 100.0 * fulltime_shifts
+
+	_holiday_list_name: str = settings.get(f"{'un' if mode == 'Unbounded' else ''}bounded_holiday_list")
 	_holiday_list_doc = frappe.get_doc("Holiday List", _holiday_list_name)
-	_holiday_doc_list: list = _holiday_list_doc.get("holidays")  # pyright: ignore[reportAssignmentType]
+	_holiday_doc_list: list = _holiday_list_doc.get("holidays")
 	holiday_list = [h.get("holiday_date") for h in _holiday_doc_list]
 	working_days = [d for d in all_days if d not in holiday_list]
 
 	# ── Leave blocklist ───────────────────────────────────────────────────────
 	window_start = str(working_days[0]) if working_days else str(start_date)
-	window_end = str(working_days[-1]) if working_days else str(add_days(start_date, 27))
+	window_end = str(working_days[-1]) if working_days else str(frappe.utils.add_days(start_date, 27))
 
 	leave_blocked: set[tuple[str, datetime.date]] = set()
 
@@ -292,10 +464,12 @@ def load(run_doc) -> DataPackage:
 				d += datetime.timedelta(days=1)
 
 	# ── Forced assignments ────────────────────────────────────────────────────
-	if run_doc.disregard_assignments == "Weigh":
-		flags.add(DataPackage.WEIGH_ASSIGNMENTS)
-
-	forced: set[tuple[str, str, datetime.date, str]] = set()
+	# Which of these are honored, weighed, or ignored is a ruleset choice now
+	# (use_existing_assignments / weigh_assignments_objective), not a run-level flag.
+	forced: set[tuple[str, str, str, datetime.date, str]] = set()
+	binding_conflicts: list[tuple[str, str, str, datetime.date, str]] = []
+	unresolved_assignments: list[tuple[str, datetime.date, str]] = []
+	binding_employees = {employee for employee, _role in binding_pairs}
 	existing = frappe.get_all(
 		"Shift Assignment",
 		filters={
@@ -303,28 +477,86 @@ def load(run_doc) -> DataPackage:
 			"docstatus": 1,
 			"start_date": ["<=", window_end],
 		},
-		fields=["employee", "shift_type", "start_date", "shift_location"],
+		fields=["name", "employee", "shift_type", "start_date", "shift_location"],
 	)
-	# Source of truth for branch: Shift Assignment -> Shift Location ->
-	# Shift Location.custom_branch (Link to Branch).
-	location_branch = {
-		row.name: row.custom_branch
+	# Assignments outside the horizon (the query has no lower bound) and on non-working
+	# days have no variable to be forced onto, so drop them before doing any resolution.
+	working_day_set = set(working_days)
+	existing = [sa for sa in existing if getdate(sa.start_date) in working_day_set]
+
+	# Source of truth for branch and discipline: Shift Assignment -> Shift Location ->
+	# Shift Location.custom_branch / .custom_discipline.
+	locations = {
+		row.name: row
 		for row in frappe.get_all(
 			"Shift Location",
 			filters={"name": ["in", list({sa.shift_location for sa in existing if sa.shift_location})]},
-			fields=["name", "custom_branch"],
+			fields=["name", "custom_branch", "custom_discipline"],
 		)
 	}
+	# A Shift Assignment records no role, so it is recovered from its location's
+	# discipline: the role the employee holds there. Somebody holding two roles in one
+	# discipline is unusual but legal (differing max-rooms, say); pick deterministically,
+	# preferring a binding role so a settled schedule is attributed to the role that is
+	# actually settled rather than to whichever one sorts first.
+	roles_by_employee_discipline: dict[tuple[str, str], list[str]] = {}
+	for name, held in employee_roles.items():
+		for role in held:
+			roles_by_employee_discipline.setdefault((name, role_discipline[role]), []).append(role)
+
+	def _unresolvable(sa, reason: str) -> None:
+		"""An existing assignment this run cannot place.
+
+		For a bound employee this is fatal: their schedule is *input*, and quietly
+		dropping a day of it would freeze them to a week they do not work. For anybody
+		else it is a data-quality observation, not a reason to refuse to plan — the
+		practice's own history is patchy, most of it is disregarded now anyway, and a
+		single mis-filed location used to be able to abort the whole run. Recorded, and
+		reported by the run-statistics panel.
+		"""
+		message = frappe._("Shift Assignment {0}: {1}").format(sa.name, reason)
+		if sa.employee in binding_employees:
+			frappe.throw(message)
+		unresolved_assignments.append((sa.employee, getdate(sa.start_date), reason))
+
 	for sa in existing:
-		branch = location_branch.get(sa.shift_location)
+		location = locations.get(sa.shift_location) or frappe._dict()
+		branch = location.get("custom_branch")
 		if not branch:
-			frappe.throw(
-				frappe._(
-					"Shift Assignment {0} has no Shift Location with a Branch set; cannot "
-					"resolve which branch it belongs to."
-				).format(sa.name)
+			_unresolvable(
+				sa,
+				frappe._("no Shift Location with a Branch set, so it names no branch"),
 			)
-		forced.add((sa.employee, sa.shift_type, getdate(sa.start_date), str(branch)))
+			continue
+		discipline = location.get("custom_discipline")
+		if not discipline:
+			_unresolvable(
+				sa,
+				frappe._("Shift Location {0} has no Discipline set, so it names no Scheduling Role").format(
+					sa.shift_location
+				),
+			)
+			continue
+		candidates = roles_by_employee_discipline.get((sa.employee, discipline))
+		if not candidates:
+			_unresolvable(
+				sa,
+				frappe._(
+					"{0} holds no Scheduling Role in discipline {1}, but the assignment places "
+					"them there — give them the role, or correct the Shift Location"
+				).format(sa.employee, discipline),
+			)
+			continue
+		role = sorted(candidates, key=lambda r: ((sa.employee, r) not in binding_pairs, r))[0]
+		day = getdate(sa.start_date)
+		comb = (sa.employee, role, sa.shift_type, day, str(branch))
+		# Approved (or speculated) leave wins over an assignment already on the books —
+		# forcing both would make the model infeasible. Record it so the run-statistics
+		# panel can tell the planner their data disagrees with itself.
+		if (sa.employee, day) in leave_blocked:
+			binding_conflicts.append(comb)
+			continue
+		forced.add(comb)
 
 	return DataPackage(
 		flags=flags,
@@ -332,9 +564,11 @@ def load(run_doc) -> DataPackage:
 		shift_types=shift_types,
 		working_days=working_days,
 		branches=branches,
-		designation=designation,
-		department=department,
+		roles=roles,
+		role_discipline=role_discipline,
+		employee_roles=employee_roles,
 		target_shifts=target_shifts,
+		role_target_shifts=role_target_shifts,
 		max_rpe=max_rpe,
 		rooms=rooms,
 		disciplines=disciplines,
@@ -342,4 +576,7 @@ def load(run_doc) -> DataPackage:
 		forced=forced,
 		shift_preferences=shift_preferences,
 		rules=rules,
+		binding_pairs=frozenset(binding_pairs),
+		binding_conflicts=tuple(sorted(binding_conflicts)),
+		unresolved_assignments=tuple(sorted(set(unresolved_assignments))),
 	)

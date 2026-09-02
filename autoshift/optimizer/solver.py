@@ -6,6 +6,7 @@ Called directly (sync, short time limit) or via Frappe's background job queue
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import traceback
@@ -53,7 +54,7 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 	try:
 		run.set("hash", data.input_hash())
 
-		prob, x, _active_rooms, rule_logs = model_builder.build(data)
+		prob, x, active_rooms, rule_logs, ctx = model_builder.build(data)
 
 		# CBC runs as a subprocess, so the only sane way to capture output is through a file
 		fd, log_path = tempfile.mkstemp(prefix="cbc_", suffix=".log")
@@ -85,20 +86,55 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 			run.set("objective_value", pulp.value(prob.objective) or 0.0)
 			run.set("solution_table", [])
 
-			for (e, s, d, b), var in x.items():
+			for comb, var in x.items():
 				val = pulp.value(var)
 				if val is not None and val > 0.5:
-					is_forced = (e, s, d, b) in data.forced
+					e, r, s, d, b = comb
 					run.append(
 						"solution_table",
 						{
 							"employee": e,
+							"scheduling_role": r,
 							"shift_type": s,
 							"date": str(d),
 							"branch": b,
-							"forced": 1 if is_forced else 0,
+							"forced": 1 if comb in data.forced else 0,
 						},
 					)
+
+			# Room-coverage result: the active_rooms variable values, one row per
+			# (discipline, shift, day, branch) slot with configured capacity. Zero-staffed
+			# rows are kept deliberately — an empty slot is what a planner needs to see.
+			run.set("coverage_table", [])
+			for (k, s, d, b), var in active_rooms.items():
+				capacity = data.rooms.get((k, b), 0)
+				if not capacity:
+					continue
+				run.append(
+					"coverage_table",
+					{
+						"discipline": k,
+						"branch": b,
+						"date": str(d),
+						"shift_type": s,
+						"staffed_rooms": int(pulp.value(var) or 0),
+						"capacity": capacity,
+					},
+				)
+
+			# Per-rule share of the solved objective (weighted, so shares sum to the
+			# objective value up to rounding). Constraint rules contribute nothing and
+			# are absent.
+			run.set(
+				"objective_breakdown",
+				json.dumps(
+					{
+						rule: pulp.value(pulp.lpSum(terms)) or 0.0
+						for rule, terms in ctx.objective_contributions.items()
+					},
+					indent=1,
+				),
+			)
 
 			run.set("status", "Solved")
 		else:

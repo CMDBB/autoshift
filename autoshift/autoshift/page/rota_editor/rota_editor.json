@@ -1,0 +1,16 @@
+{
+ "doctype": "Page",
+ "module": "Autoshift",
+ "name": "rota-editor",
+ "page_name": "rota-editor",
+ "roles": [
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "HR Manager"
+  }
+ ],
+ "standard": "Yes",
+ "title": "Rota Editor"
+}

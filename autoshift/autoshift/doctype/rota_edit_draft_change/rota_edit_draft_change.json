@@ -1,0 +1,120 @@
+{
+ "actions": [],
+ "creation": "2026-09-01 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Data",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "op",
+  "employee",
+  "from_assignment",
+  "from_weekday",
+  "from_phase",
+  "column_break_1",
+  "to_shift_type",
+  "to_weekday",
+  "to_phase",
+  "to_branch",
+  "description"
+ ],
+ "fields": [
+  {
+   "fieldname": "op",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Operation",
+   "options": "Add\nMove\nRemove",
+   "reqd": 1
+  },
+  {
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Employee",
+   "options": "Employee",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:doc.op != \"Add\"",
+   "description": "The Shift Schedule Assignment this change moves or removes a day from.",
+   "fieldname": "from_assignment",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "From Assignment",
+   "options": "Shift Schedule Assignment"
+  },
+  {
+   "depends_on": "eval:doc.op != \"Add\"",
+   "fieldname": "from_weekday",
+   "fieldtype": "Select",
+   "label": "From Weekday",
+   "options": "\nMonday\nTuesday\nWednesday\nThursday\nFriday\nSaturday\nSunday"
+  },
+  {
+   "default": "0",
+   "description": "Which week of the editor's view the touched occurrence was in (0-indexed) — see rota/edit.py, EditPlan.cadence_changes.",
+   "fieldname": "from_phase",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "From Phase"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval:doc.op != \"Remove\"",
+   "fieldname": "to_shift_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "To Shift Type",
+   "options": "Shift Type"
+  },
+  {
+   "depends_on": "eval:doc.op != \"Remove\"",
+   "fieldname": "to_weekday",
+   "fieldtype": "Select",
+   "label": "To Weekday",
+   "options": "\nMonday\nTuesday\nWednesday\nThursday\nFriday\nSaturday\nSunday"
+  },
+  {
+   "default": "0",
+   "description": "Which week of the editor's view the destination occurrence is in (0-indexed) — see rota/edit.py, EditPlan.cadence_changes.",
+   "fieldname": "to_phase",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "To Phase"
+  },
+  {
+   "depends_on": "eval:doc.op != \"Remove\"",
+   "fieldname": "to_branch",
+   "fieldtype": "Link",
+   "label": "To Branch",
+   "options": "Branch"
+  },
+  {
+   "description": "Frozen at staging time, against the state the change was actually made against — see rota/edit.py.",
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Description",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Autoshift",
+ "name": "Rota Edit Draft Change",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

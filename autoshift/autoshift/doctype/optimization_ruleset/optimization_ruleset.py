@@ -5,8 +5,34 @@ from frappe.model.document import Document
 class OptimizationRuleset(Document):
 	def validate(self):
 		self._validate_no_duplicate_rules()
+		self._validate_builtin_rule_compatibility()
 		self._warn_about_unimplemented_rules()
 		self._warn_about_objective_composition()
+
+	def _validate_builtin_rule_compatibility(self):
+		"""Catch bad built-in rule combinations (mutually-exclusive choice groups like Honor +
+		Weigh existing assignments, missing `requires`) at save time rather than leaving them
+		to surface as a solve-time error. Custom Code rules carry none of this metadata and are
+		silently skipped, same as apply_rules does.
+		"""
+		from autoshift.optimizer.rules import BuiltinRule
+
+		rule_names = [row.rule for row in (self.rules or []) if row.rule]
+		if not rule_names:
+			return
+		builtin_keys = {
+			r.builtin_key
+			for r in frappe.get_all(
+				"Optimization Rule",
+				filters={"name": ["in", rule_names], "implementation_type": "Built-in"},
+				fields=["builtin_key"],
+			)
+			if r.builtin_key
+		}
+		try:
+			BuiltinRule.check_ruleset(builtin_keys)
+		except ValueError as exc:
+			frappe.throw(str(exc))
 
 	def _validate_no_duplicate_rules(self):
 		seen = set()

@@ -27,7 +27,7 @@ from .rules import RuleContext, apply_rules
 from .types import DataPackage
 
 
-def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict, str]:
+def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict, str, RuleContext]:
 	prob = pulp.LpProblem("shift_optimizer", pulp.LpMaximize)
 
 	E = data.employees
@@ -43,11 +43,22 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict, str]:
 		raise ValueError("No working days in planning horizon.")
 
 	# ── Decision variables ────────────────────────────────────────────────────
-	x: dict[tuple, pulp.LpVariable] = prob.add_variable_dict(
-		"x",
-		(E, S, D, B),
-		cat=pulp.LpBinary,
-	)
+	# x is indexed by the (employee, role) pairs each employee actually holds, not by the
+	# full employee x role product. Role eligibility is therefore structural: a variable
+	# for a role somebody cannot work simply does not exist, so no rule has to forbid it
+	# and the model is no larger than it was before roles. This mirrors active_rooms
+	# below, whose branch room cap likewise lives in the variable bound rather than in a
+	# constraint (see rules.room_coverage).
+	x: dict[tuple, pulp.LpVariable] = {}
+	for e in E:
+		for r in data.employee_roles.get(e, ()):
+			x |= prob.add_variable_dict("x", ([e], [r], S, D, B), cat=pulp.LpBinary)
+
+	if not x:
+		raise ValueError(
+			"No employee holds a Scheduling Role over this horizon, so there is nothing to "
+			"schedule. Give the employees you want scheduled an Employee Scheduling Role."
+		)
 
 	active_rooms: dict[tuple, pulp.LpVariable] = {
 		key: variable
@@ -67,4 +78,7 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict, str]:
 
 	prob += pulp.lpSum(ctx.objective_terms)
 
-	return prob, x, active_rooms, logs
+	# The ctx rides along for diagnostics: its objective_contributions map each rule's
+	# document name to the terms it contributed, which the solver evaluates against the
+	# solved variables into the run's per-rule objective breakdown.
+	return prob, x, active_rooms, logs, ctx

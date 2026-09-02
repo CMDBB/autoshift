@@ -1,18 +1,24 @@
 import colorsys
 import heapq
+import itertools
+import json
 
-import frappe.utils
+import frappe.utils.caching
 from frappe.model.document import Document
 
 from autoshift.optimizer import data_loader, types
+from autoshift.utils import background_workers_alive as _background_workers_alive
 
 # Time given to the synchronous attempt before falling back to a background job.
 SYNC_TIME_LIMIT = 5
 
 
 def datapackage_cache_key(run_name) -> str:
-	# v2: packages cached before DataPackage.rules existed deserialize without it
-	return f"DataPackage:v2:{run_name}"
+	# v3: packages cached before role binding existed carry no binding_pairs /
+	# binding_conflicts, so a stale entry would silently unfreeze a settled schedule
+	# v4: adds unresolved_assignments, and the Shift Assignments a run sees can now change
+	# under it (autoshift.rota materialises settled schedules just before a solve)
+	return f"DataPackage:v4:{run_name}"
 
 
 # Approximate hue (HSV degrees) of each named "Roster Color" on Shift Type, so a
@@ -72,7 +78,8 @@ class OptimizerRun(Document):
 		if not self.type:
 			self.type = "Manual"
 
-	def memoize_datapackage(self):
+	@frappe.utils.caching.redis_cache()
+	def cache_datapackage(self):
 		cache = frappe.cache
 		if cache is None:
 			return data_loader.load(self)
@@ -93,7 +100,7 @@ class OptimizerRun(Document):
 		"""
 		from autoshift.optimizer.solver import find_cached_runs
 
-		data = self.memoize_datapackage()
+		data = self.cache_datapackage()
 
 		cached_names = find_cached_runs(data.input_hash(), exclude_name=self.name)
 
@@ -101,6 +108,49 @@ class OptimizerRun(Document):
 			"n": len(cached_names),
 			"cached_runs_list_link": frappe.utils.get_filtered_list_link("Optimizer Run", cached_names),
 		}
+
+	@frappe.whitelist()
+	def check_binding_rule_gap(self):
+		"""Does this run's ruleset omit the binding rule while the site marks roles binding?
+
+		Cheap config query — no DataPackage, so it is safe to call before solving.
+		"""
+		return data_loader.ruleset_binding_rule_gap(self.ruleset)  # ty:ignore[unresolved-attribute]
+
+	def planning_window(self):
+		"""(first day, last day) of this run's horizon.
+
+		Truncated at 100 days exactly as ``data_loader.load`` truncates it, so an
+		``Unbounded`` run reports the span it will actually solve.
+		"""
+		days = list(itertools.islice(types.planning_days(frappe.utils.getdate(self.date), self.mode), 100))
+		return days[0], days[-1]
+
+	@frappe.whitelist()
+	def check_pending_bound_shifts(self):
+		"""Settled schedules this horizon needs that no Shift Assignment records yet.
+
+		HRMS cannot generate them for a rota longer than a week (see ``autoshift.rota``),
+		so the run has to, or ``bind_role_assignments`` would freeze those people to an
+		empty week. Cheap config query — safe to call before solving.
+		"""
+		from autoshift.rota import materialize as rota
+
+		first, last = self.planning_window()
+		found = rota.pending(first, last)
+		return {key: value for key, value in found.items() if key != "rows"}
+
+	@frappe.whitelist()
+	def materialize_bound_shifts(self):
+		"""Create the Shift Assignments :meth:`check_pending_bound_shifts` reports missing."""
+		from autoshift.rota import materialize as rota
+
+		first, last = self.planning_window()
+		result = rota.materialize(first, last)
+		# The package is built from those very records, so a cached one is now stale.
+		if result["created"] and frappe.cache:
+			frappe.cache.delete_value(datapackage_cache_key(self.name))
+		return result
 
 	@frappe.whitelist()
 	def solve(self):
@@ -114,10 +164,22 @@ class OptimizerRun(Document):
 			frappe.throw(frappe._("Only Draft runs can be solved."))
 		from autoshift.optimizer.solver import run_solve
 
-		data = self.memoize_datapackage()
+		data = self.cache_datapackage()
 		self.set("status", "Solving")
 		timed_out = run_solve(str(self.name), data, time_limit=SYNC_TIME_LIMIT)
 		if timed_out:
+			if not _background_workers_alive():
+				# Without this guard the run would sit in "Solving" forever with the job
+				# rotting in an unserved queue — a dev bench running only `bench serve`
+				# has no workers, and nothing else surfaces that.
+				frappe.throw(
+					frappe._(
+						"This problem needs more than {0}s and would continue as a background "
+						"job, but no background worker is running to pick it up. Start one "
+						"(e.g. <code>bench worker</code>, or run the bench via "
+						"<code>bench start</code>) and solve again."
+					).format(SYNC_TIME_LIMIT)
+				)
 			frappe.enqueue(
 				"autoshift.optimizer.solver.run_solve",
 				run_name=self.name,
@@ -142,7 +204,6 @@ class OptimizerRun(Document):
 		new_run = frappe.new_doc("Optimizer Run")
 		new_run.set("mode", self.mode)  # ty:ignore[unresolved-attribute]
 		new_run.set("date", self.date)  # ty:ignore[unresolved-attribute]
-		new_run.set("disregard_assignments", self.disregard_assignments)  # ty:ignore[unresolved-attribute]
 		new_run.set("ruleset", self.ruleset)  # ty:ignore[unresolved-attribute]
 		new_run.set("type", "Copy")
 		for row in self.get("leaves_speculations") or []:
@@ -167,7 +228,7 @@ class OptimizerRun(Document):
 
 		    {
 		      "days": ["YYYY-MM-DD", ...],
-		      "employees": [{"name", "employee_name", "designation", "image"}, ...],
+		      "employees": [{"name", "employee_name", "roles", "image"}, ...],
 		      "events": {employee: {"YYYY-MM-DD": [{"kind", ...}, ...]}},
 		    }
 		"""
@@ -175,7 +236,7 @@ class OptimizerRun(Document):
 
 		getdate = data_loader.getdate
 
-		data = self.memoize_datapackage()
+		data = self.cache_datapackage()
 		in_scope = list(data.employees)
 
 		days = [d.isoformat() for d in types.planning_days(self.date, self.mode)]  # ty:ignore[unresolved-attribute]
@@ -253,6 +314,7 @@ class OptimizerRun(Document):
 					"end_time": _fmt_time(meta.end_time) if meta else "",
 					"branch": s.branch,
 					"shift_location": s.shift_location,
+					"scheduling_role": s.scheduling_role,
 					"forced": bool(s.forced),
 				},
 			)
@@ -325,14 +387,251 @@ class OptimizerRun(Document):
 			frappe.get_all(
 				"Employee",
 				filters={"name": ["in", active]},
-				fields=["name", "employee_name", "designation", "image"],
+				fields=["name", "employee_name", "image"],
 				order_by="employee_name asc",
 			)
 			if active
 			else []
 		)
+		# Roles, not designation: designation is payroll data the optimizer no longer reads,
+		# and the roles are what explain why somebody appears in a given discipline at all.
+		for emp in employees:
+			emp["roles"] = list(data.employee_roles.get(emp["name"], ()))
 
 		return {"days": days, "employees": employees, "events": events}
+
+	@frappe.whitelist()
+	def get_run_statistics(self):
+		"""Aggregate statistics of a solved run: how full the schedule actually is, and why.
+
+		Returns None unless the run carries a solution. Shape:
+
+		    {
+		      "totals": {room_slots_staffed, room_slots_capacity, assignments,
+		                 assignments_forced, assignments_bound, target_shifts,
+		                 employees_considered, employees_scheduled, objective_value},
+		      "coverage": [{discipline, staffed, capacity, supply_bound, limiting_role,
+		                    branches: [{branch, staffed, capacity}]}],
+		      "matrix": [{discipline, branch, date, shift_type, staffed, capacity}],
+		      "employees": [{employee, employee_name, target, assigned}],  # by deficit
+		      "binding_conflicts": [{employee, scheduling_role, shift_type, date, branch}],
+		      "unresolved_assignments": [{employee, date, reason}],
+		      "warnings": [{severity, message}],
+		      "objective_breakdown": {rule_name: value} | None,
+		    }
+
+		Coverage comes from the persisted ``coverage_table`` (the solver's actual
+		``active_rooms`` values); runs solved before that table existed fall back to
+		deriving the same numbers from the assignment slots. ``supply_bound`` is the
+		scarcest Scheduling Role's total room-slot supply over the horizon (holders'
+		FTE ceilings x their max-rooms figures) — the reason a discipline cannot fill
+		its configured capacity is almost always that this number is the smaller one.
+		"""
+		if self.status not in ("Solved", "Approved", "Committed"):
+			return None
+
+		data = self.cache_datapackage()
+		slots = self.get("solution_table") or []
+
+		coverage_rows = self.get("coverage_table") or []
+		if coverage_rows:
+			matrix = [
+				{
+					"discipline": row.discipline,
+					"branch": row.branch,
+					"date": str(row.date),
+					"shift_type": row.shift_type,
+					"staffed": int(row.staffed_rooms or 0),
+					"capacity": int(row.capacity or 0),
+				}
+				for row in coverage_rows
+			]
+		else:
+			matrix = _derive_coverage_matrix(data, slots)
+
+		# ── per-discipline coverage summary ─────────────────────────────────────
+		by_disc: dict[str, dict] = {}
+		for cell in matrix:
+			disc = by_disc.setdefault(
+				cell["discipline"],
+				{"discipline": cell["discipline"], "staffed": 0, "capacity": 0, "branches": {}},
+			)
+			disc["staffed"] += cell["staffed"]
+			disc["capacity"] += cell["capacity"]
+			branch = disc["branches"].setdefault(
+				cell["branch"], {"branch": cell["branch"], "staffed": 0, "capacity": 0}
+			)
+			branch["staffed"] += cell["staffed"]
+			branch["capacity"] += cell["capacity"]
+
+		supply_bounds = _role_supply_bounds(data)
+		coverage = []
+		for disc in sorted(by_disc.values(), key=lambda d: d["discipline"]):
+			bound = supply_bounds.get(disc["discipline"])
+			coverage.append(
+				{
+					**disc,
+					"branches": sorted(disc["branches"].values(), key=lambda b: b["branch"]),
+					"supply_bound": bound["supply"] if bound else None,
+					"limiting_role": bound["role"] if bound else None,
+				}
+			)
+
+		# ── employees: assigned vs. FTE target ──────────────────────────────────
+		assigned_per_emp: dict[str, int] = {}
+		for s in slots:
+			assigned_per_emp[s.employee] = assigned_per_emp.get(s.employee, 0) + 1
+		employee_names = (
+			{
+				row.name: row.employee_name
+				for row in frappe.get_all(
+					"Employee",
+					filters={"name": ["in", list(data.employees)]},
+					fields=["name", "employee_name"],
+				)
+			}
+			if data.employees
+			else {}
+		)
+		employee_rows = sorted(
+			(
+				{
+					"employee": e,
+					"employee_name": employee_names.get(e, e),
+					"target": data.target_shifts.get(e, 0),
+					"assigned": assigned_per_emp.get(e, 0),
+				}
+				for e in data.employees
+			),
+			key=lambda r: r["assigned"] - r["target"],
+		)
+
+		# ── warnings ────────────────────────────────────────────────────────────
+		warnings = []
+		with_settings = (
+			set(
+				frappe.get_all(
+					"Employee Settings", filters={"employee": ["in", list(data.employees)]}, pluck="employee"
+				)
+			)
+			if data.employees
+			else set()
+		)
+		missing_settings = len(data.employees) - len(with_settings)
+		if missing_settings:
+			warnings.append(
+				{
+					"severity": "warning",
+					"message": frappe._(
+						"{0} of {1} scheduled employees have no Employee Settings — their shift and "
+						"branch preferences fall back to uniform."
+					).format(missing_settings, len(data.employees)),
+				}
+			)
+		for disc in coverage:
+			if disc["supply_bound"] is not None and disc["supply_bound"] < disc["capacity"]:
+				warnings.append(
+					{
+						"severity": "warning",
+						"message": frappe._(
+							"{0}: configured capacity is {1} room-slots over this horizon, but role "
+							"{2} can supply at most {3} — coverage cannot exceed that, whatever the "
+							"ruleset."
+						).format(
+							disc["discipline"], disc["capacity"], disc["limiting_role"], disc["supply_bound"]
+						),
+					}
+				)
+		if data.binding_conflicts:
+			sample = ", ".join(
+				f"{employee} ({date})"
+				for employee, _role, _shift, date, _branch in data.binding_conflicts[:3]
+			)
+			warnings.append(
+				{
+					"severity": "warning",
+					"message": frappe._(
+						"{0} existing Shift Assignment(s) fall on a day the employee is on leave and "
+						"were dropped — leave wins over a settled schedule. Fix the underlying "
+						"records if that is not what should happen: {1}{2}"
+					).format(
+						len(data.binding_conflicts),
+						sample,
+						"…" if len(data.binding_conflicts) > 3 else "",
+					),
+				}
+			)
+		if data.unresolved_assignments:
+			sample = ", ".join(
+				f"{employee} ({date})" for employee, date, _reason in data.unresolved_assignments[:3]
+			)
+			warnings.append(
+				{
+					"severity": "warning",
+					"message": frappe._(
+						"{0} existing Shift Assignment(s) could not be placed and were ignored — "
+						"their Shift Location names no branch or discipline, or the employee holds "
+						"no Scheduling Role there: {1}{2}"
+					).format(
+						len(data.unresolved_assignments),
+						sample,
+						"…" if len(data.unresolved_assignments) > 3 else "",
+					),
+				}
+			)
+		under_target = sum(1 for r in employee_rows if r["assigned"] < r["target"])
+		if under_target:
+			warnings.append(
+				{
+					"severity": "info",
+					"message": frappe._(
+						"{0} employee(s) end below their FTE target — once the scarcest role in a "
+						"discipline is exhausted, additional assignments open no rooms and are not made."
+					).format(under_target),
+				}
+			)
+
+		breakdown = None
+		if self.get("objective_breakdown"):
+			try:
+				breakdown = json.loads(self.get("objective_breakdown"))
+			except ValueError:
+				breakdown = None
+
+		return {
+			"totals": {
+				"room_slots_staffed": sum(c["staffed"] for c in matrix),
+				"room_slots_capacity": sum(c["capacity"] for c in matrix),
+				"assignments": len(slots),
+				"assignments_forced": sum(1 for s in slots if s.forced),
+				"assignments_bound": sum(
+					1 for s in slots if (s.employee, s.scheduling_role) in data.binding_pairs
+				),
+				"target_shifts": sum(data.target_shifts.get(e, 0) for e in data.employees),
+				"employees_considered": len(data.employees),
+				"employees_scheduled": len(assigned_per_emp),
+				"objective_value": self.objective_value,  # ty:ignore[unresolved-attribute]
+			},
+			"coverage": coverage,
+			"matrix": matrix,
+			"employees": employee_rows,
+			"binding_conflicts": [
+				{
+					"employee": employee,
+					"scheduling_role": role,
+					"shift_type": shift_type,
+					"date": str(date),
+					"branch": branch,
+				}
+				for employee, role, shift_type, date, branch in data.binding_conflicts
+			],
+			"unresolved_assignments": [
+				{"employee": employee, "date": str(date), "reason": reason}
+				for employee, date, reason in data.unresolved_assignments
+			],
+			"warnings": warnings,
+			"objective_breakdown": breakdown,
+		}
 
 	@frappe.whitelist()
 	def approve(self):
@@ -347,3 +646,81 @@ class OptimizerRun(Document):
 		from autoshift.optimizer.committer import commit
 
 		commit(str(self.name))
+
+
+def _derive_coverage_matrix(data, slots) -> list[dict]:
+	"""Reconstruct the room-coverage matrix from assignment slots.
+
+	Fallback for runs solved before the solver persisted ``coverage_table``: rebuilds
+	what ``active_rooms`` must have been under the ``room_coverage`` rule — per slot,
+	the minimum over the discipline's roles of the room-slots their assignees
+	contribute, capped at the branch's configured capacity. Exact for solutions where
+	that rule was selected with the room-utilization objective (the solver never
+	leaves a coverable room unclaimed); an upper bound otherwise.
+	"""
+	roles_per_disc: dict[str, set[str]] = {}
+	for role, disc in data.role_discipline.items():
+		roles_per_disc.setdefault(disc, set()).add(role)
+
+	staffed_by_role: dict[tuple, int] = {}
+	for s in slots:
+		disc = data.role_discipline.get(s.scheduling_role)
+		if not disc:
+			continue
+		key = (disc, s.scheduling_role, str(s.date), s.shift_type, s.branch)
+		staffed_by_role[key] = staffed_by_role.get(key, 0) + data.max_rpe.get(
+			(s.employee, s.scheduling_role), 1
+		)
+
+	matrix = []
+	for disc in data.disciplines:
+		roles = roles_per_disc.get(disc, set())
+		for branch in data.branches:
+			capacity = data.rooms.get((disc, branch), 0)
+			if not capacity:
+				continue
+			for day in data.working_days:
+				for shift_type in data.shift_types:
+					staffed = min(
+						(staffed_by_role.get((disc, r, str(day), shift_type, branch), 0) for r in roles),
+						default=0,
+					)
+					matrix.append(
+						{
+							"discipline": disc,
+							"branch": branch,
+							"date": str(day),
+							"shift_type": shift_type,
+							"staffed": min(staffed, capacity),
+							"capacity": capacity,
+						}
+					)
+	return matrix
+
+
+def _role_supply_bounds(data) -> dict[str, dict]:
+	"""Per discipline: the scarcest role's total room-slot supply over the horizon.
+
+	A discipline's coverage is the minimum over its roles, and each holder can work at
+	most their FTE ceiling (each shift contributing their max-rooms figure), so the
+	scarcest role's supply bounds what any ruleset can staff. Optimistic where an
+	employee holds several roles (counted fully in each) — presented as "at most",
+	never as a promise.
+	"""
+	tol = 0.05  # keep in sync with rules.fte_ceiling
+	bounds: dict[str, dict] = {}
+	for disc in data.disciplines:
+		role_supplies: dict[str, int] = {}
+		for role, role_disc in data.role_discipline.items():
+			if role_disc != disc:
+				continue
+			supply = 0
+			for e in data.employees:
+				if role in data.employee_roles.get(e, ()):
+					ceiling = int((1 + tol) * data.target_shifts.get(e, 0))
+					supply += data.max_rpe.get((e, role), 1) * ceiling
+			role_supplies[role] = supply
+		if role_supplies:
+			limiting = min(role_supplies, key=lambda r: role_supplies[r])
+			bounds[disc] = {"role": limiting, "supply": role_supplies[limiting], "roles": role_supplies}
+	return bounds

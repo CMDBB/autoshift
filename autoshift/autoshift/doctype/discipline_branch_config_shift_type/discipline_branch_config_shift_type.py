@@ -5,5 +5,5 @@
 from frappe.model.document import Document
 
 
-class DisciplineDesignationBranchConfigShiftType(Document):
+class DisciplineBranchConfigShiftType(Document):
 	pass

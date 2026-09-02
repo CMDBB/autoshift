@@ -11,9 +11,9 @@ EXTRA_TEST_RECORD_DEPENDENCIES = []  # eg. ["User"]
 IGNORE_TEST_RECORD_DEPENDENCIES = []  # eg. ["User"]
 
 
-class IntegrationTestDisciplineDesignationBranchConfig(IntegrationTestCase):
+class IntegrationTestEmployeeSchedulingRole(IntegrationTestCase):
 	"""
-	Integration tests for DisciplineDesignationBranchConfig.
+	Integration tests for EmployeeSchedulingRole.
 	Use this class for testing interactions between multiple components.
 	"""
 

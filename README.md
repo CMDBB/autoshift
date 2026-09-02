@@ -2,6 +2,12 @@
 
 Autoshift is a Frappe app that automatically assigns employees to shifts using Mixed Integer Linear Programming (MILP). It integrates with Frappe HR data (employees, shift types, leave applications, holidays) and produces an optimised schedule that maximises room utilisation while respecting staff FTE targets and shift preferences.
 
+Autoshift is organisation-agnostic: disciplines, branches, scheduling roles, room counts and
+rules are all records you create in the desk (see [One-time Setup](#one-time-setup)), not
+constants in the code. Nothing about any particular practice ships in this repo — if you
+are migrating off a legacy system, that is a separate concern (for ZaWin, see the companion
+[`zawin2frappe`](https://github.com/CMDBB/zawin2frappe) app).
+
 ## Prerequisites
 
 - A Frappe v16 bench. Frappe HR (`hrms`) is a required app and is installed automatically
@@ -35,21 +41,126 @@ Before running the optimiser, configure the following three areas in the Frappe 
 | Bounded Holiday List | Holiday list used for 1-week / 2-week / 4-week planning modes |
 | Unbounded Holiday List | Holiday list used for Unbounded planning mode |
 
-### 2. Discipline Designation Branch Config
+### 2. Discipline Branch Config
 
-**Autoshift → Discipline Designation Branch Config** — one record per *(discipline, designation, branch)* combination.
+**Autoshift → Discipline Branch Config** — one record per *(discipline, branch)* combination.
 
 | Field | Description |
 |---|---|
 | Discipline | Department (e.g. Dental, Hygiene) |
-| Employee Type | Frappe designation that maps to this discipline |
 | Branch | Branch / location name |
-| Rooms Num | Number of treatment rooms at this branch for this discipline |
-| Max Rooms for Employee Type | Maximum rooms one employee of this designation can staff simultaneously |
+| Number of Rooms | Number of treatment rooms at this branch for this discipline |
+| Shift Types | Which Shift Types the optimiser schedules here; one listed nowhere is excluded as non-clinical |
 
 At least one record is required; the optimiser will throw if none are found.
 
-### 3. Employee Settings *(optional per employee)*
+### 3. Scheduling Roles
+
+**Autoshift → Scheduling Role** — the optimiser's unit of *capability*. A role names exactly
+one discipline, and an employee may hold several — which is how somebody who works two
+disciplines (say an assistant who also does prophylaxis) is scheduled without either
+discipline over-stating its capacity.
+
+| Field | Description |
+|---|---|
+| Role Name | e.g. "Ortho Assistant" |
+| Discipline | The Department this role staffs |
+| Max Rooms Per Holder | Rooms one holder covers simultaneously in a single slot |
+| Display Order Key | *Optional.* Where this role's column sits in the week wall chart — see below |
+| Assignments Are Binding | *Optional.* Holders keep exactly the Shift Assignments already on the books — see below |
+
+**Autoshift → Employee Scheduling Role** — one record per employee-capability pair.
+
+| Field | Description |
+|---|---|
+| Employee | Link to Employee |
+| Scheduling Role | The capability they hold |
+| Agreed FTE % in Role | *Optional.* The informally agreed share of their time in this role. Blank means no expectation. |
+| Max Rooms Override | *Optional.* Overrides the role's figure for this person (e.g. an apprentice covering one chair, not three) |
+| Binding Override | *Optional.* Overrides the role's Assignments Are Binding for this person. Blank inherits |
+| Valid From / Valid To | *Optional.* Time-boxes a capability acquired or dropped mid-year |
+
+**An employee with no Scheduling Role is not scheduled at all.** This is how non-clinical
+staff stay out of scope — `Employee.department` and `Employee.designation` are payroll data
+and are not read by the optimiser.
+
+**Display Order Key** affects presentation only, never the schedule. The week wall chart
+draws one column per role of a discipline, ordered by this key (default 0), then by Max
+Rooms Per Holder descending, then by name. Leave it alone unless the derived order reads
+wrong: setting a practitioner role to **-1** puts it ahead of every role still on 0, which
+is how you get the practitioner column to the left of the assistant one. It also breaks the
+tie when a Shift Assignment's role has to be inferred, so the chart and the inference agree.
+
+**Assignments Are Binding** is for a role whose schedule is settled by its holders rather
+than by the planner — a senior clinician whose week is fixed, say. Their existing Shift
+Assignments become an *input*: over the run's horizon they work exactly what is already on
+the books, and the optimiser may not add, move or drop any of it. A holder whose schedule
+has not settled yet is exempted with **Binding Override = Not Binding** on their Employee
+Scheduling Role, and is then scheduled normally alongside everyone else.
+
+Their week does not have to be entered by hand for every week. If a bound holder has a
+**Shift Schedule** and a **Shift Schedule Assignment** (stock HR's way of recording a
+repeating week — a shift type, a frequency, the weekdays it falls on), autoshift creates the
+missing Shift Assignments from it: the wall chart offers to when you land on a week that has
+none, and both Solve and Preview say how many they are about to create before running. See
+[Where a settled week comes from](#where-a-settled-week-comes-from) for why autoshift does
+this rather than HR's own nightly job.
+
+Two things still apply to a bound holder. Approved (and speculated) leave wins over a
+settled assignment: the colliding shift is dropped rather than making the run infeasible,
+and the run-statistics panel reports it so the underlying records can be fixed. And a day
+they have nothing on the books stays empty — "settled" means settled, not "fill the gaps".
+
+The toggle only takes effect if the run's ruleset includes the **Bind settled schedules**
+rule (it is in the Standard Ruleset). The rule is inert while no role is marked binding, so
+it costs nothing on a site that does not use this.
+
+#### Where a settled week comes from
+
+Stock HR is supposed to generate the Shift Assignments from a Shift Schedule on a nightly
+job, and it does — as long as the frequency is *Every Week*. For anything longer it takes its
+week boundary from the schedule's **Create Shifts After** date and then moves that date
+forward as it goes, so the next night's run resumes mid-pattern and the cycle drifts until a
+four-week rota is firing most weeks. A fortnightly Friday or a four-week orthodontic rota
+therefore cannot be switched on as it stands, and the import writes those schedules disabled
+and marked *DO NOT ENABLE*.
+
+Autoshift reads the schedules directly instead and creates the records itself, correctly
+phased, at the two moments you would want it to: when the wall chart shows a week that has
+none, and before a run solves a horizon that has none. Nothing existing is touched — a day
+already covered is left alone — and **Create Shifts After** is never modified, because it is
+also what fixes a rota's phase. Creating them before a solve is not optional: binding freezes
+a person against exactly these records, so a horizon without them would freeze them to an
+empty week.
+
+This is a workaround for an HR bug, not a feature autoshift wants to own. The day the
+nightly job anchors its weeks properly, enabling the Shift Schedule Assignments does the same
+work and this can go.
+
+#### Correcting a settled rota
+
+Detection from the import isn't always right — a schedule changes, or zawin2frappe never
+saw it. **Autoshift → Rota Editor** (also on the Autoshift workspace) lets you fix a bound
+employee's rota by hand: pick a discipline, then drag a shift to a different day, shift
+type or branch, or click an empty cell to add one. Nothing is written until you click
+**Apply Changes** — every drag is staged in a draft first, listed as plain English at the
+bottom of the page ("moved AM (Balexert) from Tue-Wed to Tue-Fri") so you can review before
+committing, and **Discard Changes** drops the draft without touching anything. A hand
+correction is treated as the authoritative record: it replaces the pattern it touches
+outright rather than patching it, and is marked so a later zawin2frappe re-import will not
+overwrite your fix.
+
+A rota that repeats every N weeks is shown at whatever view width you pick (1/2/4 weeks);
+someone whose rota doesn't divide evenly into the current width is left off the grid rather
+than shown as a fragment, with a note saying why — widen the view to see (and edit) their
+full pattern.
+
+The Agreed FTE % is deliberately soft: the solver is *penalised* for deviating from it
+(see the "Agreed role FTE split" objective rule) but never forbidden, because these splits
+are normally an informal expectation rather than an entitlement. If you do need it enforced,
+add the non-standard **Agreed role FTE ceiling** constraint rule to your ruleset.
+
+### 4. Employee Settings *(optional per employee)*
 
 **Autoshift → Employee Settings** — one record per employee to override defaults.
 
@@ -62,11 +173,11 @@ At least one record is required; the optimiser will throw if none are found.
 
 Employees without an Employee Settings record use a uniform shift preference and their `custom_fte` field value (set directly on the Employee doctype) for the FTE target.
 
-### 4. Employee FTE
+### 5. Employee FTE
 
 On each **Employee** record, fill in the **FTE %** field (0–100). This determines the target number of shifts for the planning period. Employees default to 100 % FTE if the field is blank.
 
-### 5. Optimization Rules & Rulesets
+### 6. Optimization Rules & Rulesets
 
 The constraints a run enforces — and the objective terms it maximises — are documents, not
 hardcoded behaviour.
@@ -128,17 +239,24 @@ automatically; add the objective rules to your own rulesets yourself.
 |---|---|
 | Planning Mode | `1-week`, `2-week`, `4-week`, or `Unbounded` |
 | Start Date | First Monday of the planning period (any day for Unbounded) |
-| Existing Shift Assignments | `Use` = fix already-submitted assignments; `Ignore` = start fresh; `Weigh` = treat as soft preference |
 | Optimization Ruleset | Which rules constrain this run; defaults to **Standard Ruleset** (all built-in rules) |
 | Pending Leaves to Treat as Approved | Optional: select pending Leave Applications to block as if approved |
 
 Save the document. Status is **Draft**.
 
+How existing Shift Assignments are treated is no longer a run field — it's a choice of
+which rules the run's Ruleset includes: `Honor existing Shift Assignments` fixes them as
+hard constraints, `Objective: Conserve Existing Assignments` treats them as a soft
+warm-start the solver may override, and including neither disregards them. **The Standard
+Ruleset includes neither**, so by default the books are a tie-break and not a constraint: a
+practice's own history is rarely feasible under the rest of the ruleset — weeks worked
+short-handed, double-booked or against the current room configuration — and pinning it makes
+the run unsolvable rather than realistic. The people whose week genuinely is not yours to set
+are handled by `Bind settled schedules` instead.
+
 > **Not yet usable:** `Unbounded` planning mode is selectable in the UI but raises
 > `NotImplementedError` when you try to solve — only `1-week`/`2-week`/`4-week` are
-> implemented today. All three Existing Shift Assignments modes work: `Use` fixes existing
-> assignments as hard constraints, `Weigh` uses them as a soft warm-start the solver may
-> override, `Ignore` disregards them.
+> implemented today.
 
 ### Step 2 — Solve
 
@@ -150,9 +268,41 @@ Status becomes **Solved** on success or **Failed** if no feasible schedule exist
 
 ### Step 3 — Review the Solution
 
-The **Assigned Slots** table shows the full schedule: employee, shift type, date, branch, and whether the slot was forced from an existing Shift Assignment. The **Objective Value** shows the raw MILP objective score (higher is better).
+The **Schedule View** tab carries four ways of reading the run, and is up in every state —
+including a Draft you have not solved yet and a run that failed.
 
-Check the **Solver Log** section for CBC solver output if you need to diagnose infeasibility.
+| Pane | What it answers |
+|---|---|
+| **Week** | *Is the practice covered?* A one-week wall chart: treatment rooms down the page, days across. Always available. |
+| **Statistics** | *Is the schedule full, and if not, why?* Coverage meters, FTE gaps, each rule's share of the objective. |
+| **Roster** | *What did this person get?* The per-employee grid, with existing assignments and leave alongside. |
+| **Solver Log** | CBC's raw output, for diagnosing infeasibility. Available on a failed run too. |
+
+The **Week** chart is built entirely from your configuration: one band per *(branch,
+discipline)* from **Discipline Branch Config**, as many numbered rows as it has rooms, and
+one column per **Scheduling Role** of that discipline. So an unstaffed room is a blank row
+and a role nobody covers is a blank column — you can see a gap without reading a number.
+Use ◀ ▶ to move between weeks.
+
+Before the run is solved the chart shows the **Shift Assignments already on the books**.
+Once it is solved, each cell says what the run did with that half-day:
+
+| | |
+|---|---|
+| **Kept** | already on the books, and the run scheduled it again |
+| **Added** | proposed by the run; nothing on the books for it |
+| **Dropped** | on the books, and the run did **not** schedule it |
+| → | kept, but moved — hover for what changed |
+| ★ | pinned rather than chosen (a binding role, or an existing assignment being honoured) |
+
+Anyone the chart cannot place — a role with no Discipline Branch Config, a branch with no
+config, a Shift Type the config omits — appears under **Unplaced** with the reason stated
+above the chart, so nobody is ever quietly missing. People on leave that week are listed
+under the chart: usually the answer to why a room is empty.
+
+The **Assigned Slots** table on the first tab remains the raw record: employee, shift type,
+date, branch, and whether the slot was forced. The **Objective Value** is the raw MILP
+score (higher is better).
 
 ### Step 4 — Approve
 
@@ -192,7 +342,7 @@ flowchart LR
 
 ## Re-running, Restarting, and Stopping a Run
 
-Optimizer Runs are **immutable** once solving starts: there is no in-place reset, cancel, or re-solve of the same document. Instead, every form (except Draft) shows **Re-run (New Copy)**, which creates a brand-new Draft run with the same Planning Mode, Start Date, Existing Shift Assignments setting, and Leave Speculations, and takes you to it. The original run is left exactly as it was — a permanent record of what was tried and what happened.
+Optimizer Runs are **immutable** once solving starts: there is no in-place reset, cancel, or re-solve of the same document. Instead, every form (except Draft) shows **Re-run (New Copy)**, which creates a brand-new Draft run with the same Planning Mode, Start Date, Optimization Ruleset, and Leave Speculations, and takes you to it. The original run is left exactly as it was — a permanent record of what was tried and what happened.
 
 This single action covers every case:
 - **Re-run a Failed run** — diagnose via the Solver Log, then duplicate and click Solve again.
@@ -214,27 +364,43 @@ The Input Hash is only ever recorded on a run that actually went through a real 
 The MILP model is built with [PuLP](https://coin-or.github.io/pulp/) and solved by the embedded COIN-OR CBC binary.
 
 **Decision variables**
-- `x[employee, shift, day, branch]` ∈ {0, 1} — whether an employee is assigned to a shift on a day at a branch
+- `x[employee, role, shift, day, branch]` ∈ {0, 1} — whether an employee works a shift on a day
+  at a branch, *in one of their Scheduling Roles*. Variables exist only for roles the employee
+  actually holds, so eligibility is structural rather than a constraint — there is nothing to
+  forbid, because there is nothing to set.
 - `active_rooms[discipline, shift, day, branch]` ∈ ℤ≥0 — rooms staffed in each slot
 
-**Constraints** — supplied by the run's Optimization Ruleset (see [One-time Setup §5](#5-optimization-rules--rulesets)),
+**Constraints** — supplied by the run's Optimization Ruleset (see [One-time Setup §6](#6-optimization-rules--rulesets)),
 one Optimization Rule document per constraint group. The built-in constraint rules:
 
-1. At most one shift per employee per day
+1. At most one shift per employee per day, summed across every role they hold — a second
+   role widens *where* somebody can work, never *how much*
 2. Approved and speculated leaves block assignments
-3. Existing Shift Assignments honored per the run's mode: fixed (`Use`), soft warm-start
-   (`Weigh`), or disregarded (`Ignore`)
-4. Max rooms per employee per slot (from Discipline Designation Branch Config)
-5. Room coverage: staff headcount must support the number of active rooms
+3. Existing Shift Assignments honored per the ruleset's choice of rules: fixed
+   (`Honor existing Shift Assignments`), soft warm-start
+   (`Objective: Conserve Existing Assignments`), or disregarded (neither rule included —
+   which is what the Standard Ruleset does)
+3b. `Bind settled schedules`: holders of a Scheduling Role marked *Assignments Are Binding*
+   are frozen at their existing assignments — those fixed on, every other variable of theirs
+   fixed off. Orthogonal to the choice in 3 (it is scoped by role, not a fourth global
+   policy), so it composes with either member of that choice
+4. Max rooms per (employee, role) per slot (from Scheduling Role, optionally overridden per
+   Employee Scheduling Role)
+5. Room coverage: the roles assigned in a discipline must support its number of active rooms
 6. FTE ceiling: assigned shifts ≤ (1 + tolerance) × target, for every employee. This is an
    upper bound only. Staying near the target today comes from the objective's preference term
    pulling assignments up, not from a hard minimum.
+7. *(non-standard, opt-in)* Agreed role FTE ceiling: the hard reading of an agreed split —
+   a role's shifts ≤ (1 + tolerance) × its agreed figure
 
 **Objective (maximise)** — also supplied by the ruleset; each objective rule's term is
 scaled by its row weight. The built-in objective rules:
 
 - Room utilisation: `weight × Σ active_rooms`
-- Shift preferences: `weight × Σ pref[employee, shift] × x[employee, shift, day, branch]`
+- Shift preferences: `weight × Σ pref[employee, shift] × x[...]`
+- Agreed role FTE split: `−weight × Σ |assigned[employee, role] − agreed[employee, role]|`,
+  linearised with a pair of non-negative slack variables per pair. Only pairs whose Employee
+  Scheduling Role names an agreed figure contribute.
 
 Validated Custom Code rules can add further constraints and/or objective terms
 (`ctx.add_objective(expr)`) on top of — or instead of — the built-ins.
@@ -248,7 +414,7 @@ Current modelling limitations (revisit if the underlying assumption stops holdin
 - **No AM/PM fairness term.** The objective only optimises room utilisation and shift
   preference; nothing currently balances how AM vs. PM shifts are distributed across
   employees.
-- **Room counts are static for the whole planning period.** Discipline Designation Branch
+- **Room counts are static for the whole planning period.** Discipline Branch
   Config doesn't support rooms going offline for part of a run (e.g. maintenance, partial
   closures).
 - **Leave Application is the only day-level blocker.** There's no modelling for on-call
@@ -338,12 +504,25 @@ power the in-browser lint of Custom Code rules. `bench setup requirements` (or a
 
 ### Adding dev data
 
+`dump-dev-data` / `seed-dev-data` move **Autoshift's own configuration** between sites —
+Holiday List, Scheduling Role, Discipline Branch Config, Employee Scheduling Role,
+Employee Settings and Optimizer
+Settings. They deliberately do *not* cover Company, Branch, Department, Designation, Shift
+Type or Employee: those are upstream HR data, and the records these link to must already
+exist on the target site before you seed.
+
 ```bash
-bench --site YOUR_SITE seed-dev-data --input ./dev_data
+bench --site YOUR_SITE dump-dev-data --output ./dev_data   # snapshot a configured site
+bench --site YOUR_SITE seed-dev-data --input ./dev_data    # restore onto another
 ```
 
-(`dump-dev-data` is the inverse, for snapshotting an existing site's data.) Don't seed dev
-data into the test site — keep it pristine.
+Existing records are left alone unless you pass `--overwrite`. Don't seed dev data into the
+test site — keep it pristine.
+
+A dump contains real employees and leave records from whichever site produced it, so
+`dev_data/` is gitignored. The same goes for `sandbox/`: `capture-datapackage` snapshots are
+gitignored and a pre-commit hook strips `playground.ipynb` outputs, because the notebook runs
+against live data. Don't commit around either.
 
 ---
 
