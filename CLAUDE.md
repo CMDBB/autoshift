@@ -110,6 +110,9 @@ Doctypes (`autoshift/autoshift/doctype/`):
   all, which reads as the tool having silently done nothing. A large selection also falls
   back to running inline when `autoshift.utils.background_workers_alive()` finds no worker
   registered, since the queued job would otherwise sit in redis forever.
+- **Rota Edit Draft** (+ child `Rota Edit Draft Change`) — one user's staged, unapplied edits
+  to one discipline's bound rotas, made by the Rota Editor page. See "Hand-editing a rota"
+  under "Materialising settled schedules" below.
 
 **Optimizer Studio** (`autoshift/optimizer_studio.py` + Desk Page
 `autoshift/autoshift/page/optimizer_studio/`, linked from the Autoshift workspace as a
@@ -287,7 +290,10 @@ Optimizer engine (`autoshift/optimizer/`, pure-Python where possible for testabi
 Custom fields on stock doctypes (`autoshift/fixtures/custom_field.json`), all under module
 `Autoshift`: `Shift Location.custom_discipline`, `Shift Location.custom_branch` (Link to
 `Branch` — source of truth for a `Shift Assignment`'s branch via its `shift_location`),
-`Employee.custom_fte`. `zawin2frappe` *populates* `custom_fte` and `custom_branch` on import
+`Employee.custom_fte`, and `Shift Schedule.custom_manually_edited` /
+`Shift Schedule Assignment.custom_manually_edited` (Check, set by the Rota Editor — see
+"Hand-editing a rota" above; zawin2frappe's import must skip a row already carrying it).
+`zawin2frappe` *populates* `custom_fte` and `custom_branch` on import
 but does not own them; `Shift Assignment.custom_zawin_key` and `Employee.custom_initials`
 are owned by `zawin2frappe` (module `Zawin2Frappe`) and must not be re-added here — two apps
 shipping the same fieldname under different modules fight on every `migrate`.
@@ -407,6 +413,88 @@ in their existing pre-solve confirm and create the records before solving. Creat
 time is **not optional**: binding freezes people against exactly those records, so declining
 would silently re-plan the one group whose week is settled.
 
+### Hand-editing a rota (Rota Editor, `edit.py` + `editor.py`)
+
+Detection is imperfect in practice — a settled schedule changes, or zawin2frappe never saw
+one — so there is a **Rota Editor** Desk Page (`autoshift/autoshift/page/rota_editor/`,
+linked from the Autoshift workspace) letting a planner drag a bound employee's shifts
+around directly: add one, or move one to a different day, shift type or branch, all within
+the employee's own discipline. Same `cycle.py`/`materialize.py` split: `edit.py` is
+Frappe-free logic (covered by `tests/test_rota_edit.py`), `editor.py` is the DB half.
+
+A hand edit is **gold standard**, never a patch on top of the detected schedule: editing an
+assignment always replaces it wholesale with a fresh `Shift Schedule Assignment` (+ a
+private `Shift Schedule` backing it), tagged `custom_manually_edited` (new Check custom
+field on both doctypes, module Autoshift). That tag is the whole mechanism for keeping this
+app and zawin2frappe from fighting over the same record — **zawin2frappe's import must skip
+any row already carrying it** (enforced in zawin2frappe, not here). A shared,
+zawin2frappe-owned `Shift Schedule` is never edited or deleted by this tool, only unlinked
+(by removing this employee's one `Shift Schedule Assignment` row that pointed at it); a
+private schedule an edit empties out is cancelled and deleted. A created assignment is
+`enabled = 0` / `shift_status = "Inactive"`, exactly like an imported one — this app's own
+`materialize.py` remains the sole generator of `Shift Assignment` records regardless of
+whether the pattern behind them was imported or hand-edited.
+
+- `edit.Change` stages one edit at single-occurrence granularity (`add` / `move` / `remove`),
+  identifying the touched occurrence by weekday **and** `from_phase`/`to_phase` — which week
+  of the editor's current view it falls in, 0-indexed. `edit.apply_changes(rotas, changes,
+  view_start, view_weeks) -> EditPlan` folds a batch onto the current `Rota`s and says which
+  `Shift Schedule Assignment`s to delete and which fresh ones to create. **Periodicity is
+  derived, not identity**: a group is keyed on `(employee, shift_type, branch)` alone (no
+  cadence, no anchor) — every member `Rota` is resampled into a `phase -> weekdays` map over
+  `view_weeks` before any change lands, and `edit.minimal_cycle` reads back the smallest
+  cadence that map still needs once the batch is folded in. This is the whole mechanism for
+  auto-detecting a periodicity change: editing one occurrence in a view wider than the
+  pattern's current cadence (e.g. deleting only the second week's Friday of what was a
+  1-week rota, seen in a 2-week view) is exactly how that rota becomes a 2-week one — there
+  is no separate "make this a rota" action, `apply_changes` just notices the phases stopped
+  agreeing, and demotes back to weekly just as readily if a later edit makes them agree
+  again. Emitted as `EditPlan.cadence_changes` (one line per pattern whose cadence actually
+  moved) and surfaced in the transcript as **Periodicity changes**, separate from the
+  per-`Change` "Pending edits" list — recomputed fresh on every `get_state`/`stage_change`
+  call, never stored, since it is a derived fact about the current draft, not itself a
+  staged edit. A change that nets to nothing (e.g. a move immediately undone) touches
+  nothing, same as before. `edit.describe_change(change, rotas, view_weeks)` renders the
+  transcript line ("moved AM (Balexert) from Tue-Wed to Tue-Fri"), additionally naming the
+  touched week ("Friday (week 2)") once `view_weeks > 1` makes a bare weekday ambiguous,
+  against the state the edit was actually staged against. `apply_draft(discipline, start,
+  view_weeks)` takes the same view explicitly (the editor toolbar's current values) rather
+  than persisting one on the draft, so Apply always folds the batch exactly as the grid and
+  transcript on screen already show it.
+- **Multi-week rotas**: a `Rota`'s weekday set never varies from one cycle to the next —
+  `cycle_weeks` only skips weeks, it never changes which weekdays are worked — so a
+  genuinely varying multi-week pattern is several `Shift Schedule Assignment`s at different
+  phases (anchors), exactly what zawin2frappe emits. The editor's view-width question is
+  therefore a pure predicate, not a rendering trick: at a view `view_weeks` wide, an
+  employee's rota is shown, tiled by `cycle.occurrences` like anything else, exactly when
+  `view_weeks % cycle_weeks == 0` — a weekly rota renders identically in every week of a
+  wider view with no special-casing, while a four-week rota shown in a one-week view would
+  show only whichever single phase that week happens to be (indistinguishable from "this
+  person works two days a week"). Such an employee is excluded from the editable grid and
+  drawn instead as a **greyed-out, read-only row** at the bottom (behind a divider row
+  naming why), with its cadence shown next to their name. Its cells are not that one
+  ambiguous phase but `edit.phase_fractions` — the fraction of the pattern's own cadence
+  that actually puts them there, averaged over one full cycle rather than read off whichever
+  phase this view happens to land on (stable under navigation, since sampling any
+  `cycle_weeks`-long span of a periodic pattern gives the same per-weekday counts): a cell
+  with `occupied == cycle_weeks` (every week has it) draws as a normal, solid chip, one with
+  `occupied == 0` is blank, and anything in between draws as plain text — `"1/4"`, `"2/4"`,
+  `"3/4"` — never draggable. An ordinary editable chip also names its own cadence now
+  (`editor._hidden_cells`/`get_state`'s per-cell `cycle_weeks`, rendered as a small `"2w"`
+  superscript badge in `rota_editor.js` once `cycle_weeks > 1`) so a multi-week pattern
+  reads as one at a glance instead of only on hover.
+- **`Rota Edit Draft`** (+ child `Rota Edit Draft Change`) — one per (user, discipline),
+  autonamed from both so staging always finds the same document. Buffers a session's edits
+  server-side (survives a reload); `editor.apply_draft` clears a draft's rows *before*
+  deleting the assignments they reference (a live Link blocks the delete otherwise), then
+  performs the deletes/creates as one `EditPlan`.
+- `editor.py` also translates between the **Branch** vocabulary the grid and
+  `Discipline Branch Config` use, and the raw `Shift Location` docname
+  `Shift Schedule Assignment.shift_location` actually stores
+  (`_rotas_by_branch` / `_shift_location_for`, via `Shift Location.custom_branch`) — room-level
+  assignment doesn't exist yet (see "To be implemented" below), so picking any Shift Location
+  matching the target branch is as good a choice as any other.
+
 ## To be implemented (scaffolding exists; feature path is incomplete, not "broken")
 
 - gh issue #5 **Run → `Shift Assignment` link-back after commit.** `73e98fa` ("start online
@@ -525,7 +613,8 @@ Consequences for work in this repo:
 - `tests/test_optimizer.py` is a pure-Python unit suite (no Frappe context) covering
   planning-day generation, hashing, every MILP constraint group; `tests/test_wallchart.py`
   is the same bargain for `wallchart/chart.py` (placement, overflow, the run-vs-books
-  merge) and `tests/test_rota.py` for `rota/cycle.py` (cycle phase, the handover boundary).
+  merge), `tests/test_rota.py` for `rota/cycle.py` (cycle phase, the handover boundary), and
+  `tests/test_rota_edit.py` for `rota/edit.py` (staging, merging and describing hand edits).
   The doctype-level
   `IntegrationTestCase` stubs (`employee_settings`, `optimizer_settings`) are
   left as autogenerated by frappe, except for `test_optimizer_run.py` and

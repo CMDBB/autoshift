@@ -51,6 +51,12 @@ WEEKDAY_INDEX: dict[str, int] = {
 	"Sunday": 6,
 }
 
+#: The inverses, for building an `Assignment Rule Day` row / a `Shift Schedule.frequency`
+#: from a `Rota` — the direction `rota.edit`'s apply half needs, `WEEKDAY_INDEX` and
+#: `FREQUENCY_WEEKS` being the direction `materialize.load_rotas` needs.
+WEEKDAY_LABEL: dict[int, str] = {index: label for label, index in WEEKDAY_INDEX.items()}
+FREQUENCY_LABEL: dict[int, str] = {weeks: label for label, weeks in FREQUENCY_WEEKS.items()}
+
 
 def monday_of(day: datetime.date) -> datetime.date:
 	return day - datetime.timedelta(days=day.weekday())

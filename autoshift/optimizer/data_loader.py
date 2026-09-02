@@ -140,6 +140,7 @@ def configured_binding_pairs() -> list[tuple[str, str]]:
 			"Scheduling Role", filters={"active": 1}, fields=["name", "assignments_binding"]
 		)
 	}
+	actives = {e.name for e in frappe.get_all("Employee", filters={"status": "Active"}, fields=["name"])}
 	return [
 		(row.employee, row.scheduling_role)
 		for row in frappe.get_all(
@@ -147,7 +148,7 @@ def configured_binding_pairs() -> list[tuple[str, str]]:
 			filters={"active": 1},
 			fields=["employee", "scheduling_role", "binding_override"],
 		)
-		if _is_binding(row, role_binding)
+		if _is_binding(row, role_binding) and row.employee in actives
 	]
 
 

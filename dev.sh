@@ -34,6 +34,7 @@ Usage: $(basename "$0") [OPTIONS]
 
 Options:
   -r, --reset               Reset the test site (drop and recreate)
+    --app APPNAME           Install target app on site during reset
   --site SITENAME           Target site (default: dev.test.localhost)
                             Non-default sites will be backed up before reset
   -i, --interactive         Interactive mode (prompt for each task)
@@ -74,6 +75,20 @@ while [[ $# -gt 0 ]]; do
         -r|--reset)
             RESET=true
             shift
+            ;;
+        --app)
+            if [[ $# -lt 2 ]]; then
+                echo -e "${RED}Error: --app requires an app name${NC}" >&2
+                show_usage >&2
+                exit 1
+            fi
+            if ! $RESET; then
+                echo -e "${RED}Error: --app is a subcommand of --reset${NC}" >&2
+                show_usage >&2
+                exit 1
+            fi
+            APPNAME=$2
+            shift 2
             ;;
         --site)
             if [[ $# -lt 2 ]]; then

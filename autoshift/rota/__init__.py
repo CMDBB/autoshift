@@ -55,6 +55,54 @@ Two consequences of that stance, both deliberate:
 
 Nothing here is practice-specific: which roles are binding is
 `Scheduling Role.assignments_binding`, site data (see CLAUDE.md, "App boundary").
+
+## Hand-editing a rota (`edit.py` + `editor.py`)
+
+The detection above is a read-proxy for whatever zawin2frappe emitted, and that
+detection is imperfect in practice — a schedule that has since changed, one
+zawin2frappe never saw. `edit.py` (pure) and `editor.py` (the DB half, same split as
+`cycle.py`/`materialize.py`) back a Rota Editor page that lets a planner drag a bound
+employee's shifts around directly: same discipline, but freely across shift type, day
+and branch.
+
+A hand edit is **gold standard** — it is the planner correcting the record, not a guess
+— so it is never expressed as a patch on top of the detected schedule. Editing an
+assignment always replaces it wholesale with a fresh `Shift Schedule Assignment` (+ a
+private `Shift Schedule` backing it), tagged `custom_manually_edited`. That tag is the
+whole mechanism for keeping this app and zawin2frappe from fighting over the same
+record: **zawin2frappe's import must skip any row already carrying it** rather than
+overwriting a planner's correction on the next re-run. (That check lives in
+zawin2frappe, not here — this app only sets the tag and never touches a schedule that
+doesn't carry it, so a shared, zawin2frappe-owned `Shift Schedule` is never edited or
+deleted, only unlinked by removing the one `Shift Schedule Assignment` row that pointed
+at it.)
+
+A created assignment is `enabled = 0` / `shift_status = "Inactive"`, exactly like an
+imported one — HRMS's nightly generator staying off it is the entire point regardless of
+who authored the pattern, so a hand edit gets no different treatment there than an
+import does.
+
+### Multi-week rotas
+
+A `Rota`'s weekday set does not vary from one cycle to the next — `cycle_weeks` only
+means "skip N-1 weeks between occurrences", never "different weekdays in week 2 than in
+week 1". A genuinely varying multi-week pattern is several `Shift Schedule Assignment`s
+sharing a cadence at different phases (anchors), each with its own fixed weekday set —
+the shape zawin2frappe actually emits (see "Rota" above).
+
+That makes the editor's view-width question a pure visibility predicate
+(`edit.rota_view_weeks`), not a rendering trick: given a view `view_weeks` wide, a rota
+of cadence `cycle_weeks` is shown, tiled by `cycle.occurrences` like anything else,
+exactly when `view_weeks % cycle_weeks == 0`. A weekly rota therefore renders
+identically in every week of a wider view with no special-casing — the view is just
+wide enough to show it more than once. A four-week rota shown in a one-week view would
+show only whichever single phase that week happens to be — not its actual pattern, and
+indistinguishable from "this person works two days a week" — so instead of drawing that,
+the employee is **filtered out of that view** with the reason stated; switching to a
+4-week view (or any width divisible by 4) brings them back with every phase visible at
+once, editable as what it is. An employee with more than one cadence among their own
+rotas (rare) is filtered by the narrowest of them, since showing half a person's rota is
+no better than showing none of it.
 """
 
 from .cycle import FREQUENCY_WEEKS, WEEKDAY_INDEX, Rota, monday_of, occurrences

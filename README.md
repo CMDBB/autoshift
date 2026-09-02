@@ -137,6 +137,24 @@ This is a workaround for an HR bug, not a feature autoshift wants to own. The da
 nightly job anchors its weeks properly, enabling the Shift Schedule Assignments does the same
 work and this can go.
 
+#### Correcting a settled rota
+
+Detection from the import isn't always right — a schedule changes, or zawin2frappe never
+saw it. **Autoshift → Rota Editor** (also on the Autoshift workspace) lets you fix a bound
+employee's rota by hand: pick a discipline, then drag a shift to a different day, shift
+type or branch, or click an empty cell to add one. Nothing is written until you click
+**Apply Changes** — every drag is staged in a draft first, listed as plain English at the
+bottom of the page ("moved AM (Balexert) from Tue-Wed to Tue-Fri") so you can review before
+committing, and **Discard Changes** drops the draft without touching anything. A hand
+correction is treated as the authoritative record: it replaces the pattern it touches
+outright rather than patching it, and is marked so a later zawin2frappe re-import will not
+overwrite your fix.
+
+A rota that repeats every N weeks is shown at whatever view width you pick (1/2/4 weeks);
+someone whose rota doesn't divide evenly into the current width is left off the grid rather
+than shown as a fragment, with a note saying why — widen the view to see (and edit) their
+full pattern.
+
 The Agreed FTE % is deliberately soft: the solver is *penalised* for deviating from it
 (see the "Agreed role FTE split" objective rule) but never forbidden, because these splits
 are normally an informal expectation rather than an entitlement. If you do need it enforced,
