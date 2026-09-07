@@ -1,7 +1,7 @@
 {
  "actions": [],
  "autoname": "field:role_name",
- "creation": "2026-08-19 00:00:00.000000",
+ "creation": "2026-08-19 00:00:00",
  "doctype": "DocType",
  "document_type": "Setup",
  "engine": "InnoDB",
@@ -61,6 +61,7 @@
    "description": "Holders of this role keep exactly the Shift Assignments already on the books: the optimizer may not add, move or drop any of them. For a role whose schedule is settled by its holders rather than by the planner. Requires the \"Bind settled schedules\" rule in the run's ruleset; an individual holder can opt out on their Employee Scheduling Role.",
    "fieldname": "assignments_binding",
    "fieldtype": "Check",
+   "in_list_view": 1,
    "label": "Assignments Are Binding"
   },
   {
@@ -80,7 +81,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-19 00:00:00.000000",
+ "modified": "2026-09-07 13:12:32.529810",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Scheduling Role",

@@ -10,9 +10,10 @@ session's edits (`get_or_create_draft`); every read here folds that buffer's `Ch
 onto the current `Shift Schedule Assignment`s before drawing anything, so the grid always
 shows what Apply would produce, not just what is already on the books.
 
-A drafted **add** needs a company nothing else here supplies — see `edit.Change` — so
-`_change_from_row` fetches it from `Employee.company` at the point a row is turned into a
-`Change`, once per read.
+A `Change`'s `company` — needed for a fresh "add", and to seed a group that has no real
+`Shift Schedule Assignment` yet (see `edit.Change`) — is never stored on the draft row;
+`_change_from_row` fetches it fresh from `Employee.company` each time a row is turned into
+a `Change`, so it doesn't need to survive a chain of edits on its own.
 """
 
 from __future__ import annotations
@@ -210,12 +211,14 @@ def _change_from_row(row) -> edit.Change:
 	return edit.Change(
 		op=op,
 		employee=row.employee,
-		company=_company_of(row.employee) if op == "add" else None,
+		company=_company_of(row.employee),
 		to_shift_type=row.to_shift_type or None,
 		to_weekday=WEEKDAY_INDEX.get(row.to_weekday),
 		to_branch=row.to_branch or None,
 		to_phase=frappe.utils.cint(row.to_phase),
 		from_assignment=row.from_assignment or None,
+		from_shift_type=row.from_shift_type or None,
+		from_branch=row.from_branch or None,
 		from_weekday=WEEKDAY_INDEX.get(row.from_weekday),
 		from_phase=frappe.utils.cint(row.from_phase),
 	)
@@ -300,10 +303,14 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 
 	names = (
 		{
-			e.name: f"{e.name}:{e.custom_initials or 'n/a'}"
-			# e.name: e.employee_name
+			e.name: {
+				"employee_label": f"{e.name}:{e.custom_initials or 'n/a'}",
+				"employee_name": e.employee_name,
+			}
 			for e in frappe.get_all(
-				"Employee", filters={"name": ["in", employees]}, fields=["name", "custom_initials"]
+				"Employee",
+				filters={"name": ["in", employees]},
+				fields=["name", "custom_initials", "employee_name"],
 			)
 		}
 		if employees
@@ -320,9 +327,9 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 			hidden.append(
 				{
 					"employee": employee,
-					"employee_name": names.get(employee, employee),
 					"cycle_weeks": bad_cadences,
 					"cells": _hidden_cells(emp_rotas, days, start_date),
+					**names[employee],
 				}
 			)
 			continue
@@ -334,7 +341,13 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 					"assignment": rota.assignment,
 					"cycle_weeks": rota.cycle_weeks,
 				}
-		visible.append({"employee": employee, "employee_name": names.get(employee, employee), "cells": cells})
+		visible.append(
+			{
+				"employee": employee,
+				"cells": cells,
+				**names[employee],
+			}
+		)
 	visible = sorted(visible, key=lambda e: int(e.get("employee")))
 
 	return {
@@ -393,11 +406,11 @@ def stage_change(discipline: str, change: str | dict, start: str, view_weeks: in
 	)
 
 	from_assignment = change.get("from_assignment") or None
+	source = None
 	if change["op"] in ("move", "remove"):
-		if from_assignment and from_assignment.startswith("NEW-"):
-			# A placeholder standing in for a not-yet-applied "add" (see _effective_rotas):
-			# it has no real Shift Schedule Assignment for a chained edit to reference yet.
-			frappe.throw(frappe._("Apply the draft before moving a shift you just added."))
+		# `effective_before` includes not-yet-applied placeholders (see `_effective_rotas`),
+		# so this also resolves a chip that is itself still pending — a chip stays
+		# draggable throughout, not just once its own Shift Schedule Assignment exists.
 		source = next((r for r in effective_before if r.assignment == from_assignment), None)
 		if source is None:
 			frappe.throw(frappe._("That pattern is no longer there — reload and try again."))
@@ -409,23 +422,35 @@ def stage_change(discipline: str, change: str | dict, start: str, view_weeks: in
 	new_change = edit.Change(
 		op=change["op"],
 		employee=change["employee"],
-		company=_company_of(change["employee"]) if change["op"] == "add" else None,
+		company=_company_of(change["employee"]),
 		to_shift_type=to_shift_type or None,
 		to_weekday=WEEKDAY_INDEX.get(change.get("to_weekday")),
 		to_branch=to_branch or None,
 		to_phase=frappe.utils.cint(change.get("to_phase")),
 		from_assignment=from_assignment,
+		from_shift_type=source.shift_type if source else None,
+		from_branch=source.shift_location if source else None,
 		from_weekday=WEEKDAY_INDEX.get(change.get("from_weekday")),
 		from_phase=frappe.utils.cint(change.get("from_phase")),
 	)
 	description = edit.describe_change(new_change, effective_before, view_weeks=view_weeks)
+
+	# A placeholder's `from_assignment` ("NEW-…", see `_effective_rotas`) names no real
+	# Shift Schedule Assignment — a Link field can't store it. `from_shift_type`/
+	# `from_branch` above are what a chained edit resolves the pattern through instead
+	# (edit.apply_changes), so the row still folds correctly without it.
+	persisted_from_assignment = (
+		None if from_assignment and from_assignment.startswith("NEW-") else from_assignment
+	)
 
 	draft.append(
 		"changes",
 		{
 			"op": new_change.op.capitalize(),
 			"employee": new_change.employee,
-			"from_assignment": new_change.from_assignment,
+			"from_assignment": persisted_from_assignment,
+			"from_shift_type": new_change.from_shift_type,
+			"from_branch": new_change.from_branch,
 			"from_weekday": change.get("from_weekday") or None,
 			"from_phase": new_change.from_phase,
 			"to_shift_type": new_change.to_shift_type,

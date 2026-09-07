@@ -230,6 +230,79 @@ def test_a_batch_folds_changes_in_order():
 	assert plan.create[0].weekdays == frozenset({TUE, THU})
 
 
+# ── apply_changes: chained edits on a not-yet-applied occurrence ────────────
+#
+# The editor lets a chip stay draggable before Apply — a follow-up edit on one has no
+# real Shift Schedule Assignment to reference, so it identifies the touched pattern via
+# from_shift_type/from_branch instead of from_assignment (see rota.editor._effective_rotas
+# and the Change docstring).
+
+
+def test_a_second_move_on_a_still_pending_chip_resolves_by_pattern_not_assignment():
+	r = rota("SSA1", [MON, TUE])
+	changes = [
+		Change(op="move", employee="E1", from_assignment="SSA1", from_weekday=MON, to_weekday=THU),
+		# The chip just moved to THU has no real assignment yet — from_assignment is None,
+		# exactly as `editor.stage_change` persists it — so this relies on from_shift_type/
+		# from_branch to find the same in-flight group.
+		Change(
+			op="move",
+			employee="E1",
+			from_shift_type="AM",
+			from_branch="B1",
+			from_weekday=THU,
+			to_weekday=FRI,
+		),
+	]
+
+	plan = apply_changes([r], changes)
+
+	assert plan.delete == ("SSA1",)
+	assert len(plan.create) == 1
+	assert plan.create[0].weekdays == frozenset({TUE, FRI})
+
+
+def test_removing_a_still_pending_add_nets_to_nothing():
+	changes = [
+		Change(op="add", employee="E1", company="C1", to_shift_type="AM", to_branch="B1", to_weekday=MON),
+		Change(op="remove", employee="E1", from_shift_type="AM", from_branch="B1", from_weekday=MON),
+	]
+
+	plan = apply_changes([], changes)
+
+	assert plan.delete == ()
+	assert plan.create == ()
+
+
+def test_a_still_pending_add_can_be_moved_to_a_different_pattern():
+	# `editor.stage_change` always resupplies `company` fresh from Employee.company on
+	# every Change, move included — a move onto a group with no real Rota of its own (as
+	# here) has nowhere else to draw it from.
+	changes = [
+		Change(op="add", employee="E1", company="C1", to_shift_type="AM", to_branch="B1", to_weekday=MON),
+		Change(
+			op="move",
+			employee="E1",
+			company="C1",
+			from_shift_type="AM",
+			from_branch="B1",
+			from_weekday=MON,
+			to_shift_type="PM",
+			to_branch="B2",
+			to_weekday=TUE,
+		),
+	]
+
+	plan = apply_changes([], changes)
+
+	assert plan.delete == ()
+	assert len(plan.create) == 1
+	created = plan.create[0]
+	assert created.shift_type == "PM" and created.branch == "B2"
+	assert created.weekdays == frozenset({TUE})
+	assert created.company == "C1"  # carried across the chain, not lost with the source
+
+
 # ── describe_change ───────────────────────────────────────────────────────────
 
 

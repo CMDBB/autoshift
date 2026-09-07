@@ -81,6 +81,15 @@ class Change:
 	"unchanged" — most drags only move a weekday within the same pattern, which is
 	deliberately the cheap path.
 
+	`from_assignment` may be `None` (or a docname nothing in `rotas` matches — e.g. a
+	prior change in the same batch already replaced it) when the occurrence being touched
+	is itself a not-yet-applied edit — the editor lets a chip stay draggable before Apply,
+	see `rota.editor._effective_rotas`. `from_shift_type`/`from_branch` are then how the
+	group is still found: caller-supplied identity for the source pattern, used in place
+	of resolving one through `from_assignment`. `from_shift_type is not None` is the
+	signal that they were supplied at all — `from_branch` alone may legitimately be
+	`None` (no branch), so it can't carry that signal itself.
+
 	`from_phase`/`to_phase` say *which* week of the editor's current view the touched
 	occurrence lives in (0-indexed from the view's first day) — the whole mechanism
 	behind auto-detecting a cadence change, see the module docstring. A view only one
@@ -96,6 +105,8 @@ class Change:
 	to_branch: str | None = None
 	to_phase: int = 0
 	from_assignment: str | None = None
+	from_shift_type: str | None = None
+	from_branch: str | None = None
 	from_weekday: int | None = None
 	from_phase: int = 0
 
@@ -231,21 +242,39 @@ def apply_changes(
 
 	for change in changes:
 		src_rota = by_name.get(change.from_assignment) if change.from_assignment else None
+		# Prefer the caller-supplied source identity — it still resolves when the touched
+		# occurrence is itself an unapplied edit with no real Shift Schedule Assignment to
+		# look up (see the Change docstring) — falling back to `src_rota` only for callers
+		# that never supply it (unit tests constructing Change directly; pre-existing
+		# behaviour for a plain from_assignment reference).
+		src_shift_type = (
+			change.from_shift_type
+			if change.from_shift_type is not None
+			else (src_rota.shift_type if src_rota else None)
+		)
+		src_branch = (
+			change.from_branch
+			if change.from_shift_type is not None
+			else (src_rota.shift_location if src_rota else None)
+		)
+		src_company = (
+			change.company if change.company is not None else (src_rota.company if src_rota else None)
+		)
 
 		if change.op in ("move", "remove"):
-			if src_rota is None:
+			if src_shift_type is None:
 				continue  # already gone from a prior change in this batch, or unknown
-			src_key = (src_rota.employee, src_rota.shift_type, src_rota.shift_location)
+			src_key = (change.employee, src_shift_type, src_branch)
 			group_for(src_key).phases[change.from_phase].discard(change.from_weekday)
 
 		if change.op == "move":
-			if src_rota is None:
+			if src_shift_type is None:
 				continue
-			shift_type = change.to_shift_type or src_rota.shift_type
-			branch = change.to_branch if change.to_branch is not None else src_rota.shift_location
+			shift_type = change.to_shift_type or src_shift_type
+			branch = change.to_branch if change.to_branch is not None else src_branch
 			dst = group_for((change.employee, shift_type, branch))
 			dst.phases[change.to_phase].add(change.to_weekday)
-			dst.company = dst.company or src_rota.company
+			dst.company = dst.company or src_company
 		elif change.op == "add":
 			dst = group_for((change.employee, change.to_shift_type, change.to_branch))
 			dst.phases[change.to_phase].add(change.to_weekday)

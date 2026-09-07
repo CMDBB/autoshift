@@ -24,9 +24,24 @@ function inject_rota_editor_styles() {
 		.rota-editor .re-table th, .rota-editor .re-table td {
 			border: 1px solid var(--border-color); padding: 0.15rem 0.3rem; text-align: center;
 		}
+		/* Zebra striping, one row's shift type at a time now that they stack under one
+		   employee instead of sitting side by side — plain alternation, not grouped by
+		   employee, is what actually keeps adjacent rows readable at a glance. Hidden
+		   (read-only) rows and the divider between the two sections keep their own look. */
+		.rota-editor .re-table tbody tr:nth-child(even):not(.re-row-hidden):not(.re-divider) td {
+			background: var(--zebra-bg, rgba(128, 128, 128, 0.06));
+		}
+		.rota-editor .re-table tbody tr:nth-child(even):not(.re-row-hidden):not(.re-divider) .re-emp-col,
+		.rota-editor .re-table tbody tr:nth-child(even):not(.re-row-hidden):not(.re-divider) .re-shift-col {
+			background: var(--zebra-bg, rgba(128, 128, 128, 0.06));
+		}
 		.rota-editor .re-emp-col {
-			text-align: left; white-space: nowrap; position: sticky; left: 0;
-			background: var(--fg-color); z-index: 1;
+			text-align: left; white-space: nowrap; position: sticky; left: 0; min-width: 6rem;
+			background: var(--fg-color); z-index: 2; vertical-align: top;
+		}
+		.rota-editor .re-shift-col {
+			text-align: left; white-space: nowrap; position: sticky; left: 6rem; min-width: 3rem;
+			background: var(--fg-color); z-index: 1; color: var(--text-muted); font-weight: normal;
 		}
 		.rota-editor .re-day-col { font-weight: normal; color: var(--text-muted); white-space: nowrap; }
 		.rota-editor .re-cell { min-width: 2.2rem; height: 1.8rem; }
@@ -35,7 +50,7 @@ function inject_rota_editor_styles() {
 			background: var(--chip-bg, #cce0ff); cursor: grab; font-weight: 500; color: var(--chip-fg, inherit);
 			border: 1px solid var(--chip-border, rgba(0, 0, 0, 0.1));
 		}
-		.rota-editor .re-chip-pending { background: var(--yellow-100, #fff3cd); cursor: not-allowed; opacity: 0.85; color: inherit; }
+		.rota-editor .re-chip-pending { background: var(--yellow-100, #fff3cd); opacity: 0.85; color: inherit; }
 		.rota-editor .re-chip-cadence {
 			font-size: 0.6em; opacity: 0.75; margin-left: 1px; vertical-align: super;
 		}
@@ -43,7 +58,8 @@ function inject_rota_editor_styles() {
 		.rota-editor .re-cell-empty:hover { background: var(--control-bg); }
 		.rota-editor .re-cell-occupied { opacity: 0.4; background: #777777 }
 		.rota-editor .re-row-hidden td { opacity: 0.6; background: var(--disabled-bg, #f2f2f2); }
-		.rota-editor .re-row-hidden .re-emp-col { background: var(--disabled-bg, #f2f2f2); }
+		.rota-editor .re-row-hidden .re-emp-col,
+		.rota-editor .re-row-hidden .re-shift-col { background: var(--disabled-bg, #f2f2f2); }
 		.rota-editor .re-fraction { font-size: 0.75em; color: var(--text-muted); }
 		.rota-editor .re-divider td {
 			font-style: italic; color: var(--text-muted); border: none !important;
@@ -336,55 +352,70 @@ autoshift.RotaEditor = class RotaEditor {
 		this.render_transcript();
 	}
 
-	// One <tr> for an employee. `readOnly` employees (period-incompatible with this
-	// view — see `edit.rota_view_weeks`) get no drag/drop affordances at all: their
-	// cells carry a `{occupied, cycle_weeks, branch}` fraction summary instead of a
-	// concrete `{branch, assignment}` chip — see `editor._hidden_cells`.
-	render_employee_row(emp, sections, days, occupied_dates, readOnly) {
+	// Shift Types can carry long names; the row label abbreviates past 5 characters,
+	// with the full name always available on hover.
+	shift_type_label(shift_type) {
+		return shift_type.length > 5 ? shift_type.slice(0, 5) : shift_type;
+	}
+
+	// One `<tr>` per (employee, shift type) — an employee's AM and PM rows sit directly
+	// on top of each other, both under one rowspanned employee-name cell. `readOnly`
+	// employees (period-incompatible with this view — see `edit.rota_view_weeks`) get
+	// no drag/drop affordances at all: their cells carry a `{occupied, cycle_weeks,
+	// branch}` fraction summary instead of a concrete `{branch, assignment}` chip —
+	// see `editor._hidden_cells`.
+	render_employee_rows(emp, sections, days, occupied_dates, readOnly) {
 		const cadence_note =
 			readOnly && emp.cycle_weeks
 				? ` <span class="text-muted">(${emp.cycle_weeks.join(", ")}-week)</span>`
 				: "";
-		let row = `<tr class="${
-			readOnly ? "re-row-hidden" : ""
-		}"><td class="re-emp-col">${frappe.utils.escape_html(
-			emp.employee_name
-		)}${cadence_note}</td>`;
-		sections.forEach((section) => {
+		let rows = "";
+		sections.forEach((section, index) => {
 			const shift_type = frappe.utils.escape_html(section.name);
+			const shift_label = frappe.utils.escape_html(this.shift_type_label(section.name));
+			rows += `<tr class="${readOnly ? "re-row-hidden" : ""}">`;
+			if (index === 0) {
+				rows += `<td class="re-emp-col" rowspan="${
+					sections.length
+				}" title="${frappe.utils.escape_html(
+					emp.employee_name
+				)}">${frappe.utils.escape_html(emp.employee_label)}<br>${cadence_note}</td>`;
+			}
+			rows += `<td class="re-shift-col" title="${shift_type}">${shift_label}</td>`;
 			days.forEach((d) => {
 				const cell = emp.cells[`${section.name}|${d.date}`];
 				if (readOnly) {
-					row += `<td class="re-cell re-cell-readonly">`;
+					rows += `<td class="re-cell re-cell-readonly">`;
 					if (cell) {
 						if (cell.occupied >= cell.cycle_weeks) {
 							const branch = frappe.utils.escape_html(cell.branch || "");
 							const color = branch_color(cell.branch || "");
-							row +=
+							rows +=
 								`<span class="re-chip" draggable="false" ` +
 								`style="--chip-bg: ${color.bg}; --chip-fg: ${color.fg}; --chip-border: ${color.border};" ` +
 								`title="${branch}">${(cell.branch || "?").slice(0, 3)}</span>`;
 						} else {
-							row += `<span class="re-fraction" title="${__(
+							rows += `<span class="re-fraction" title="${__(
 								"Occurs {0} of every {1} weeks",
 								[cell.occupied, cell.cycle_weeks]
 							)}">${cell.occupied}/${cell.cycle_weeks}</span>`;
 						}
 					}
-					row += "</td>";
+					rows += "</td>";
 					return;
 				}
 				const is_occupied_different_shift =
 					occupied_dates[emp.employee].has(d.date) && !cell;
 				const cell_class = is_occupied_different_shift ? " re-cell-occupied" : "";
-				row += `<td class="re-cell${cell_class}" data-employee="${emp.employee}" data-shift-type="${shift_type}" data-date="${d.date}">`;
+				rows += `<td class="re-cell${cell_class}" data-employee="${emp.employee}" data-shift-type="${shift_type}" data-date="${d.date}">`;
 				if (cell) {
+					// "pending" (unapplied yet — see rota/editor.py._effective_rotas) is
+					// purely a visual cue now: the chip stays draggable, and further edits
+					// re-stage against it just like any chip already on the books.
 					const pending = String(cell.assignment).indexOf("NEW-") === 0;
 					const branch = frappe.utils.escape_html(cell.branch || "");
-					const color = pending ? {} : branch_color(cell.branch || "");
-					const style = pending
-						? ""
-						: `style="--chip-bg: ${color.bg}; --chip-fg: ${color.fg}; --chip-border: ${color.border};"`;
+					const color = branch_color(cell.branch || "");
+					const style = `style="--chip-bg: ${color.bg}; --chip-fg: ${color.fg}; --chip-border: ${color.border};"`;
 					const cadence =
 						cell.cycle_weeks > 1
 							? `<sup class="re-chip-cadence">${cell.cycle_weeks}w</sup>`
@@ -393,25 +424,24 @@ autoshift.RotaEditor = class RotaEditor {
 						cell.cycle_weeks > 1
 							? " — " + __("every {0} weeks", [cell.cycle_weeks])
 							: "";
-					row +=
+					const pending_title = pending ? " — " + __("pending") : "";
+					rows +=
 						`<span class="re-chip${pending ? " re-chip-pending" : ""}" ` +
-						`draggable="${pending ? "false" : "true"}" ` +
+						`draggable="true" ` +
 						`data-assignment="${frappe.utils.escape_html(cell.assignment)}" ` +
 						`data-employee="${emp.employee}" data-shift-type="${shift_type}" data-date="${d.date}" ` +
-						`data-branch="${branch}" ${style} title="${branch}${
-							pending ? " — " + __("pending, apply first") : cadence_title
-						}">` +
+						`data-branch="${branch}" ${style} title="${branch}${cadence_title}${pending_title}">` +
 						`${(cell.branch || "?").slice(0, 3)}${cadence}</span>`;
 				} else {
-					row +=
+					rows +=
 						`<span class="re-cell-empty" data-employee="${emp.employee}" ` +
 						`data-shift-type="${shift_type}" data-date="${d.date}"></span>`;
 				}
-				row += "</td>";
+				rows += "</td>";
 			});
+			rows += "</tr>";
 		});
-		row += "</tr>";
-		return row;
+		return rows;
 	}
 
 	render_grid() {
@@ -439,18 +469,13 @@ autoshift.RotaEditor = class RotaEditor {
 			return;
 		}
 
-		let head1 = `<tr><th class="re-emp-col">${__("Employee")}</th>`;
-		let head2 = `<tr><th class="re-emp-col"></th>`;
-		sections.forEach((section) => {
-			head1 += `<th colspan="${days.length}">${frappe.utils.escape_html(section.name)}</th>`;
-			days.forEach((d) => {
-				head2 += `<th class="re-day-col">${d.weekday.slice(0, 3)}<br>${d.date.slice(
-					5
-				)}</th>`;
-			});
+		let head = `<tr><th class="re-emp-col">${__("Employee")}</th><th class="re-shift-col">${__(
+			"Shift"
+		)}</th>`;
+		days.forEach((d) => {
+			head += `<th class="re-day-col">${d.weekday.slice(0, 3)}<br>${d.date.slice(5)}</th>`;
 		});
-		head1 += "</tr>";
-		head2 += "</tr>";
+		head += "</tr>";
 
 		// Build a map of occupied dates per employee (dates that have a chip, regardless of shift type)
 		const occupied_dates = {};
@@ -467,22 +492,20 @@ autoshift.RotaEditor = class RotaEditor {
 
 		let rows = "";
 		employees.forEach((emp) => {
-			rows += this.render_employee_row(emp, sections, days, occupied_dates, false);
+			rows += this.render_employee_rows(emp, sections, days, occupied_dates, false);
 		});
 		if (hidden.length) {
-			const colspan = 1 + sections.length * days.length;
+			const colspan = 2 + days.length;
 			rows +=
 				`<tr class="re-divider"><td colspan="${colspan}">${__(
 					"Longer cadence than this view — shown below as a read-only average over each pattern's own cycle"
 				)}</td></tr>` +
 				hidden
-					.map((emp) => this.render_employee_row(emp, sections, days, {}, true))
+					.map((emp) => this.render_employee_rows(emp, sections, days, {}, true))
 					.join("");
 		}
 
-		$grid.html(
-			`<table class="re-table"><thead>${head1}${head2}</thead><tbody>${rows}</tbody></table>`
-		);
+		$grid.html(`<table class="re-table"><thead>${head}</thead><tbody>${rows}</tbody></table>`);
 	}
 
 	render_transcript() {

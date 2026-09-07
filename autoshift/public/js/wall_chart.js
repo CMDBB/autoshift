@@ -213,7 +213,7 @@ function band_markup(band, days, run, width) {
 						spans[lane_index]
 					}" scope="col" title="${lane.label}">${esc(
 						lane.label
-							.match(/\b\w/g)
+							.match(/(?<!\p{L})[\p{L}]/gu)
 							.map((c) => c.toUpperCase())
 							.join("")
 					)}</th>`;
@@ -228,7 +228,11 @@ function band_markup(band, days, run, width) {
 		)}${branch}</th><td class="awc-ord"></td>${lane_header}</tr>`,
 	];
 	for (let row = 0; row < band.height; row++) {
-		const cells = [`<td class="awc-ord">${band.numbered ? row + 1 : ""}</td>`];
+		const cells = [
+			`<td class="awc-ord">` +
+				// `${band.numbered ? row + 1 : ""}`+
+				`</td>`,
+		];
 		days.forEach((day, day_index) => {
 			lanes.forEach((_lane, lane_index) => {
 				const cls = ["awc-cell", ...day_classes(day, run)];

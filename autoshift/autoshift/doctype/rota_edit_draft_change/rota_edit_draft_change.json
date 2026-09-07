@@ -9,6 +9,8 @@
   "op",
   "employee",
   "from_assignment",
+  "from_shift_type",
+  "from_branch",
   "from_weekday",
   "from_phase",
   "column_break_1",
@@ -43,6 +45,23 @@
    "in_list_view": 1,
    "label": "From Assignment",
    "options": "Shift Schedule Assignment"
+  },
+  {
+   "depends_on": "eval:doc.op != \"Add\"",
+   "description": "Identifies the touched pattern when from_assignment is blank — the occurrence is itself a not-yet-applied edit with no real Shift Schedule Assignment yet. See rota/edit.py, Change.",
+   "fieldname": "from_shift_type",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "From Shift Type",
+   "options": "Shift Type"
+  },
+  {
+   "depends_on": "eval:doc.op != \"Add\"",
+   "fieldname": "from_branch",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "From Branch",
+   "options": "Branch"
   },
   {
    "depends_on": "eval:doc.op != \"Add\"",
