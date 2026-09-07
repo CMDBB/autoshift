@@ -30,7 +30,8 @@ Installing seeds the built-in **Optimization Rule** documents and the **Standard
 
 ## One-time Setup
 
-Before running the optimiser, configure the following three areas in the Frappe desk.
+Before running the optimiser, configure the following in the Frappe desk. Sections 1–3 are
+required; 4–6 have working defaults.
 
 ### 1. Optimizer Settings *(singleton)*
 
@@ -140,7 +141,7 @@ work and this can go.
 #### Correcting a settled rota
 
 Detection from the import isn't always right — a schedule changes, or zawin2frappe never
-saw it. **Autoshift → Rota Editor** (also on the Autoshift workspace) lets you fix a bound
+saw it. The **Rota Editor** (a shortcut on the Autoshift workspace) lets you fix a bound
 employee's rota by hand: pick a discipline, then drag a shift to a different day, shift
 type or branch, or click an empty cell to add one. Nothing is written until you click
 **Apply Changes** — every drag is staged in a draft first, listed as plain English at the
@@ -172,6 +173,29 @@ add the non-standard **Agreed role FTE ceiling** constraint rule to your ruleset
 | Branch Preferences | Table of preferred branches. *Not yet read by the optimiser — set this field has no effect on a run today.* |
 
 Employees without an Employee Settings record use a uniform shift preference and their `custom_fte` field value (set directly on the Employee doctype) for the FTE target.
+
+### 4b. Bulk Employee Settings *(a shortcut for the two records above)*
+
+**Autoshift → Bulk Employee Settings** creates the two per-employee records — **Employee
+Settings** (preferences) and **Employee Scheduling Role** (the capability that makes somebody
+schedulable at all) — for many employees at once, so a new site does not need them entered one
+by one.
+
+Fill in the template at the top (favourite shift and shift/branch preferences for the
+Employee Settings action; scheduling role, agreed FTE, max-rooms override and validity window
+for the role action), then narrow the employee list with the filters:
+
+| Filter | Description |
+|---|---|
+| Company | Restrict to one company |
+| Discipline | Employees who hold a Scheduling Role in this Department |
+| Holds Role | Employees who hold this specific role |
+| Coverage | *All Employees*, *Without Employee Settings*, or *Without Any Scheduling Role* — i.e. "who is still missing one of these" |
+
+Tick the employees you want and run the action. **An employee who already has the record is
+skipped, never overwritten**, so it is safe to re-run over a partly configured site; use it to
+fill gaps and edit the exceptions by hand afterwards. Up to 30 employees are processed
+immediately; a larger selection runs as a background job with a progress bar.
 
 ### 5. Employee FTE
 
@@ -206,11 +230,18 @@ Ruleset**) — a reusable, ordered list of rules that every Optimizer Run points
 ruleset row carries a **Weight** that multiplies the rule's objective contribution (it has
 no effect on constraint rules — saving warns if you set one there).
 
-Migration seeds one Optimization Rule per built-in (constraints: one shift per day, leave
-blocklist, existing assignments, max rooms per slot, room coverage, FTE ceiling; objective
-terms: room utilization, shift preferences) and a **Standard Ruleset** containing all of
-them, which is the default for new runs. Unimplemented rules may sit in a ruleset as a
-draft, but a run using that ruleset refuses to solve until they are implemented.
+Migration seeds one Optimization Rule per built-in and a **Standard Ruleset**, the default
+for new runs. The Standard Ruleset holds the subset that suits most sites; the remaining
+built-ins ship as rules you can add to a ruleset of your own — see
+[How the Optimiser Works](#how-the-optimiser-works) for what each one does. Unimplemented
+rules may sit in a ruleset as a draft, but a run using that ruleset refuses to solve until
+they are implemented.
+
+Each rule may name a **Scheduling Rule Topic** (**Autoshift → Scheduling Rule Topic**), which
+is purely a heading: it groups the rule into a collapsible section in Optimizer Studio's rule
+panel and constrains nothing. The built-in topics are seeded and re-synced on every migrate;
+topics you create yourself are never touched, and a Custom Code rule may file itself under
+any of them.
 
 A ruleset with no `Objective`/`Mixed` rule gives the solver nothing to maximise — it
 returns an arbitrary feasible schedule (typically nobody assigned). Saving such a ruleset
@@ -230,6 +261,55 @@ automatically; add the objective rules to your own rulesets yourself.
 ---
 
 ## Running the Optimiser
+
+There are two ways in. **Optimizer Studio** is the quicker one and the place to start;
+the **Optimizer Run** form below is the full record, and is what Studio drives underneath.
+
+### Optimizer Studio
+
+**Optimizer Studio** (a shortcut on the Autoshift workspace) puts the
+planning mode, the start date and the rules on one page, so you can try a ruleset and look at
+the result without creating and saving a run first.
+
+The rule panel lists every implemented rule in plain language, grouped into collapsible
+sections by Scheduling Rule Topic. **It cannot express a ruleset that would fail**, which is
+the point of it:
+
+- Rules that are alternatives to one another are **radio buttons**, including an explicit
+  *None* — so you cannot pick two answers to the same question. The treatment of existing
+  Shift Assignments is the main one.
+- A rule that only makes sense on top of another is drawn **inside** it, its checkbox
+  disabled until the parent is ticked.
+- A rule that contradicts one you have ticked is greyed out, and hovering it says which rule
+  blocked it.
+
+Objective rules carry a **weight** box next to them; constraint rules do not, because a
+weight would do nothing there.
+
+**Preview Schedule** solves and renders the result in the same four-pane
+[Schedule View](#step-3--review-the-solution) the run form uses. Each preview really does
+create an Optimizer Run — with **Type = Automatic**, so these are hidden from the Optimizer
+Run list and workspace by default and do not clutter the record of runs you made
+deliberately.
+
+Your toggles live in a private working ruleset (`Studio Draft — <your user>`), overwritten on
+each preview rather than piling up. The seeded presets are never edited in place — picking one
+copies it into your draft. Two other buttons:
+
+| Button | Effect |
+|---|---|
+| **Populate From Run** | Load an existing run's mode, date and rule selection into the panel |
+| **Save Ruleset As** | Promote your current draft to a permanent, named Optimization Ruleset |
+
+Before solving, Studio checks two things and asks about them in one prompt: whether any bound
+practitioners are missing Shift Assignments for the horizon (it creates them — this is not
+optional, see [Where a settled week comes from](#where-a-settled-week-comes-from)), and
+whether roles are marked binding while your selection omits the **Bind settled schedules**
+rule — because that would silently re-plan the one group whose week is not yours to set.
+
+The **Week** wall chart is available in Studio before you have previewed anything at all: with
+no run to show, it falls back to the Shift Assignments already on the books, so it doubles as
+a way to look at any week.
 
 ### Step 1 — Create an Optimizer Run
 
@@ -392,6 +472,9 @@ one Optimization Rule document per constraint group. The built-in constraint rul
    pulling assignments up, not from a hard minimum.
 7. *(non-standard, opt-in)* Agreed role FTE ceiling: the hard reading of an agreed split —
    a role's shifts ≤ (1 + tolerance) × its agreed figure
+8. *(non-standard, opt-in)* One branch per shift: an employee cannot cover more than one
+   branch during a single shift. Redundant while rule 1 allows only one shift a day; add it
+   if you relax that
 
 **Objective (maximise)** — also supplied by the ruleset; each objective rule's term is
 scaled by its row weight. The built-in objective rules:
@@ -523,6 +606,15 @@ A dump contains real employees and leave records from whichever site produced it
 `dev_data/` is gitignored. The same goes for `sandbox/`: `capture-datapackage` snapshots are
 gitignored and a pre-commit hook strips `playground.ipynb` outputs, because the notebook runs
 against live data. Don't commit around either.
+
+---
+
+### Design notes
+
+`docs/design-notes.md` records *why* things are the way they are — the postmortems, the
+upstream bugs being worked around, and the reasoning behind decisions that look arbitrary
+without it. `CLAUDE.md` is the map of what the code currently does. Neither is needed to use
+the app.
 
 ---
 
