@@ -149,6 +149,7 @@ class BuiltinRule:
 # reason about the set as a whole (`data_loader.binding_rule_gap`, the pre-solve confirms).
 GROUP_EXISTING_ASSIGNMENTS = "existing_assignments"
 GROUP_ROLE_BINDING = "role_binding"
+GROUP_WORKLOAD_CEILING = "workload_ceiling"
 
 
 BUILTIN_RULES: dict[str, BuiltinRule] = {}  # empty -> filled by the builtin_rule decorator
@@ -401,8 +402,11 @@ def room_coverage(ctx: RuleContext) -> None:
 	"An employee's total assigned shifts over the horizon, summed across every Scheduling "
 	"Role they hold, stay at or below "
 	"105% x their FTE-derived target; utilization pressure toward the target "
-	"comes from the objective.",
+	"comes from the objective. A hard limit: a horizon that cannot be covered without "
+	"somebody going over comes back infeasible. Where the agreed workload is a courtesy "
+	"rather than a legal cap, pick <b>FTE soft ceiling</b> instead.",
 	standard=True,
+	group=GROUP_WORKLOAD_CEILING,
 	topic=TOPIC_AVAILABILITY,
 )
 def fte_ceiling(ctx: RuleContext) -> None:
@@ -464,6 +468,56 @@ def role_fte_ceiling(ctx: RuleContext) -> None:
 )
 def room_utilization_objective(ctx: RuleContext) -> None:
 	ctx.add_objective(pulp.lpSum(ctx.active_rooms.values()))
+
+
+@builtin_rule(
+	"Objective: FTE soft ceiling",
+	"Penalize each shift an employee works beyond their FTE-derived target, instead of "
+	"forbidding it. Statutory limits on working time are usually written against a full-time "
+	"week, so a part-timer's agreed percentage is a courtesy to keep rather than a cap the "
+	"law sets — and a schedule that would otherwise be infeasible is better than no schedule. "
+	"At the default weight, exceeding somebody's agreed workload costs more than the staffed "
+	"room it would buy, so the optimizer only does it when nothing else covers the horizon; "
+	"lower the weight to let coverage outbid the courtesy, raise it to approach a hard cap. "
+	"Working <i>under</i> target is not penalized here — that pressure comes from room "
+	"utilization and the agreed role FTE split.",
+	kind=KIND_OBJECTIVE,
+	standard=False,
+	group=GROUP_WORKLOAD_CEILING,
+	# Calibrated against `room_utilization_objective`: one more assignment can open at most
+	# one more room, worth 3 there, minus the ~1 the preference objective charges per
+	# assignment. A default above that makes the courtesy hold wherever the schedule has any
+	# other way to cover the room, while still yielding to infeasibility.
+	default_weight=4.0,
+	topic=TOPIC_AVAILABILITY,
+)
+def fte_soft_ceiling(ctx: RuleContext) -> None:
+	"""One-sided deviation, linearized.
+
+	`max(0, assigned - target)` needs a single non-negative variable bounded below by
+	`assigned - target`; the negative objective coefficient squeezes it down to exactly
+	that maximum, so no equality (and no second slack, as in `role_fte_target_objective`)
+	is required. Employees with no FTE-derived target are left alone, exactly as
+	`fte_ceiling` leaves them.
+	"""
+	data = ctx.data
+	penalties = []
+	for e in data.employees:
+		target = data.target_shifts.get(e, 0)
+		if target <= 0:
+			continue
+		assigned = pulp.lpSum(
+			ctx.x[(e, r, s, d, b)]
+			for r in data.employee_roles.get(e, ())
+			for s in data.shift_types
+			for d in data.working_days
+			for b in data.branches
+		)
+		over = ctx.prob.add_variable(_vname("fte_over", e), lowBound=0)
+		ctx.prob += (over >= assigned - target, _cname("fte_over", e))
+		penalties.append(over)
+
+	ctx.add_objective(-pulp.lpSum(penalties))
 
 
 @builtin_rule(

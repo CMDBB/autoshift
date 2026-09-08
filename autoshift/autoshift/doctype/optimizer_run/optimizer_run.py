@@ -705,7 +705,10 @@ def _role_supply_bounds(data) -> dict[str, dict]:
 	most their FTE ceiling (each shift contributing their max-rooms figure), so the
 	scarcest role's supply bounds what any ruleset can staff. Optimistic where an
 	employee holds several roles (counted fully in each) — presented as "at most",
-	never as a promise.
+	never as a promise. A ruleset picking ``fte_soft_ceiling`` over ``fte_ceiling``
+	can exceed the figure outright, since the courtesy version only prices going over;
+	the marker is then indicative rather than a bound, which the "at most" wording
+	already allows for.
 	"""
 	tol = 0.05  # keep in sync with rules.fte_ceiling
 	bounds: dict[str, dict] = {}

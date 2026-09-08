@@ -137,6 +137,42 @@ weight.
 
 ---
 
+## The FTE ceiling: a law in one country, a courtesy in the same one
+
+Statutory limits on working time are written against a **full-time week**. Scaled to a
+part-timer they stop binding long before their agreed percentage does: somebody at 40% can
+work two extra half-days and still be nowhere near anything a labour inspector cares about.
+What their agreed percentage *is* is a promise the practice made — worth keeping, and worth
+breaking before the schedule is.
+
+So `fte_ceiling` (105% x the FTE-derived target, hard) and `fte_soft_ceiling` (a per-shift
+penalty on the excess, no cap) are one **choice group**, `workload_ceiling`. Same figure,
+two readings, and "neither" is legal — the same shape as `role_binding`, and for the same
+reason: a hard reading that cannot be satisfied takes the whole run down with it, and
+`Infeasible` is a worse answer than a schedule where one person is a half-day over.
+
+- **One-sided linearization.** `max(0, assigned - target)` needs one non-negative variable
+  bounded below by `assigned - target`; the negative objective coefficient squeezes it to
+  exactly that maximum. `role_fte_target_objective` needs *two* slacks and an equality
+  because it penalizes deviation in both directions; this rule does not care about working
+  under, which room utilization and the agreed role split already push against.
+
+- **`default_weight=4.0`, calibrated against room utilization.** One more assignment opens
+  at most one more room (worth 3) and costs the ~1 the preference objective charges per
+  assignment, so a penalty above ~2 makes the courtesy hold wherever the schedule has any
+  other way to staff that room — while still yielding rather than failing when it does not.
+  Lower the weight to let coverage outbid the courtesy; raise it to approach the hard cap.
+
+- **The hard rule stays standard.** Practices whose agreed percentages *are* contractual
+  want the cap, and it is the behaviour every existing ruleset already encodes. Picking the
+  soft one is a deliberate policy statement about a particular practice.
+
+- **`_role_supply_bounds` assumes the hard reading** (statistics' "at most" marker). Under
+  the soft rule the figure can be exceeded outright, which the "at most" wording tolerates;
+  making the marker rule-aware was not worth the coupling.
+
+---
+
 ## Why `autoshift/rota/` exists at all
 
 A settled week is a rule, and stock HR has somewhere to put a rule: a `Shift Schedule`

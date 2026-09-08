@@ -1064,6 +1064,90 @@ def test_role_fte_ceiling_is_opt_in_and_caps_the_role():
 	assert assigned(x_hard, employee="E1", role="R1") == 2  # floor(1.05 * 2)
 
 
+# ── FTE soft ceiling ──────────────────────────────────────────────────────────
+
+
+# Weighted at the rules' own declared defaults, because what this rule does is a matter of
+# calibration against `room_utilization_objective`: a flat weight of 1.0 everywhere would
+# test a model nobody solves.
+def default_weight_specs(*keys: str) -> tuple[tuple[str, str, str, float], ...]:
+	return tuple((k, k, "", BUILTIN_RULES[k].default_weight) for k in keys)
+
+
+SOFT_FTE_RULES = default_weight_specs(
+	"warm_start",
+	"one_shift_per_day",
+	"room_coverage",
+	"room_utilization_objective",
+	"shift_preference_objective",
+	"fte_soft_ceiling",
+)
+
+
+def test_the_two_fte_ceilings_are_mutually_exclusive():
+	"""One `workload_ceiling` choice group: the hard cap, the penalty, or neither."""
+	with pytest.raises(ValueError, match="mutually exclusive"):
+		BuiltinRule.check_ruleset({"fte_ceiling", "fte_soft_ceiling"})
+
+
+def test_fte_soft_ceiling_is_opt_in():
+	"""The hard ceiling stays the default; the soft one is the deliberate choice."""
+	assert "fte_ceiling" in STANDARD_RULES
+	assert "fte_soft_ceiling" not in STANDARD_RULES
+
+
+def test_fte_soft_ceiling_holds_the_agreed_workload_when_it_can():
+	"""Two days, two rooms and an employee agreed to one shift: the second room stays
+	dark, because at the default weights going over costs 4 and the room pays 3."""
+	prob, x, _ = solve(
+		pkg(
+			working_days=days_from(2),
+			target_shifts={"E1": 1},
+			rules=SOFT_FTE_RULES,
+		)
+	)
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 1
+
+
+def test_fte_soft_ceiling_yields_to_coverage_at_a_lower_weight():
+	"""The knob the rule exists for: weighted below what a staffed room earns, the
+	courtesy gives way and the second day is covered."""
+	cheap = tuple(
+		(name, key, code, 1.0 if key == "fte_soft_ceiling" else w) for name, key, code, w in SOFT_FTE_RULES
+	)
+	prob, x, _ = solve(pkg(working_days=days_from(2), target_shifts={"E1": 1}, rules=cheap))
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 2
+
+
+def test_fte_soft_ceiling_solves_what_the_hard_ceiling_calls_infeasible():
+	"""A settled week fuller than the agreed workload: the hard cap fails the whole run,
+	the penalty absorbs it and still returns a schedule."""
+	books = {("E1", "R1", "AM", d, "B1") for d in days_from(2)}
+	data = dict(working_days=days_from(2), forced=books, target_shifts={"E1": 1})
+
+	hard, _x, _ = solve(
+		pkg(**data, rules=default_weight_specs("warm_start", "use_existing_assignments", "fte_ceiling"))
+	)
+	assert status(hard) == "Infeasible"
+
+	prob, x, _ = solve(
+		pkg(
+			**data, rules=(*SOFT_FTE_RULES, ("use_existing_assignments", "use_existing_assignments", "", 1.0))
+		)
+	)
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 2
+
+
+def test_fte_soft_ceiling_ignores_employees_without_a_target():
+	"""No FTE-derived target, no penalty variable — the same employees `fte_ceiling`
+	leaves alone, left alone here too."""
+	_prob, _x, _ar, _logs, ctx = build(pkg(target_shifts={"E1": 0}, rules=SOFT_FTE_RULES))
+	assert not [v for v in ctx.prob.variables() if v.name.startswith("fte_over")]
+
+
 # ── multi-employee integration ────────────────────────────────────────────────
 
 

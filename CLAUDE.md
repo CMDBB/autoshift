@@ -125,15 +125,17 @@ module.
    caching, `planning_days()` (raises `NotImplementedError` for `"Unbounded"`).
 2. `rules.py` — constraint groups *and* objective terms as named rules. `BUILTIN_RULES`
    registry populated by the `@builtin_rule` decorator; `STANDARD_RULES` is the
-   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 14 built-ins:
+   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 15 built-ins:
    `one_shift_per_day`, `warm_start`, `leave_blocklist`, `use_existing_assignments`,
    `bind_role_assignments`, `soft_bind_role_assignments`, `one_branch_per_shift`,
    `room_coverage`, `fte_ceiling`,
-   `role_fte_ceiling` (constraints) and `room_utilization_objective`,
+   `role_fte_ceiling` (constraints) and `room_utilization_objective`, `fte_soft_ceiling`,
    `role_fte_target_objective`, `shift_preference_objective`, `weigh_assignments_objective`
-   (objectives). `_cname()`/`_vname()` name constraints and any auxiliary variables
-   (`role_fte_target_objective` is the first rule creating its own — a linearized absolute
-   deviation). `compile_custom_rule()` execs Custom Code source expecting `apply(ctx)`.
+   (objectives). Three choice groups: `existing_assignments`, `role_binding` and
+   `workload_ceiling` (`fte_ceiling` vs `fte_soft_ceiling`). `_cname()`/`_vname()` name
+   constraints and any auxiliary variables (`role_fte_target_objective` linearizes an
+   absolute deviation with a pair of them, `fte_soft_ceiling` a one-sided one with a
+   single variable). `compile_custom_rule()` execs Custom Code source expecting `apply(ctx)`.
    `apply_rules()` applies `DataPackage.rules`; an empty selection means all built-ins at
    weight 1.0 (the pre-ruleset behaviour unit tests rely on). Objective rules call
    `ctx.add_objective(expr)`; the term is scaled by the ruleset row weight.
