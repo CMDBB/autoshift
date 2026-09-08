@@ -68,6 +68,7 @@ discipline over-stating its capacity.
 | Discipline | The Department this role staffs |
 | Max Rooms Per Holder | Rooms one holder covers simultaneously in a single slot |
 | Display Order Key | *Optional.* Where this role's column sits in the week wall chart — see below |
+| Chip Sort Field / Descending | *Optional.* Orders the people *within* this role's column each day — see below |
 | Assignments Are Binding | *Optional.* Holders keep exactly the Shift Assignments already on the books — see below |
 
 **Autoshift → Employee Scheduling Role** — one record per employee-capability pair.
@@ -91,6 +92,16 @@ Rooms Per Holder descending, then by name. Leave it alone unless the derived ord
 wrong: setting a practitioner role to **-1** puts it ahead of every role still on 0, which
 is how you get the practitioner column to the left of the assistant one. It also breaks the
 tie when a Shift Assignment's role has to be inferred, so the chart and the inference agree.
+
+**Chip Sort Field** orders the people stacked inside one role's column on a given day, which
+by default is alphabetical by initials. Row numbers on the chart are drawn either way — a
+band's rows are numbered because chairs are — so an alphabetical stack makes the number
+meaningless for anything that reads it as more than a chair index. Name a field on Employee (e.g. `date_of_joining`) to give the number a meaning instead:
+apprentices sorted by that field read in seniority order rather than alphabetically. Check
+**Descending** to put the highest value first (latest joiner in room 1, say) instead of the
+lowest. Leave the field blank to keep the alphabetical default; an employee with no value for
+the field sorts after everyone who has one, in alphabetical order, rather than the chart
+breaking.
 
 **Assignments Are Binding** is for a role whose schedule is settled by its holders rather
 than by the planner — a senior clinician whose week is fixed, say. Their existing Shift

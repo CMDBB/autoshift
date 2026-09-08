@@ -13,6 +13,9 @@
   "display_order_key",
   "assignments_binding",
   "active",
+  "section_break_chip_sort",
+  "chip_sort_field",
+  "chip_sort_descending",
   "section_break_description",
   "description"
  ],
@@ -69,6 +72,25 @@
    "fieldname": "active",
    "fieldtype": "Check",
    "label": "Active"
+  },
+  {
+   "fieldname": "section_break_chip_sort",
+   "fieldtype": "Section Break",
+   "label": "Chip Order"
+  },
+  {
+   "description": "Fieldname on Employee to order this role's chips by within a lane, e.g. \"date_of_joining\". Leave blank to keep the default: alphabetical by initials, which is what the wall chart's row numbers reflect either way.",
+   "fieldname": "chip_sort_field",
+   "fieldtype": "Data",
+   "label": "Chip Sort Field"
+  },
+  {
+   "default": "0",
+   "depends_on": "chip_sort_field",
+   "description": "Highest value first instead of lowest first.",
+   "fieldname": "chip_sort_descending",
+   "fieldtype": "Check",
+   "label": "Descending"
   },
   {
    "fieldname": "section_break_description",

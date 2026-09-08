@@ -127,6 +127,33 @@ def test_people_in_one_cell_are_ordered_by_label_not_by_input():
 	assert [s.label for s in chart.cell(AM, "C1", 2, "R1", 0)] == ["ZZ"]
 
 
+# ── chip sort (`Scheduling Role.chip_sort_field`) ────────────────────────────
+
+
+def test_chip_order_follows_sort_value_over_label_when_configured():
+	slots = [slot(employee="E1", label="ZZ", sort_value=2), slot(employee="E2", label="AA", sort_value=1)]
+	chart = build(layout(), slots, MONDAY)
+	assert [s.employee for s in chart.cell(AM, "C1", 1, "R1", 0)] == ["E2"]
+	assert [s.employee for s in chart.cell(AM, "C1", 2, "R1", 0)] == ["E1"]
+
+
+def test_chip_order_reverses_when_the_lane_is_descending():
+	descending = Lane("R1", "Practitioner", sort_descending=True)
+	slots = [slot(employee="E1", label="ZZ", sort_value=2), slot(employee="E2", label="AA", sort_value=1)]
+	chart = build(layout(band(lanes=(descending, ASSISTANT))), slots, MONDAY)
+	assert [s.employee for s in chart.cell(AM, "C1", 1, "R1", 0)] == ["E1"]
+	assert [s.employee for s in chart.cell(AM, "C1", 2, "R1", 0)] == ["E2"]
+
+
+def test_chips_with_no_sort_value_fall_after_ranked_ones_alphabetically():
+	"""A role with no `chip_sort_field`, or an employee missing the value, still
+	prints a stable row rather than raising or being dropped."""
+	slots = [slot(employee="E1", label="AA"), slot(employee="E2", label="ZZ", sort_value=5)]
+	chart = build(layout(), slots, MONDAY)
+	assert [s.employee for s in chart.cell(AM, "C1", 1, "R1", 0)] == ["E2"]
+	assert [s.employee for s in chart.cell(AM, "C1", 2, "R1", 0)] == ["E1"]
+
+
 def test_days_are_indexed_from_monday():
 	chart = build(layout(), [slot(day=TUESDAY)], MONDAY)
 	assert chart.cell(AM, "C1", 1, "R1", 0) == []

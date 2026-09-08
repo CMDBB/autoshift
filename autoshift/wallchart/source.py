@@ -55,10 +55,10 @@ def _has_initials() -> bool:
 	return bool(frappe.db.has_column("Employee", INITIALS_FIELD))
 
 
-def _employees(names: set[str]) -> dict[str, dict]:
+def _employees(names: set[str], extra_fields: tuple[str, ...] = ()) -> dict[str, dict]:
 	if not names:
 		return {}
-	fields = ["name", "employee_name"]
+	fields = list(dict.fromkeys(["name", "employee_name", *extra_fields]))
 	if _has_initials():
 		fields.append(INITIALS_FIELD)
 	rows = frappe.get_all(
@@ -67,6 +67,36 @@ def _employees(names: set[str]) -> dict[str, dict]:
 		fields=fields,
 	)
 	return {row["name"]: row for row in rows}
+
+
+def _chip_sort_config() -> dict[str, tuple[str, bool]]:
+	"""Active Scheduling Role -> (Employee fieldname, descending), for roles
+	that configure a `chip_sort_field`.
+
+	Guarded against `frappe.db.has_column` rather than trusting the doctype:
+	the field the role names may have been removed from Employee since it was
+	configured, and a chart that throws over that is worse than one that falls
+	back to alphabetical (`chart._order_lane`'s `sort_value is None` branch).
+	`scheduling_role.py` also checks this at save time, so in practice this is
+	a runtime safety net, not the primary guard.
+	"""
+	rows = frappe.get_all(
+		"Scheduling Role",
+		filters={"active": 1},
+		fields=["name", "chip_sort_field", "chip_sort_descending"],
+	)
+	return {
+		row["name"]: (row["chip_sort_field"], bool(row["chip_sort_descending"]))
+		for row in rows
+		if row["chip_sort_field"] and frappe.db.has_column("Employee", row["chip_sort_field"])
+	}
+
+
+def _sort_value(role: str | None, person: dict, chip_sort: dict[str, tuple[str, bool]]) -> object | None:
+	if not role or role not in chip_sort:
+		return None
+	field, _descending = chip_sort[role]
+	return person.get(field)
 
 
 def _location_branches() -> dict[str, str | None]:
@@ -168,7 +198,8 @@ def from_shift_assignments(monday: datetime.date, employees: list[str] | None = 
 		return []
 
 	names = {row["employee"] for row in rows}
-	people = _employees(names)
+	chip_sort = _chip_sort_config()
+	people = _employees(names, tuple({field for field, _ in chip_sort.values()}))
 	branches = _location_branches()
 	disciplines = _location_disciplines()
 	role_disciplines = _role_disciplines()
@@ -205,6 +236,7 @@ def from_shift_assignments(monday: datetime.date, employees: list[str] | None = 
 					scheduling_role=role,
 					kind=KIND_EXISTING,
 					role_certain=certain,
+					sort_value=_sort_value(role, person, chip_sort),
 				)
 			)
 	return slots
@@ -221,7 +253,8 @@ def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 		return []
 	days = set(week_dates(monday))
 	names = {row["employee"] for row in rows}
-	people = _employees(names)
+	chip_sort = _chip_sort_config()
+	people = _employees(names, tuple({field for field, _ in chip_sort.values()}))
 	branches = _location_branches()
 
 	# Roles became a slot field partway through; a run solved before that has none
@@ -269,6 +302,7 @@ def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 				kind=KIND_ADDED,
 				forced=bool(row["forced"]),
 				role_certain=certain,
+				sort_value=_sort_value(role, person, chip_sort),
 			)
 		)
 	return slots

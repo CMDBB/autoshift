@@ -11,3 +11,9 @@ class SchedulingRole(Document):
 			frappe.throw(
 				frappe._("Max Rooms Per Holder must be at least 1; a role nobody can staff is not a role.")
 			)
+		if self.chip_sort_field and not frappe.get_meta("Employee").has_field(self.chip_sort_field):
+			frappe.throw(
+				frappe._("{0} is not a field on Employee, so chip order cannot use it.").format(
+					self.chip_sort_field
+				)
+			)

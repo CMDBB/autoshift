@@ -25,6 +25,12 @@ The one judgement here is lane order, and it is `Scheduling Role`'s optional
 `lane_sort_key`. Left to itself it is a property of the site's own data, not a
 fact this package asserts about anybody's job; where the derived order reads
 wrong, the key is the site's way of saying so.
+
+A second, narrower judgement is row order *within* a lane's day — see
+`Scheduling Role.chip_sort_field` and `chart._order_lane`. `derive()` only
+carries the direction (`chip_sort_descending`) onto each `Lane`; resolving the
+field itself into a value per employee is `source.py`'s job, since it is the
+only module that reads Employee.
 """
 
 from __future__ import annotations
@@ -138,7 +144,7 @@ def derive() -> Layout:
 	roles = frappe.get_all(
 		"Scheduling Role",
 		filters={"active": 1},
-		fields=[*ROLE_ORDER_FIELDS, "role_name", "discipline"],
+		fields=[*ROLE_ORDER_FIELDS, "role_name", "discipline", "chip_sort_descending"],
 	)
 	by_discipline: dict[str, list] = {}
 	for role in roles:
@@ -163,7 +169,8 @@ def derive() -> Layout:
 	bands = []
 	for config in sorted(configs, key=lambda c: (min_keys[c.name], c.branch or "", c.discipline or "")):
 		lanes = tuple(
-			Lane(role.name, role.role_name or role.name) for role in by_discipline.get(config.discipline, [])
+			Lane(role.name, role.role_name or role.name, bool(role.chip_sort_descending))
+			for role in by_discipline.get(config.discipline, [])
 		)
 		bands.append(
 			Band(

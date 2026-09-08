@@ -25,9 +25,10 @@ sheet it generalizes:
   second person on that half-day, not room 2.
 
   **pairing** — lanes read as a tandem (practitioner beside assistant) but
-  nothing pairs them: each lane is filled independently and sorted by label. A
-  row is two people working the same half-day at the same place, not a stated
-  partnership.
+  nothing pairs them: each lane is filled independently and sorted by label,
+  or by `Slot.sort_value` where `Scheduling Role.chip_sort_field` names one —
+  see `_order_lane`. A row is two people working the same half-day at the same
+  place, not a stated partnership.
 
 Both are stable across rebuilds of the same data, which is what matters for a
 chart someone reads every week.
@@ -76,6 +77,11 @@ class Slot:
 	#: Set on a `kept` slot the run moved: what it says here differs from what is
 	#: on the books. Human-readable, e.g. "was at Blandonnet".
 	changed: str | None = None
+	#: This employee's value of `Scheduling Role.chip_sort_field`, resolved by
+	#: `source.py` — `None` when the role names no field, the field does not
+	#: exist, or the employee has no value for it. Drives row order within a
+	#: lane's day in place of the alphabetical default; see `_order_lane`.
+	sort_value: object | None = None
 
 	@property
 	def match_key(self) -> tuple[str, datetime.date, str]:
@@ -97,6 +103,9 @@ class Lane:
 
 	key: str
 	label: str
+	#: `Scheduling Role.chip_sort_descending` for this lane's role. No-op unless
+	#: the role also names a `chip_sort_field` — see `_order_lane`.
+	sort_descending: bool = False
 
 
 @dataclass(frozen=True)
@@ -245,11 +254,29 @@ def _recast(slot: Slot, kind: str, changed: str | None = None) -> Slot:
 		forced=slot.forced,
 		role_certain=slot.role_certain,
 		changed=changed,
+		sort_value=slot.sort_value,
 	)
 
 
 def _sort_key(slot: Slot) -> tuple[str, str]:
 	return (slot.label.upper(), slot.employee)
+
+
+def _order_lane(slots: list[Slot], descending: bool) -> list[Slot]:
+	"""Row order within one lane's day.
+
+	Alphabetical by label first, so ties break the same way whether or not a
+	sort field is configured. Slots that carry a `sort_value` are then
+	stable-sorted to the front by it (reversed when `descending`); slots
+	without one — the role names no `chip_sort_field`, the field does not
+	exist, or this employee has no value for it — stay in alphabetical order
+	after every ranked one, rather than raising or guessing.
+	"""
+	tied = sorted(slots, key=_sort_key)
+	ranked = [s for s in tied if s.sort_value is not None]
+	unranked = [s for s in tied if s.sort_value is None]
+	ranked.sort(key=lambda s: s.sort_value, reverse=descending)
+	return ranked + unranked
 
 
 def build(layout: Layout, slots: list[Slot], monday: datetime.date) -> Chart:
@@ -351,7 +378,7 @@ def _fill(
 	used = 0
 	for lane in lanes:
 		for index in range(days):
-			here = sorted(pool.get((band_key, lane.key, index, shift_type), []), key=_sort_key)
+			here = _order_lane(pool.get((band_key, lane.key, index, shift_type), []), lane.sort_descending)
 			used = max(used, len(here))
 			for row, slot in enumerate(here, start=1):
 				chart.placements.append(Placement(shift_type, band_key, row, lane.key, index, slot))

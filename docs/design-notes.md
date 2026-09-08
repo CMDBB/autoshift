@@ -321,6 +321,22 @@ outside the run's `planning_days` is a scope question, an empty working day is a
 **Why people on leave get a strip instead of a cell:** they are the answer to "why is this
 chair empty".
 
+**Chip order within a lane is alphabetical unless a role says otherwise
+(`Scheduling Role.chip_sort_field`).** The row number was always drawn — a band's rows are
+numbered because chairs are (see "room identity" above) — but with nothing to sort by,
+alphabetical was the only stable choice, and a stable *label* for the number ("row 2") is not
+the same claim as a stable *meaning* ("second-year"). Apprentice lanes are where that gap
+shows: the number reads as apprenticeship year to anyone looking at the chart, and alphabetical
+order makes that reading wrong by construction, not by mistake. `chip_sort_field` names an
+Employee field to resolve per person instead (`source._chip_sort_config`/`_sort_value`); it is
+deliberately a fieldname the site types in, not a fixed concept like "seniority", for the same
+reason `display_order_key` is a number and not an enum — the meaning of the row is the site's
+to declare, this package only offers the mechanism. Resolution happens in `source.py`, the only
+module that reads Employee, and rides on the `Slot` as `sort_value` so `chart.py` stays
+Frappe-free; `chart._order_lane` puts a `None` value (no field configured, the field vanished
+since, or this employee has none) after every ranked one rather than raising, the same "never
+silently drop somebody" bargain the rest of the chart makes.
+
 Generalized from `cmdb_frappe/planning/`, which stays where it is: that sheet's bands, its
 practitioner/assistant tandem and its numbered chairs are one practice's paper.
 
