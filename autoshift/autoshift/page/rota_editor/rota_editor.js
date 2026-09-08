@@ -73,6 +73,8 @@ function inject_rota_editor_styles() {
 		}
 		.rota-editor .re-transcript { margin-top: 1rem; border-top: 1px solid var(--border-color); padding-top: 0.75rem; }
 		.rota-editor .re-transcript-title { font-weight: 500; margin-bottom: 0.3rem; }
+		.rota-editor .re-today-col { background: var(--blue-50, #eff6ff); }
+		.rota-editor .re-today-col.re-row-hidden { background: var(--blue-50, #eff6ff); }
 	`;
 	const style = document.createElement("style");
 	style.id = "rota-editor-styles";
@@ -364,7 +366,7 @@ autoshift.RotaEditor = class RotaEditor {
 	// no drag/drop affordances at all: their cells carry a `{occupied, cycle_weeks,
 	// branch}` fraction summary instead of a concrete `{branch, assignment}` chip —
 	// see `editor._hidden_cells`.
-	render_employee_rows(emp, sections, days, occupied_dates, readOnly) {
+	render_employee_rows(emp, sections, days, occupied_dates, readOnly, today) {
 		const cadence_note =
 			readOnly && emp.cycle_weeks
 				? ` <span class="text-muted">(${emp.cycle_weeks.join(", ")}-week)</span>`
@@ -384,8 +386,9 @@ autoshift.RotaEditor = class RotaEditor {
 			rows += `<td class="re-shift-col" title="${shift_type}">${shift_label}</td>`;
 			days.forEach((d) => {
 				const cell = emp.cells[`${section.name}|${d.date}`];
+				const todayClass = d.date === today ? " re-today-col" : "";
 				if (readOnly) {
-					rows += `<td class="re-cell re-cell-readonly">`;
+					rows += `<td class="re-cell re-cell-readonly${todayClass}">`;
 					if (cell) {
 						if (cell.occupied >= cell.cycle_weeks) {
 							const branch = frappe.utils.escape_html(cell.branch || "");
@@ -407,7 +410,7 @@ autoshift.RotaEditor = class RotaEditor {
 				const is_occupied_different_shift =
 					occupied_dates[emp.employee].has(d.date) && !cell;
 				const cell_class = is_occupied_different_shift ? " re-cell-occupied" : "";
-				rows += `<td class="re-cell${cell_class}" data-employee="${emp.employee}" data-shift-type="${shift_type}" data-date="${d.date}">`;
+				rows += `<td class="re-cell${cell_class}${todayClass}" data-employee="${emp.employee}" data-shift-type="${shift_type}" data-date="${d.date}">`;
 				if (cell) {
 					// "pending" (unapplied yet — see rota/editor.py._effective_rotas) is
 					// purely a visual cue now: the chip stays draggable, and further edits
@@ -451,6 +454,7 @@ autoshift.RotaEditor = class RotaEditor {
 		const employees = state.employees || [];
 		const hidden = state.hidden_employees || [];
 		const $grid = this.$body.find(".re-grid");
+		const today = frappe.datetime.get_today();
 
 		if (!sections.length) {
 			$grid.html(
@@ -473,7 +477,11 @@ autoshift.RotaEditor = class RotaEditor {
 			"Shift"
 		)}</th>`;
 		days.forEach((d) => {
-			head += `<th class="re-day-col">${d.weekday.slice(0, 3)}<br>${d.date.slice(5)}</th>`;
+			const todayClass = d.date === today ? " re-today-col" : "";
+			head += `<th class="re-day-col${todayClass}">${d.weekday.slice(
+				0,
+				3
+			)}<br>${d.date.slice(5)}</th>`;
 		});
 		head += "</tr>";
 
@@ -492,7 +500,7 @@ autoshift.RotaEditor = class RotaEditor {
 
 		let rows = "";
 		employees.forEach((emp) => {
-			rows += this.render_employee_rows(emp, sections, days, occupied_dates, false);
+			rows += this.render_employee_rows(emp, sections, days, occupied_dates, false, today);
 		});
 		if (hidden.length) {
 			const colspan = 2 + days.length;
@@ -501,7 +509,7 @@ autoshift.RotaEditor = class RotaEditor {
 					"Longer cadence than this view — shown below as a read-only average over each pattern's own cycle"
 				)}</td></tr>` +
 				hidden
-					.map((emp) => this.render_employee_rows(emp, sections, days, {}, true))
+					.map((emp) => this.render_employee_rows(emp, sections, days, {}, true, today))
 					.join("");
 		}
 

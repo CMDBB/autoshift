@@ -464,12 +464,13 @@ def test_the_standard_set_does_not_pin_everyone_to_the_books():
 	Weeks worked short-handed, double-booked or off-config pin the model into
 	infeasibility, which is what made most historical weeks unsolvable. Only the
 	people whose schedule is genuinely not the planner's to set are frozen now, and
-	that is `bind_role_assignments` — which is standard, and inert until a
+	that is `soft_bind_role_assignments` — which is standard, and inert until a
 	Scheduling Role is marked binding.
 	"""
 	assert "use_existing_assignments" not in STANDARD_RULES
 	assert "warm_start" in STANDARD_RULES
-	assert "bind_role_assignments" in STANDARD_RULES
+	assert "soft_bind_role_assignments" in STANDARD_RULES
+	assert "bind_role_assignments" not in STANDARD_RULES
 
 
 def test_rule_without_implementation_raises():
@@ -602,18 +603,116 @@ def test_binding_rule_is_inert_without_binding_pairs():
 
 def test_binding_composes_with_the_existing_assignment_choices():
 	"""
-	`bind_role_assignments` is deliberately not in the `existing_assignments` choice group:
-	binding is gated by role data, not a third global policy, so it must combine with
-	either member.
+	Neither binding rule is in the `existing_assignments` choice group: binding is gated
+	by role data, not a third global policy, so it must combine with either member.
 	"""
-	for member in ("use_existing_assignments", "weigh_assignments_objective"):
-		rules = builtin_specs("warm_start", "bind_role_assignments", "one_shift_per_day", member)
-		BuiltinRule.check_ruleset({key for _, key, _, _ in rules})
+	for binding in ("bind_role_assignments", "soft_bind_role_assignments"):
+		for member in ("use_existing_assignments", "weigh_assignments_objective"):
+			rules = builtin_specs("warm_start", binding, "one_shift_per_day", member)
+			BuiltinRule.check_ruleset({key for _, key, _, _ in rules})
 
 
 def test_binding_rule_requires_the_warm_start():
 	with pytest.raises(ValueError, match="warm_start"):
 		BuiltinRule.check_ruleset({"bind_role_assignments"})
+	with pytest.raises(ValueError, match="warm_start"):
+		BuiltinRule.check_ruleset({"soft_bind_role_assignments"})
+
+
+# ── soft role binding (the default) ───────────────────────────────────────────
+
+# Soft binding needs something in the objective that *wants* to add shifts, or "kept the
+# settled shift" and "the solver stopped at the first feasible point" look identical.
+SOFT_BINDING_RULES = builtin_specs(
+	"warm_start",
+	"soft_bind_role_assignments",
+	"one_shift_per_day",
+	"room_coverage",
+	"room_utilization_objective",
+)
+
+
+def test_the_two_binding_rules_are_mutually_exclusive():
+	"""One `role_binding` choice group: a ruleset picks strict, soft, or neither."""
+	with pytest.raises(ValueError, match="mutually exclusive"):
+		BuiltinRule.check_ruleset({"warm_start", "bind_role_assignments", "soft_bind_role_assignments"})
+
+
+def test_soft_binding_keeps_a_settled_shift_it_can_keep():
+	"""Nothing forces the Monday AM on, but the warm start suggests it and staffing the
+	room pays — so a feasible settled schedule comes back intact."""
+	prob, x, _ = solve(
+		pkg(
+			working_days=days_from(2),
+			shift_types=["AM", "PM"],
+			forced={("E1", "R1", "AM", MON, "B1")},
+			binding_pairs=frozenset({("E1", "R1")}),
+			target_shifts={"E1": 2},
+			rules=SOFT_BINDING_RULES,
+		)
+	)
+	assert status(prob) == "Optimal"
+	assert (pulp.value(x[("E1", "R1", "AM", MON, "B1")]) or 0) > 0.5
+	assert assigned(x, employee="E1") == 1
+
+
+def test_soft_binding_still_adds_nothing_to_a_settled_schedule():
+	"""The half that stays hard: everything a bound holder does *not* have on the books
+	is fixed to 0, so the Tuesday room the objective would love goes unstaffed."""
+	prob, x, _ = solve(
+		pkg(
+			working_days=days_from(2),
+			shift_types=["AM", "PM"],
+			forced={("E1", "R1", "AM", MON, "B1")},
+			binding_pairs=frozenset({("E1", "R1")}),
+			target_shifts={"E1": 4},
+			rules=SOFT_BINDING_RULES,
+		)
+	)
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 1
+
+
+def test_soft_binding_drops_a_settled_shift_where_strict_binding_is_infeasible():
+	"""The point of the rule: a settled week that breaks the rest of the ruleset — here
+	two half-days on one date under one-shift-per-day — solves instead of failing, at the
+	cost of exactly one dropped shift."""
+	books = {("E1", "R1", "AM", MON, "B1"), ("E1", "R1", "PM", MON, "B1")}
+	data = {
+		"working_days": days_from(2),
+		"shift_types": ["AM", "PM"],
+		"forced": books,
+		"binding_pairs": frozenset({("E1", "R1")}),
+		"target_shifts": {"E1": 2},
+	}
+	strict_rules = builtin_specs(
+		"warm_start",
+		"bind_role_assignments",
+		"one_shift_per_day",
+		"room_coverage",
+		"room_utilization_objective",
+	)
+	strict, _, _ = solve(pkg(**data, rules=strict_rules))
+	assert status(strict) == "Infeasible"
+
+	prob, x, _ = solve(pkg(**data, rules=SOFT_BINDING_RULES))
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 1
+
+
+def test_soft_binding_is_inert_without_binding_pairs():
+	"""No role marked binding => the rule fixes nothing, so the schedule is unchanged."""
+	data = {"working_days": days_from(2), "target_shifts": {"E1": 2}}
+	_prob, with_rule, _ = solve(pkg(**data, rules=SOFT_BINDING_RULES))
+	_prob2, without, _ = solve(
+		pkg(
+			**data,
+			rules=builtin_specs(
+				"warm_start", "one_shift_per_day", "room_coverage", "room_utilization_objective"
+			),
+		)
+	)
+	assert assigned(with_rule) == assigned(without)
 
 
 def test_custom_code_without_apply_raises():

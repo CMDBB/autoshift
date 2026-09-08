@@ -16,10 +16,18 @@ import pulp
 
 from autoshift.optimizer.types import DataPackage
 
-from . import model_builder
+from . import diagnostics, model_builder
 
 # Statuses whose result can be safely reused for an identical input hash.
 CACHEABLE_STATUSES = ("Solved", "Failed", "Approved", "Committed")
+
+# CBC statuses that mean "the input is wrong", not "the solve went badly". These are the
+# ones worth spending a second solve on to explain (see _explain_failure).
+DIAGNOSABLE_STATUSES = ("Infeasible", "Undefined", "Unbounded")
+
+# Seconds the failure diagnosis may spend on its own elastic solve. It runs after a solve
+# has already failed, so a planner is waiting on it — keep it well under the sync budget.
+DIAGNOSIS_TIME_LIMIT = 30
 
 
 def find_cached_runs(input_hash: str, exclude_name: str | None = None) -> list[str]:
@@ -33,6 +41,22 @@ def find_cached_runs(input_hash: str, exclude_name: str | None = None) -> list[s
 	if exclude_name:
 		filters["name"] = ["!=", exclude_name]
 	return frappe.get_all("Optimizer Run", filters, order_by="creation asc")
+
+
+def _explain_failure(data: DataPackage) -> str:
+	"""
+	Why this input has no schedule, as text for the run's Solver Log.
+
+	CBC's own answer to an infeasible model is the word "Infeasible", which is no use at
+	all when the suspicion is that the Shift Assignments a binding role froze in place are
+	illegal under the ruleset. `diagnostics.report` names the offending assignments and,
+	failing that, the constraints that have to give. Never allowed to raise: it runs on
+	the failure path, and a broken explanation must not replace the failure it explains.
+	"""
+	try:
+		return diagnostics.report(data, time_limit=DIAGNOSIS_TIME_LIMIT)
+	except Exception:
+		return f"--- Diagnostics ---\nDiagnostics failed:\n{traceback.format_exc()}"
 
 
 def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool | None:
@@ -60,7 +84,7 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 		fd, log_path = tempfile.mkstemp(prefix="cbc_", suffix=".log")
 		os.close(fd)
 		try:
-			solver = pulp.COIN_CMD(timeLimit=time_limit, logPath=log_path)
+			solver = pulp.COIN_CMD(timeLimit=time_limit, logPath=log_path, warmStart=True)
 			prob.solve(solver)
 
 			# nosemgrep: frappe-semgrep-rules.rules.security.frappe-security-file-traversal (is a tempfile -> safe)
@@ -138,12 +162,20 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 
 			run.set("status", "Solved")
 		else:
-			run.set("solver_log", f"Solver status: {lp_status}\n\n{solver_log}")
+			explanation = _explain_failure(data) if lp_status in DIAGNOSABLE_STATUSES else ""
+			run.set(
+				"solver_log",
+				f"Solver status: {lp_status}\n\n{explanation}\n\n"
+				f"--- Rules Logs ---\n{rule_logs}\n--- Solver Logs ---\n{solver_log}",
+			)
 			run.set("status", "Failed")
 	except Exception:
 		tb = traceback.format_exc()
 		frappe.log_error(tb, f"Optimizer Run failed: {run_name}")
-		run.set("solver_log", f"{(str(run.get('solver_log')) or '')}\n\nException:\n{tb}")
+		run.set(
+			"solver_log",
+			f"{(str(run.get('solver_log')) or '')}\n\nException:\n{tb}\n\n{_explain_failure(data)}",
+		)
 		run.set("status", "Failed")
 	finally:
 		run.save(ignore_permissions=True)

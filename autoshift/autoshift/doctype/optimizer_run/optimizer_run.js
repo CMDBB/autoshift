@@ -67,7 +67,7 @@ function confirm_and_solve(frm) {
 			if (binding && binding.gap) {
 				msg =
 					`<p class="text-warning">${__(
-						"{0} employee(s) hold a Scheduling Role whose assignments are binding ({1}), but this ruleset does not include the <b>Bind settled schedules</b> rule. Their settled schedules will be ignored and re-planned from scratch.",
+						"{0} employee(s) hold a Scheduling Role whose assignments are binding ({1}), but this ruleset includes neither <b>Bind settled schedules</b> rule. Their settled schedules will be ignored and re-planned from scratch.",
 						[binding.employees, frappe.utils.escape_html(binding.roles.join(", "))]
 					)}</p>` + `<p>${msg}</p>`;
 			}

@@ -65,7 +65,7 @@ order; the regression tests now build specs from the real document titles (`titl
 
 ---
 
-## Role binding: why freeze-completely
+## Role binding: freeze completely, or only cap
 
 Some roles' holders set their own schedules — a fact about a practice's power structure, so
 nothing about *which* roles those are belongs in this repo. autoshift ships the mechanism,
@@ -78,6 +78,36 @@ pair, `bind_role_assignments` calls `fixValue()` on *every* one of their variabl
 `warm_start`'s 1/0 initialization pins their existing shifts on and everything else off. A
 day they have nothing on the books stays empty. Filling those gaps is the free-seat / chair
 auction question, deliberately out of scope.
+
+### Why the *soft* rule is the default
+
+Freeze-completely has the same failure mode as `use_existing_assignments`, on a smaller
+population: a settled week that is illegal under the rest of the ruleset — two half-days on
+one date, a week over the FTE ceiling, a branch the config no longer covers — makes the whole
+run come back `Infeasible`, and one person's history takes the schedule down with it. That is
+what `conflict_scan` exists to explain, and explaining it is not the same as producing a
+schedule.
+
+`soft_bind_role_assignments` keeps the half of the semantics that is a policy statement and
+drops the half that is a hostage: everything a bound holder does **not** have on the books is
+still fixed to 0 — nobody quietly grows a schedule that was never the planner's to set — while
+the shifts they do have stay free variables sitting at their warm-start value of 1. Under the
+standard objective a settled shift that staffs a room pays for itself and is kept; the one
+that cannot coexist with the ruleset is dropped, and the rest of the practice still gets a
+schedule. `binding_conflicts` and the statistics warnings already exist to make a dropped day
+visible.
+
+The two are one **choice group** (`role_binding`), not an `excludes` pair: they are the same
+policy at two strengths, "neither" is a legal answer, and Studio renders a group as radios
+plus an explicit *None*. `binding_rule_gap` therefore asks whether *any* member is selected
+(`rules_in_group`), not whether the strict rule is.
+
+**The warm start is currently advisory only.** `solver.py` calls CBC without
+`warmStart=True`, so `setInitialValue` reaches the solver for nothing but `fixValue()`'s
+benefit; what actually keeps a settled shift under the soft rule is the objective. Adding
+`weigh_assignments_objective` buys an explicit epsilon tie-break toward the books. Passing
+`warmStart=True` would make the initial values a real incumbent, but PuLP would then write a
+MIPSTART missing every `active_rooms` and auxiliary variable, so it is a separate decision.
 
 **Leave wins.** The loader drops an existing assignment falling on a leave-blocked day
 rather than adding it to `forced` — forcing both would be infeasible — and records it in
@@ -260,6 +290,60 @@ practitioner/assistant tandem and its numbered chairs are one practice's paper.
 
 ---
 
+## Diagnosing infeasibility: three instruments, not one
+
+Binding turned "Infeasible" from a rare modelling slip into the routine answer. The books
+are the practice's real history, and pinning them makes the model assert that history is
+legal under a ruleset that was never written with it in mind. CBC's entire contribution to
+that conversation is the word `Infeasible`: no row, no variable, no hint. `autoshift/optimizer/diagnostics.py`
+exists to answer the follow-up question.
+
+CBC computes no IIS (irreducible infeasible subset), so there is nothing to just ask it for.
+Three instruments instead, deliberately in increasing cost, because the cheapest one answers
+the common case:
+
+- **`conflict_scan` — no solver at all.** Replays the pinned assignments against the
+  *arithmetic* of the selected constraint rules. Two shifts pinned on one date under
+  `one_shift_per_day`; more pinned shifts than 105% of an FTE target; two branches in one
+  slot. These need no search: an assignment pinned to 1 either fits under the ceiling or it
+  does not. It names the Shift Assignment, in the planner's vocabulary, which is what a
+  planner can actually act on. Rules whose constraints cannot be the infeasible one are
+  deliberately absent — `room_coverage` is `>=` against a variable with a zero lower bound
+  and always has a satisfying assignment.
+
+- **`model_dump` — the shape.** Variables and constraints grouped by the rule that emitted
+  them, off the `_cname`/`_vname` `prefix:` convention that already existed for the
+  sandbox's `constraint_frame`. Its most useful column is *fixed*: how much of the model
+  binding has turned into constants. `write_lp` is the escape hatch when only every row
+  will do.
+
+- **`elastic_analysis` — the general instrument.** Adds a non-negative slack to every
+  constraint and minimizes the total. Every model is feasible once elasticized, so the
+  slacks that come back non-zero *are* the infeasibility, sized in the units of the
+  constraint they broke. It finds conflicts the scan cannot reason about (anything needing
+  search, or a Custom Code rule, which declares no metadata to scan). Variable **bounds are
+  left rigid on purpose**: the binding rules express themselves as `fixValue()`, so relaxing
+  bounds would relax away the very thing under suspicion. It runs on the LP relaxation by
+  default — a conflict between frozen assignments is a conflict between constants, and
+  branching does not resolve it — and escalates to `integral=True` only when the relaxation
+  reports nothing and the real model is still infeasible.
+
+**Why it runs automatically.** A Failed run's Solver Log gets the report appended
+(`solver._explain_failure`, on `Infeasible`/`Undefined`/`Unbounded` and on the exception
+path where the model would not even build). Diagnosis on demand is diagnosis nobody runs;
+the Solver Log tab is already the place a planner looks after a failure, and it is reachable
+in Studio too. It is capped well under the sync budget and can never raise — a broken
+explanation must not replace the failure it explains.
+
+**`lp_relaxation` / `shadow_prices` are the same machinery pointed at a solved model.**
+`LpConstraint.pi` and `LpVariable.dj` are `None` for a MILP; CBC only reports duals for an
+LP. So the relaxation is a prerequisite for asking which ceiling is the one actually holding
+the schedule back — one more unit of `fte_max:<employee>` is worth exactly one staffed room,
+say. The sandbox's `relaxed_solve` exists so `constraint_frame`'s long-empty `pi` column
+finally has values in it.
+
+---
+
 ## Smaller decisions worth not re-litigating
 
 - **`x` is sparse over the `(employee, role)` pairs each employee actually holds.** Role
@@ -271,8 +355,9 @@ practitioner/assistant tandem and its numbered chairs are one practice's paper.
 - **`Employee Scheduling Role` is a standalone doctype, not a child table**, so
   `zawin2frappe` can import into it directly.
 
-- **`bind_role_assignments` sits outside the `existing_assignments` choice group.** It is
-  scoped by role data, not a fourth global policy, so it composes with either member.
+- **The binding rules sit outside the `existing_assignments` choice group.** They are scoped
+  by role data, not a fourth global policy, so either composes with either member of that
+  group. They form a choice group of their own (`role_binding`) instead.
 
 - **Zero-staffed rows are kept in `Optimizer Run Coverage`** — an empty slot is the thing a
   planner needs to see. Runs solved before that table existed still report coverage via

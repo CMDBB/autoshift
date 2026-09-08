@@ -224,4 +224,63 @@ def capture_datapackage(context, run_name, output):
 	frappe.destroy()
 
 
-commands = [dump_dev_data, seed_dev_data, capture_datapackage]
+@click.command("diagnose-model")
+@click.option("--run", "run_name", help="Optimizer Run whose DataPackage to diagnose (needs a site)")
+@click.option(
+	"--snapshot",
+	"snapshot_path",
+	help="A DataPackage JSON from `capture-datapackage`, diagnosed offline instead of --run",
+)
+@click.option("--lp", "lp_path", help="Also write the full LP file (every row and bound) here")
+@click.option(
+	"--elastic/--no-elastic",
+	default=True,
+	help="Solve the elastic model to find the minimum set of constraints that must give",
+)
+@click.option("--integral", is_flag=True, default=False, help="Solve the elastic model as a MILP")
+@click.option("--time-limit", default=60, help="Seconds the elastic solve may take")
+@click.option("--examples", default=3, help="Sample rows to print per variable/constraint family")
+@pass_context
+def diagnose_model(context, run_name, snapshot_path, lp_path, elastic, integral, time_limit, examples):
+	"""Explain what an Optimizer Run's MILP contains, and why it has no solution
+
+	The counterpart to a Failed run's Solver Log, for when you want the diagnosis without
+	burning a run — or want it against a captured snapshot, with no site at all.
+	"""
+	from autoshift.optimizer import diagnostics, model_builder
+	from autoshift.optimizer.types import DataPackage
+
+	if bool(run_name) == bool(snapshot_path):
+		raise click.UsageError("Pass exactly one of --run or --snapshot.")
+
+	if snapshot_path:
+		# developer-run bench command reading a developer-supplied local path
+		# nosemgrep: frappe-semgrep-rules.rules.security.frappe-security-file-traversal
+		with open(snapshot_path) as f:
+			data = DataPackage.loads(f.read())
+	else:
+		from autoshift.optimizer import data_loader
+
+		site = get_site(context)
+		frappe.init(site=str(site))
+		frappe.connect()
+		try:
+			data = data_loader.load(frappe.get_doc("Optimizer Run", run_name))
+		finally:
+			frappe.destroy()
+
+	click.echo(diagnostics.report(data, elastic=elastic, examples=examples, time_limit=time_limit))
+
+	if integral and elastic:
+		click.echo("\n--- Elastic analysis (integral) ---")
+		status, violations = diagnostics.elastic_analysis(data, time_limit=time_limit, integral=True)
+		click.echo(f"elastic MILP solved: {status}")
+		for violation in violations:
+			click.echo(f"  {violation}")
+
+	if lp_path:
+		prob, *_ = model_builder.build(data)
+		click.echo(f"\nLP written to {diagnostics.write_lp(prob, lp_path)}")
+
+
+commands = [dump_dev_data, seed_dev_data, capture_datapackage, diagnose_model]

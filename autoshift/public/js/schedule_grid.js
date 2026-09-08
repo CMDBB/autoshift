@@ -71,6 +71,7 @@ autoshift.schedule_grid.inject_styles = function () {
 		.autoshift-schedule-grid .asg-chip-title { font-weight: 500; }
 		.autoshift-schedule-grid .asg-chip-line { color: var(--text-muted); font-size: var(--text-xs); }
 		.autoshift-schedule-grid .asg-forced { color: var(--text-on-yellow, #b45309); }
+		.autoshift-schedule-grid .asg-today-col { background: var(--blue-50, #eff6ff); }
 	`;
 	const style = document.createElement("style");
 	style.id = "autoshift-schedule-grid-styles";
@@ -138,13 +139,15 @@ function build_chip(ev) {
 }
 
 autoshift.schedule_grid.build_html = function ({ days, employees, events }) {
+	const today = frappe.datetime.get_today();
 	const day_header = days
 		.map((d) => {
 			const dt = frappe.datetime.str_to_obj(d);
 			const label = `${dt.toLocaleDateString(undefined, {
 				weekday: "short",
 			})} ${frappe.datetime.str_to_user(d).slice(0, 5)}`;
-			return `<th class="asg-day">${frappe.utils.escape_html(label)}</th>`;
+			const todayClass = d === today ? " asg-today-col" : "";
+			return `<th class="asg-day${todayClass}">${frappe.utils.escape_html(label)}</th>`;
 		})
 		.join("");
 
@@ -154,7 +157,8 @@ autoshift.schedule_grid.build_html = function ({ days, employees, events }) {
 				.map((d) => {
 					const shifts = (events[emp.name] || {})[d] || [];
 					const chips = shifts.map(build_chip).join("");
-					return `<td class="asg-cell">${chips}</td>`;
+					const todayClass = d === today ? " asg-today-col" : "";
+					return `<td class="asg-cell${todayClass}">${chips}</td>`;
 				})
 				.join("");
 			const name = frappe.utils.escape_html(emp.employee_name || emp.name);

@@ -13,7 +13,7 @@ import datetime
 import pandas as pd
 import pulp
 
-from autoshift.optimizer import model_builder
+from autoshift.optimizer import diagnostics, model_builder
 from autoshift.optimizer.rules import (
 	BUILTIN_RULES,
 	KIND_CONSTRAINT,
@@ -40,6 +40,50 @@ def solve(
 
 def status(prob) -> str:
 	return pulp.LpStatus[prob.status]
+
+
+def relaxed_solve(
+	data: DataPackage, time_limit: int = 30, msg: bool = False
+) -> tuple[pulp.LpProblem, dict, dict]:
+	"""
+	Solve the *LP relaxation* of the model, so the duals exist.
+
+	`constraint_frame`'s `pi` and `assignment_frame`'s `opportunity` are None after a
+	normal MILP solve — CBC reports no duals for a branch-and-bound problem. Solve
+	through here instead when the question is which constraint is actually binding
+	rather than what the schedule is.
+	"""
+	prob, x, active_rooms, _ctx = diagnostics.lp_relaxation(data)
+	prob.solve(pulp.COIN_CMD(timeLimit=time_limit, msg=msg))
+	return prob, x, active_rooms
+
+
+def diagnose(data: DataPackage, elastic: bool = True, time_limit: int = 60) -> None:
+	"""Print the full diagnostics report for `data` (see optimizer/diagnostics.py)."""
+	print(diagnostics.report(data, elastic=elastic, time_limit=time_limit))
+
+
+def conflict_frame(data: DataPackage) -> pd.DataFrame:
+	"""One row per pinned assignment that a selected constraint rule forbids. No solver."""
+	rows = [
+		{"rule": c.rule, "subject": c.subject, "detail": c.detail} for c in diagnostics.conflict_scan(data)
+	]
+	return pd.DataFrame(rows, columns=["rule", "subject", "detail"])
+
+
+def violation_frame(data: DataPackage, time_limit: int = 60, integral: bool = False) -> pd.DataFrame:
+	"""
+	One row per constraint that has to give for the input to be satisfiable, worst first.
+
+	Every model is feasible once each constraint carries a slack, so `amount` is the
+	infeasibility itself, measured in the units of the constraint it broke.
+	"""
+	_status, violations = diagnostics.elastic_analysis(data, time_limit=time_limit, integral=integral)
+	rows = [
+		{"rule": v.rule, "constraint": v.constraint, "amount": v.amount, "expression": v.expression}
+		for v in violations
+	]
+	return pd.DataFrame(rows, columns=["rule", "constraint", "amount", "expression"])
 
 
 def objective_breakdown(
@@ -106,15 +150,32 @@ def assignment_frame(data: DataPackage, x: dict) -> pd.DataFrame:
 		for (e, r, s, d, b), var in x.items()
 		if (pulp.value(var) or 0) > 0.0
 	]
+	# `opportunity` is the variable's reduced cost, and only a solved LP relaxation has
+	# one — see `relaxed_solve`. It is None after an ordinary MILP solve.
 	frame = pd.DataFrame(
 		rows,
-		columns=["employee", "scheduling_role", "shift_type", "date", "branch", "forced", "assigned"],
+		columns=[
+			"employee",
+			"scheduling_role",
+			"shift_type",
+			"date",
+			"branch",
+			"forced",
+			"assigned",
+			"opportunity",
+		],
 	)
 	return frame.sort_values(["date", "shift_type", "branch", "assigned", "employee"]).reset_index(drop=True)
 
 
 def constraint_frame(prob: pulp.LpProblem) -> pd.DataFrame:
-	"""One row per assigned (employee, shift_type, date, branch) slot."""
+	"""
+	One row per constraint, `type` being the rule that emitted it.
+
+	`slack` is how much room the constraint had left, `pi` its shadow price — what one
+	more unit of its right-hand side would be worth to the objective. `pi` is only
+	populated for an LP, so solve through `relaxed_solve` when you want it.
+	"""
 	rows = [
 		{
 			"len": len(str(c)),

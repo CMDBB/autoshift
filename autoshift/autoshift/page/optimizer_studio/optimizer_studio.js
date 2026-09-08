@@ -597,7 +597,7 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 				let notes = autoshift.rota.pending_note(pending);
 				if (binding && binding.gap) {
 					notes += `<p class="text-warning">${__(
-						"{0} employee(s) hold a Scheduling Role whose assignments are binding ({1}), but <b>Bind settled schedules</b> is not selected. Their settled schedules will be ignored and re-planned from scratch.",
+						"{0} employee(s) hold a Scheduling Role whose assignments are binding ({1}), but no <b>Bind settled schedules</b> rule is selected. Their settled schedules will be ignored and re-planned from scratch.",
 						[binding.employees, frappe.utils.escape_html(binding.roles.join(", "))]
 					)}</p>`;
 				}

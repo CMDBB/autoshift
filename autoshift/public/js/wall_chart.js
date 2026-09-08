@@ -119,6 +119,8 @@ autoshift.wall_chart.inject_styles = function () {
 			background: var(--bg-light-gray, #fafafa);
 		}
 		.autoshift-wall-chart .awc-pending-who { color: var(--text-muted); }
+		.autoshift-wall-chart .awc-today-col { background: var(--blue-50, #eff6ff); }
+		.autoshift-wall-chart .awc-today-col.awc-nonworking { background: var(--blue-50, #eff6ff); }
 	`;
 	const style = document.createElement("style");
 	style.id = "autoshift-wall-chart-styles";
@@ -139,10 +141,11 @@ function day_label(day) {
 // all (weekend / Holiday List), and whether the run being compared even looked
 // at it. They read differently on purpose — an empty Sunday is nothing, an empty
 // day the run skipped is a scope question, and an empty working day is a finding.
-function day_classes(day, run) {
+function day_classes(day, run, today) {
 	const classes = [];
 	if (!day.working) classes.push("awc-nonworking");
 	if (run && run.first_day && !day.in_window) classes.push("awc-outside");
+	if (today && day.date === today) classes.push("awc-today-col");
 	return classes;
 }
 
@@ -181,10 +184,10 @@ function lane_spans(count, width) {
 	return spans;
 }
 
-function head_markup(days, run, width) {
+function head_markup(days, run, width, today) {
 	return days
 		.map((day, index) => {
-			const classes = ["awc-day", ...day_classes(day, run)];
+			const classes = ["awc-day", ...day_classes(day, run, today)];
 			if (index) classes.push("awc-day-start");
 			const title = day.holiday ? ` title="${esc(day.holiday)}"` : "";
 			return `<th class="${classes.join(" ")}" colspan="${width}"${title}>${day_label(
@@ -194,7 +197,7 @@ function head_markup(days, run, width) {
 		.join("");
 }
 
-function band_markup(band, days, run, width) {
+function band_markup(band, days, run, width, today) {
 	const lanes = band.lanes.length ? band.lanes : [{ key: "_", label: "" }];
 	const spans = lane_spans(lanes.length, width);
 	const classes = ["awc-band"];
@@ -207,7 +210,7 @@ function band_markup(band, days, run, width) {
 		.map((day, day_index) =>
 			lanes
 				.map((lane, lane_index) => {
-					const cls = ["awc-lane", ...day_classes(day, run)];
+					const cls = ["awc-lane", ...day_classes(day, run, today)];
 					if (day_index && !lane_index) cls.push("awc-day-start");
 					return `<th class="${cls.join(" ")}" colspan="${
 						spans[lane_index]
@@ -228,14 +231,10 @@ function band_markup(band, days, run, width) {
 		)}${branch}</th><td class="awc-ord"></td>${lane_header}</tr>`,
 	];
 	for (let row = 0; row < band.height; row++) {
-		const cells = [
-			`<td class="awc-ord">` +
-				// `${band.numbered ? row + 1 : ""}`+
-				`</td>`,
-		];
+		const cells = [`<td class="awc-ord">${band.numbered ? row + 1 : ""}</td>`];
 		days.forEach((day, day_index) => {
 			lanes.forEach((_lane, lane_index) => {
-				const cls = ["awc-cell", ...day_classes(day, run)];
+				const cls = ["awc-cell", ...day_classes(day, run, today)];
 				if (day_index && !lane_index) cls.push("awc-day-start");
 				cells.push(
 					`<td class="${cls.join(" ")}" colspan="${spans[lane_index]}">${cell_markup(
@@ -249,8 +248,8 @@ function band_markup(band, days, run, width) {
 	return rows.join("");
 }
 
-function section_markup(section, days, run, width) {
-	const bands = section.bands.map((band) => band_markup(band, days, run, width)).join("");
+function section_markup(section, days, run, width, today) {
+	const bands = section.bands.map((band) => band_markup(band, days, run, width, today)).join("");
 	if (!bands) return "";
 	return `<tr><th class="awc-section-title" colspan="${2 + days.length * width}">${esc(
 		section.title
@@ -364,12 +363,13 @@ function totals_markup(payload) {
 
 autoshift.wall_chart.build_html = function (payload) {
 	const { days, run } = payload;
+	const today = frappe.datetime.get_today();
 	const warnings = (payload.warnings || [])
 		.map((w) => `<div class="awc-warning">${esc(w)}</div>`)
 		.join("");
 	const width = lane_width(payload);
 	const sections = payload.sections
-		.map((section) => section_markup(section, days, run, width))
+		.map((section) => section_markup(section, days, run, width, today))
 		.filter(Boolean)
 		.join("");
 
@@ -384,7 +384,7 @@ autoshift.wall_chart.build_html = function (payload) {
 	return `${bar_markup(payload)}${totals_markup(payload)}${pending_markup(payload)}${warnings}
 		<div class="awc-scroll"><table>
 			<thead><tr>
-				<th class="awc-band"></th><th class="awc-ord"></th>${head_markup(days, run, width)}
+				<th class="awc-band"></th><th class="awc-ord"></th>${head_markup(days, run, width, today)}
 			</tr></thead>
 			<tbody>${sections}</tbody>
 		</table></div>${leaves_markup(payload)}`;

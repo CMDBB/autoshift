@@ -125,9 +125,10 @@ module.
    caching, `planning_days()` (raises `NotImplementedError` for `"Unbounded"`).
 2. `rules.py` — constraint groups *and* objective terms as named rules. `BUILTIN_RULES`
    registry populated by the `@builtin_rule` decorator; `STANDARD_RULES` is the
-   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 13 built-ins:
+   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 14 built-ins:
    `one_shift_per_day`, `warm_start`, `leave_blocklist`, `use_existing_assignments`,
-   `bind_role_assignments`, `one_branch_per_shift`, `room_coverage`, `fte_ceiling`,
+   `bind_role_assignments`, `soft_bind_role_assignments`, `one_branch_per_shift`,
+   `room_coverage`, `fte_ceiling`,
    `role_fte_ceiling` (constraints) and `room_utilization_objective`,
    `role_fte_target_objective`, `shift_preference_objective`, `weigh_assignments_objective`
    (objectives). `_cname()`/`_vname()` name constraints and any auxiliary variables
@@ -160,9 +161,19 @@ module.
    shape.
 6. `committer.py` — converts an Approved run into submitted `Shift Assignment` records.
    Raises `NotImplementedError` unconditionally; see "Not built yet".
-7. `editor_support.py` — introspects RuleContext/DataPackage for the rule editor's
+7. `diagnostics.py` — Frappe-free. Why a model is infeasible, and what it contains.
+   `conflict_scan` replays the pinned assignments against the *arithmetic* of the selected
+   constraint rules and names the offending Shift Assignment without solving anything;
+   `model_dump`/`write_lp` print the variables and constraints grouped by the rule that
+   emitted them (`_cname`'s `prefix:` convention); `elastic_analysis` slacks every
+   constraint and minimizes the total, so the non-zero slacks *are* the infeasibility.
+   `relax_integrality`/`lp_relaxation`/`shadow_prices` drop integrality so CBC returns
+   duals — `pi`/`dj` are `None` on a MILP. **`solver.run_solve` appends `report()` to a
+   Failed run's Solver Log**; `bench diagnose-model` and the sandbox helpers are the
+   on-demand surfaces. See design notes for why there are three instruments.
+8. `editor_support.py` — introspects RuleContext/DataPackage for the rule editor's
    completions.
-8. `rule_scratchpad.py` — a drafting space for rule implementations, mirroring the rule
+9. `rule_scratchpad.py` — a drafting space for rule implementations, mirroring the rule
    namespace. **Committed *and* gitignored**, so local edits don't bubble up.
 
 ---
@@ -230,13 +241,19 @@ one `EditPlan`. See "Materialising settled schedules" below.
 
 ## Role binding and settled schedules
 
-**Role binding** — for a bound `(employee, role)` pair, `bind_role_assignments` fixes *every*
-one of their variables, so `warm_start`'s 1/0 init pins existing shifts on and everything else
-off. A day with nothing on the books stays empty. Leave wins over a settled assignment (the
-loader drops the collision into `binding_conflicts` rather than making the run infeasible).
-autoshift ships the mechanism defaulting to off; `zawin2frappe` populates which roles are
-binding. `use_existing_assignments` is **not** in `STANDARD_RULES`. Rationale for all of this
-is in the design notes.
+**Role binding** — two rules in the `role_binding` choice group (`rules.GROUP_ROLE_BINDING`),
+so a ruleset picks at most one; `data_loader.binding_rule_gap` warns when it picks neither.
+`soft_bind_role_assignments` (**standard**) fixes every variable of a bound `(employee, role)`
+pair that is *not* on the books to 0 and leaves the ones that are free at their warm-start
+value of 1 — the holder is never given a shift they don't already have, but a settled week
+that breaks the rest of the ruleset loses a shift instead of failing the whole solve.
+`bind_role_assignments` (strict, off by default) fixes *every* one of their variables, so
+`warm_start`'s 1/0 init pins existing shifts on and everything else off. A day with nothing on
+the books stays empty under either. Leave wins over a settled assignment (the loader drops the
+collision into `binding_conflicts` rather than making the run infeasible). autoshift ships the
+mechanism defaulting to off; `zawin2frappe` populates which roles are binding.
+`use_existing_assignments` is **not** in `STANDARD_RULES`. Rationale for all of this is in the
+design notes.
 
 **`autoshift/rota/`** — materialises `Shift Schedule` / `Shift Schedule Assignment` patterns
 into the `Shift Assignment` records everything here reads, because HRMS's own nightly job
@@ -337,10 +354,12 @@ package is deleted.
 
 ## Tests
 
-- `uv run pytest tests/` — pure-Python, no Frappe context, ~1.7 s. `test_optimizer.py`
+- `uv run pytest tests/` — pure-Python, no Frappe context, ~2 s. `test_optimizer.py`
   (planning days, hashing, every rule), `test_wallchart.py` (`wallchart/chart.py` placement,
   overflow, the run-vs-books merge), `test_rota.py` (`rota/cycle.py` phase, handover
-  boundary), `test_rota_edit.py` (`rota/edit.py` staging, merging, describing).
+  boundary), `test_rota_edit.py` (`rota/edit.py` staging, merging, describing),
+  `test_diagnostics.py` (the infeasibilities binding actually produces, found by both the
+  solver-free scan and the elastic analysis).
 - Doctype-level `IntegrationTestCase` stubs are left as frappe autogenerated them, except
   `test_optimizer_run.py` and `test_optimization_rule.py` (the developer-only
   implementation/validation gate).
@@ -352,6 +371,8 @@ uv run pytest tests/                       # unit tests of the optimizer
 pre-commit                                 # ruff, eslint, prettier, pyupgrade
 bench --site dev.test.localhost run-tests --app autoshift   # integration, as CI runs it
 bench --site development.localhost seed-dev-data --input /path/to/dev_data
+bench --site development.localhost diagnose-model --run OR-0001      # why is it infeasible
+bench diagnose-model --snapshot sandbox/snapshots/OR-0001.json --lp /tmp/m.lp   # offline, no site
 ```
 
 `dump-dev-data` / `seed-dev-data` snapshot and restore **only Autoshift's own configuration**

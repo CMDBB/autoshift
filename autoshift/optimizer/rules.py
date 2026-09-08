@@ -145,6 +145,12 @@ class BuiltinRule:
 				)
 
 
+# Choice groups: see `BuiltinRule.group`. Named here because more than one place has to
+# reason about the set as a whole (`data_loader.binding_rule_gap`, the pre-solve confirms).
+GROUP_EXISTING_ASSIGNMENTS = "existing_assignments"
+GROUP_ROLE_BINDING = "role_binding"
+
+
 BUILTIN_RULES: dict[str, BuiltinRule] = {}  # empty -> filled by the builtin_rule decorator
 STANDARD_RULES: set[str] = set()  # idem
 
@@ -279,7 +285,7 @@ def leave_blocklist(ctx: RuleContext) -> None:
 	"<b>Bind settled schedules</b> instead.",
 	standard=False,
 	requires={warm_start: "{r} doesn't set its values, include {req}"},
-	group="existing_assignments",
+	group=GROUP_EXISTING_ASSIGNMENTS,
 	topic=TOPIC_EXISTING_ASSIGNMENTS,
 )
 def use_existing_assignments(ctx: RuleContext) -> None:
@@ -292,15 +298,16 @@ def use_existing_assignments(ctx: RuleContext) -> None:
 
 
 @builtin_rule(
-	"Bind settled schedules",
+	"Bind settled schedules (strictly)",
 	"Holders of a Scheduling Role whose assignments are binding keep exactly the Shift "
 	"Assignments already on the books: the optimizer may not add, move or drop any of them. "
 	"For a role whose schedule is settled by its holders rather than by the planner. "
 	"Individual holders opt out with a Binding Override on their Employee Scheduling Role — "
 	"somebody whose schedule has not settled yet is scheduled normally. Approved leave still "
 	"wins over a settled assignment. Inert until some Scheduling Role is marked binding.",
-	standard=True,
+	standard=False,
 	requires={warm_start: "{r} fixes variables at their warm-start values, include {req}"},
+	group=GROUP_ROLE_BINDING,
 	topic=TOPIC_EXISTING_ASSIGNMENTS,
 )
 def bind_role_assignments(ctx: RuleContext) -> None:
@@ -310,6 +317,34 @@ def bind_role_assignments(ctx: RuleContext) -> None:
 	# adding more, which is not what "settled" means.
 	for (e, r, *_), var in ctx.x.items():
 		if (e, r) in ctx.data.binding_pairs:
+			var.fixValue()
+
+
+@builtin_rule(
+	"Bind settled schedules",
+	"The same settled-schedule scope as the strict rule, one step weaker: a bound holder is "
+	"still never given a shift that is not already on their books, but the shifts they do "
+	"have are proposed rather than nailed down. The optimizer keeps them where they pay for "
+	"themselves and may drop one where keeping it would make the whole schedule infeasible — "
+	"a week that was worked double-booked or off-config comes back as a schedule instead of "
+	"failing outright. On by default for that reason; choose the strict rule when a settled "
+	"schedule may not be touched at all, and add <b>Conserve Existing Assignments</b> for a "
+	"tie-break toward keeping them. Inert until some Scheduling Role is marked binding.",
+	standard=True,
+	requires={warm_start: "{r} supplies the values this rule fixes and suggests, include {req}"},
+	group=GROUP_ROLE_BINDING,
+	topic=TOPIC_EXISTING_ASSIGNMENTS,
+)
+def soft_bind_role_assignments(ctx: RuleContext) -> None:
+	# Half of `bind_role_assignments`: fix everything a bound pair does *not* have on the
+	# books to 0 (warm_start already set those variables to 0, so fixValue() nails them
+	# there), and leave the ones they do have free at their warm-start value of 1. Note
+	# that CBC is not currently invoked with `warmStart=True`, so that initial value is a
+	# proposal on paper only — what actually keeps a settled shift is the objective. Pair
+	# with `weigh_assignments_objective` when the books should win a tie outright.
+	for comb, var in ctx.x.items():
+		e, r, *_ = comb
+		if (e, r) in ctx.data.binding_pairs and comb not in ctx.data.forced:
 			var.fixValue()
 
 
@@ -489,7 +524,7 @@ def shift_preference_objective(ctx: RuleContext) -> None:
 	"disregarded entirely.",
 	kind=KIND_OBJECTIVE,
 	standard=False,
-	group="existing_assignments",
+	group=GROUP_EXISTING_ASSIGNMENTS,
 	topic=TOPIC_EXISTING_ASSIGNMENTS,
 )
 def weigh_assignments_objective(ctx: RuleContext) -> None:
@@ -498,6 +533,15 @@ def weigh_assignments_objective(ctx: RuleContext) -> None:
 	ctx.add_objective(
 		pulp.lpSum((0 if comb in data.forced else -epsilon) * var for comb, var in ctx.x.items())
 	)
+
+
+def rules_in_group(group: str) -> set[str]:
+	"""The built-in keys belonging to a choice group, derived from the registry.
+
+	So callers that reason about a whole choice set — "is *some* binding rule selected?" —
+	cannot drift from the rules' own declarations.
+	"""
+	return {key for key, rule in BUILTIN_RULES.items() if rule.group == group}
 
 
 # ── Custom rules ──────────────────────────────────────────────────────────────
@@ -527,8 +571,9 @@ def compile_custom_rule(rule_name: str, code: str) -> Callable[[RuleContext], No
 	return apply_fn
 
 
-def _get_legacy_ruleset(ctx: RuleContext) -> tuple[DataPackage.RULE, ...]:
-	if DataPackage.WEIGH_ASSIGNMENTS in ctx.data.flags:
+def legacy_ruleset(data: DataPackage) -> tuple[DataPackage.RULE, ...]:
+	"""The implicit selection an empty ``DataPackage.rules`` means: every standard built-in."""
+	if DataPackage.WEIGH_ASSIGNMENTS in data.flags:
 		return tuple(
 			(rule.title, key, "", 1.0)
 			for key, rule in BUILTIN_RULES.items()
@@ -603,7 +648,7 @@ def apply_rules(ctx: RuleContext) -> str:
 	Rules are applied in dependency order (see :func:`order_specs`), not in the
 	order the specs arrive.
 	"""
-	specs = ctx.data.rules or _get_legacy_ruleset(ctx)
+	specs = ctx.data.rules or legacy_ruleset(ctx.data)
 	BuiltinRule.check_ruleset({key for _, key, _, _ in specs})
 	specs = order_specs(specs)
 	logs = io.StringIO()

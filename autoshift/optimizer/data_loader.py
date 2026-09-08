@@ -191,15 +191,17 @@ def binding_rule_gap(selected_keys) -> dict:
 	"""Would this rule selection silently ignore the site's settled schedules?
 
 	``{"gap": True, ...}`` when some employee-role pair is marked binding but the
-	selection leaves ``bind_role_assignments`` out — the run will then schedule those
-	people as if their schedule were the planner's to set.
+	selection includes neither member of the ``role_binding`` choice group — the run will
+	then schedule those people as if their schedule were the planner's to set. Either
+	binding rule closes the gap; which of the two is a separate question (see
+	``rules.soft_bind_role_assignments``).
 	"""
-	from autoshift.optimizer.rules import bind_role_assignments
+	from autoshift.optimizer.rules import GROUP_ROLE_BINDING, rules_in_group
 
 	holders = binding_holders()
 	return {
 		**holders,
-		"gap": bool(holders["pairs"]) and bind_role_assignments.__name__ not in set(selected_keys),
+		"gap": bool(holders["pairs"]) and not (rules_in_group(GROUP_ROLE_BINDING) & set(selected_keys)),
 	}
 
 
