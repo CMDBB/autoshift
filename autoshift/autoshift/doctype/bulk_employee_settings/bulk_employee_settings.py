@@ -1,25 +1,116 @@
+"""Bulk creation of the two records that make an employee schedulable.
+
+The optimizer decides scope from `Employee Scheduling Role` alone — see the comment
+in `optimizer/data_loader.py` above `role_holders`: Employee.department and
+.designation are HR/payroll data and "play no part". Somebody nobody has given a role
+is simply never scheduled.
+
+That makes this tool's two jobs:
+
+  Scheduling Role     the capability. Without one an employee is invisible to the
+                      optimizer, whatever their designation says.
+  Employee Settings   the preferences. Optional — they only tilt the objective — but
+                      tedious to create one at a time.
+
+Both actions run over the same filtered, checked employee list, so the filters and
+the datatable are shared and the two are separated only by which button is pressed.
+
+The workers are module-level functions rather than methods. `frappe.enqueue` hands the
+callable to RQ, which pickles it: a plain function pickles by reference, whereas a bound
+method drags the whole Document instance through pickle with it.
+"""
+
 import frappe
 from frappe import _
 from frappe.model.document import Document
 from frappe.utils import get_link_to_form
 
+from autoshift.utils import background_workers_alive
+
+COVERAGE_NO_SETTINGS = "Without Employee Settings"
+COVERAGE_NO_ROLE = "Without Any Scheduling Role"
+
+#: Above this many rows the work is queued rather than run in the request.
+INLINE_LIMIT = 30
+
+EVENT_SETTINGS = "completed_bulk_employee_settings_creation"
+EVENT_ROLES = "completed_bulk_scheduling_role_assignment"
+
 
 class BulkEmployeeSettings(Document):
+	# -- listing -----------------------------------------------------------
+
 	@frappe.whitelist()
 	def get_employees(self, advanced_filters: list) -> list:
+		"""Active employees matching the filters, each carrying the state both
+		actions care about: which roles they already hold, and whether they
+		already have an Employee Settings record.
+
+		Nothing is excluded on that state — it is reported in the list instead,
+		because the two actions have different notions of "already done" and a
+		row hidden for one would be a row missing for the other. Use `coverage`
+		to narrow deliberately.
+		"""
 		filters = [["company", "=", self.get("company")], ["status", "=", "Active"]]
-		for f in ("department", "designation"):
-			if self.get(f):
-				filters.append([f, "=", self.get(f)])
 		filters += advanced_filters
 
-		existing = set(frappe.get_all("Employee Settings", pluck="name"))
 		employees = frappe.get_all(
 			"Employee",
 			filters=filters,
-			fields=["name as employee", "employee_name", "department", "designation"],
+			fields=["name as employee", "employee_name"],
+			order_by="employee_name asc",
 		)
-		return [e for e in employees if e["employee"] not in existing]
+		if not employees:
+			return []
+
+		names = [e["employee"] for e in employees]
+		roles = _roles_by_employee(names)
+		with_settings = set(
+			frappe.get_all("Employee Settings", filters={"employee": ["in", names]}, pluck="employee")
+		)
+		wanted = self._role_restriction()
+		coverage = self.get("coverage")
+
+		rows = []
+		for emp in employees:
+			held = roles.get(emp["employee"], [])
+			if wanted is not None and not (wanted & set(held)):
+				continue
+			if coverage == COVERAGE_NO_SETTINGS and emp["employee"] in with_settings:
+				continue
+			if coverage == COVERAGE_NO_ROLE and held:
+				continue
+
+			rows.append(
+				{
+					**emp,
+					"roles": ", ".join(held),
+					"has_settings": _("Yes") if emp["employee"] in with_settings else "",
+				}
+			)
+		return rows
+
+	def _role_restriction(self) -> set[str] | None:
+		"""Role names the `discipline` / `holds_role` filters allow, or None when
+		neither is set. An empty set means the filters together match nobody."""
+		clauses = []
+		if self.get("holds_role"):
+			clauses.append({self.get("holds_role")})
+		if self.get("discipline"):
+			clauses.append(
+				set(
+					frappe.get_all(
+						"Scheduling Role",
+						filters={"discipline": self.get("discipline")},
+						pluck="name",
+					)
+				)
+			)
+		if not clauses:
+			return None
+		return set.intersection(*clauses)
+
+	# -- actions -----------------------------------------------------------
 
 	@frappe.whitelist()
 	def bulk_create_settings(
@@ -28,74 +119,217 @@ class BulkEmployeeSettings(Document):
 		favourite_shift: str | None = None,
 		shift_preferences: list | None = None,
 		preferred_branch: list | None = None,
-	) -> None:
-		if not employees:
-			frappe.throw(_("Please select at least one employee."), title=_("No Employees Selected"))
-
-		kwargs = dict(
-			employees=employees,
-			favourite_shift=favourite_shift,
-			shift_preferences=shift_preferences or [],
-			preferred_branch=preferred_branch or [],
-		)
-		if len(employees) <= 30:
-			return self._bulk_create_settings(**kwargs)  # pyright: ignore[reportArgumentType]
-
-		frappe.enqueue(self._bulk_create_settings, timeout=3000, **kwargs)  # pyright: ignore[reportArgumentType]
-		frappe.msgprint(
-			_("Creation has been queued. It may take a few minutes."),
-			alert=True,
-			indicator="blue",
+	) -> dict:
+		return _dispatch(
+			run_create_settings,
+			employees,
+			dict(
+				employees=_employee_ids(employees),
+				favourite_shift=favourite_shift,
+				shift_preferences=shift_preferences or [],
+				preferred_branch=preferred_branch or [],
+			),
 		)
 
-	def _bulk_create_settings(
+	@frappe.whitelist()
+	def bulk_assign_role(
 		self,
 		employees: list,
-		favourite_shift: str | None,
-		shift_preferences: list,
-		preferred_branch: list,
-	) -> None:
-		success, failure = [], []
-		savepoint = "before_employee_settings_creation"
+		scheduling_role: str | None = None,
+		role_fte: float | None = None,
+		max_rooms: int | None = None,
+		valid_from: str | None = None,
+		valid_to: str | None = None,
+	) -> dict:
+		if not scheduling_role:
+			frappe.throw(_("Please choose the Scheduling Role to assign."), title=_("No Role Selected"))
 
-		for i, emp in enumerate(employees):
-			employee_id = emp["employee"] if isinstance(emp, dict) else emp
-			try:
-				frappe.db.savepoint(savepoint)
-				if frappe.db.exists("Employee Settings", employee_id):
-					continue
+		return _dispatch(
+			run_assign_role,
+			employees,
+			dict(
+				employees=_employee_ids(employees),
+				scheduling_role=scheduling_role,
+				role_fte=role_fte,
+				max_rooms=max_rooms,
+				valid_from=valid_from,
+				valid_to=valid_to,
+			),
+		)
 
-				doc = frappe.new_doc("Employee Settings")
-				doc.set("employee", employee_id)
-				doc.set("favourite_shift", favourite_shift or None)
-				for row in shift_preferences:
-					doc.append(
-						"shift_preferences", {"shift_type": row["shift_type"], "weight": row["weight"]}
-					)
-				for row in preferred_branch:
-					doc.append("preferred_branch", {"branch": row["branch"], "weight": row["weight"]})
-				doc.insert(ignore_permissions=True)
 
-			except Exception:
-				frappe.db.rollback(save_point=savepoint)
-				frappe.log_error(
-					f"Bulk Employee Settings creation failed for {employee_id}.",
-					reference_doctype="Employee Settings",
-				)
-				failure.append(employee_id)
-			else:
-				success.append(
-					{"doc": get_link_to_form("Employee Settings", employee_id), "employee": employee_id}
-				)
+# -- workers ---------------------------------------------------------------
 
-			frappe.publish_progress(
-				(i + 1) * 100 / len(employees),
-				title=_("Creating Employee Settings..."),
+
+def run_create_settings(
+	employees: list[str],
+	favourite_shift: str | None = None,
+	shift_preferences: list | None = None,
+	preferred_branch: list | None = None,
+	realtime: bool = True,
+) -> dict:
+	def create(employee_id: str) -> str | None:
+		if frappe.db.exists("Employee Settings", employee_id):
+			return None
+
+		doc = frappe.new_doc("Employee Settings")
+		doc.set("employee", employee_id)
+		# Created live. The field defaults to 0, which would otherwise make every
+		# record this tool produces read as switched-off in the list view.
+		doc.set("active", 1)
+		doc.set("favourite_shift", favourite_shift or None)
+		for row in shift_preferences or []:
+			doc.append("shift_preferences", {"shift_type": row["shift_type"], "weight": row["weight"]})
+		for row in preferred_branch or []:
+			doc.append("preferred_branch", {"branch": row["branch"], "weight": row["weight"]})
+		doc.insert(ignore_permissions=True)
+		return doc.name
+
+	return _run(
+		employees,
+		create,
+		doctype="Employee Settings",
+		event=EVENT_SETTINGS,
+		title=_("Creating Employee Settings..."),
+		realtime=realtime,
+	)
+
+
+def run_assign_role(
+	employees: list[str],
+	scheduling_role: str,
+	role_fte: float | None = None,
+	max_rooms: int | None = None,
+	valid_from: str | None = None,
+	valid_to: str | None = None,
+	realtime: bool = True,
+) -> dict:
+	def create(employee_id: str) -> str | None:
+		if frappe.db.exists(
+			"Employee Scheduling Role",
+			{"employee": employee_id, "scheduling_role": scheduling_role},
+		):
+			return None
+
+		doc = frappe.new_doc("Employee Scheduling Role")
+		doc.set("employee", employee_id)
+		doc.set("scheduling_role", scheduling_role)
+		doc.set("role_fte", role_fte or None)
+		doc.set("max_rooms", max_rooms or None)
+		doc.set("valid_from", valid_from or None)
+		doc.set("valid_to", valid_to or None)
+		doc.set("active", 1)
+		doc.insert(ignore_permissions=True)
+		return doc.name
+
+	return _run(
+		employees,
+		create,
+		doctype="Employee Scheduling Role",
+		event=EVENT_ROLES,
+		title=_("Assigning Scheduling Roles..."),
+		realtime=realtime,
+	)
+
+
+# -- plumbing --------------------------------------------------------------
+
+
+def _employee_ids(employees: list) -> list[str]:
+	"""The datatable sends [{employee: id}]; the CLI and tests send bare ids."""
+	return [e["employee"] if isinstance(e, dict) else e for e in employees]
+
+
+def _dispatch(worker, employees: list, kwargs: dict) -> dict:
+	"""Run inline for a small selection, queue for a large one.
+
+	Returns the ``{"queued": bool, ...}`` outcome the client renders. An inline run
+	reports its result *in the response*, not over realtime: the realtime event still
+	fires for the queued path, but a bench whose socketio is down (a common dev-bench
+	state) would otherwise leave the caller with no feedback at all — which reads as
+	the tool having silently done nothing.
+
+	A large selection also runs inline when no background worker is alive, since the
+	queued job would just sit in redis forever.
+	"""
+	if not employees:
+		frappe.throw(_("Please select at least one employee."), title=_("No Employees Selected"))
+
+	if len(employees) <= INLINE_LIMIT:
+		return {"queued": False, **worker(realtime=False, **kwargs)}
+
+	if not background_workers_alive():
+		frappe.msgprint(
+			_("No background worker is running — creating {0} records in this request instead.").format(
+				len(employees)
+			),
+			alert=True,
+			indicator="orange",
+		)
+		return {"queued": False, **worker(realtime=False, **kwargs)}
+
+	frappe.enqueue(worker, timeout=3000, **kwargs)
+	return {"queued": True, "count": len(employees)}
+
+
+def _run(employees: list[str], create, doctype: str, event: str, title: str, realtime: bool = True) -> dict:
+	"""Create one record per employee, isolating failures to their own row.
+
+	`create` returns the new docname, or None when the employee already had the
+	record. That third outcome is reported separately: it is not a failure, but
+	counting it as a success would claim something was written that was not.
+	Each row gets its own savepoint so one bad record cannot roll back the work
+	already done.
+
+	Returns the outcome either way; `realtime` additionally publishes it, which only
+	the queued path needs (an inline run returns it in the response instead).
+	"""
+	success, failure, skipped = [], [], []
+	savepoint = "before_bulk_autoshift_action"
+
+	for i, employee_id in enumerate(employees):
+		try:
+			frappe.db.savepoint(savepoint)
+			created = create(employee_id)
+		except Exception:
+			frappe.db.rollback(save_point=savepoint)
+			frappe.log_error(
+				f"Bulk {doctype} creation failed for {employee_id}.",
+				reference_doctype=doctype,
 			)
+			failure.append(employee_id)
+		else:
+			if created:
+				success.append({"doc": get_link_to_form(doctype, created), "employee": employee_id})
+			else:
+				skipped.append(employee_id)
 
+		frappe.publish_progress((i + 1) * 100 / len(employees), title=title)
+
+	result = {"success": success, "failure": failure, "skipped": skipped}
+	if realtime:
 		frappe.publish_realtime(
-			"completed_bulk_employee_settings_creation",
-			message={"success": success, "failure": failure},
+			event,
+			message=result,
 			doctype="Bulk Employee Settings",
 			after_commit=True,
 		)
+	return result
+
+
+def _roles_by_employee(employees: list[str]) -> dict[str, list[str]]:
+	"""Active Scheduling Roles held, per employee.
+
+	Validity windows are deliberately not applied: this is a configuration
+	screen, not a planning run, so a role held only from next month should still
+	read as held rather than look like a gap waiting to be filled.
+	"""
+	rows = frappe.get_all(
+		"Employee Scheduling Role",
+		filters={"employee": ["in", employees], "active": 1},
+		fields=["employee", "scheduling_role"],
+	)
+	held: dict[str, list[str]] = {}
+	for row in rows:
+		held.setdefault(row.employee, []).append(row.scheduling_role)
+	return {employee: sorted(roles) for employee, roles in held.items()}

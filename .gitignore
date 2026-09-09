@@ -67,3 +67,13 @@ Cargo.lock
 
 # this file is both ignored and committed, so it is available but its changes are ignored
 rule_scratchpad.py
+
+# captured DataPackage snapshots for sandbox/playground.ipynb: real dev-site data,
+# re-capture with `bench capture-datapackage` instead of committing
+sandbox/snapshots/*.json
+# ad-hoc dumps from the sandbox notebook — same reason
+sandbox/*.json
+
+# `dump-dev-data` output: real employees/leaves from a live site. Practice-specific
+# configuration belongs in the private companion app, not here.
+dev_data/

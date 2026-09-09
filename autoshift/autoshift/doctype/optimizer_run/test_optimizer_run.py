@@ -11,7 +11,7 @@ from autoshift.autoshift.doctype.optimizer_run.optimizer_run import (
 	OptimizerRun,
 	datapackage_cache_key,
 )
-from autoshift.optimizer.types import DataPackage
+from autoshift.optimizer.types import DataPackage, planning_days
 
 # On IntegrationTestCase, the doctype test records and all
 # link-field test record dependencies are recursively loaded
@@ -30,6 +30,8 @@ IGNORE_TEST_RECORD_DEPENDENCIES = [
 	"Shift Type",
 	"Shift Location",
 	"Branch",
+	"Scheduling Role",
+	"Employee Scheduling Role",
 ]
 
 MONDAY = datetime.date(year=2026, month=6, day=22)
@@ -40,26 +42,31 @@ def pkg(**overrides) -> DataPackage:
 	Minimal valid DataPackage: 1 salaried employee, 1 AM shift, 1 day, 1 branch.
 	Override any field to build specific scenarios.
 	"""
-	base: dict[str, Any] = dict(
-		flags=set(),
-		employees=["Alice", "Bob"],
-		shift_types=["Day", "Night"],
-		working_days=[MONDAY + datetime.timedelta(days=i) for i in range(7)],
-		branches=["Branch1"],
-		designation={"Alice": "Nurse", "Bob": "Nurse"},
-		department={"Alice": "ER", "Bob": "ER"},
-		target_shifts={"Alice": 5, "Bob": 5},
-		max_rpe={"Alice": 1, "Bob": 1},
-		rooms={("ER", "Branch1"): 2},
-		disciplines=["ER"],
-		leave_blocked=set(),
-		forced=set(),
-		shift_preferences={
+	base: dict[str, Any] = {
+		"flags": set(),
+		"employees": ["Alice", "Bob"],
+		"shift_types": ["Day", "Night"],
+		"working_days": [MONDAY + datetime.timedelta(days=i) for i in range(7)],
+		"branches": ["Branch1"],
+		"roles": ["ER Nurse"],
+		"role_discipline": {"ER Nurse": "ER"},
+		"employee_roles": {"Alice": ("ER Nurse",), "Bob": ("ER Nurse",)},
+		"target_shifts": {"Alice": 5, "Bob": 5},
+		"role_target_shifts": {},
+		"max_rpe": {("Alice", "ER Nurse"): 1, ("Bob", "ER Nurse"): 1},
+		"rooms": {("ER", "Branch1"): 2},
+		"disciplines": ["ER"],
+		"leave_blocked": set(),
+		"forced": set(),
+		"shift_preferences": {
 			"Alice": {"Day": 1.0, "Night": 0.5},
 			"Bob": {"Day": 0.5, "Night": 1.0},
 		},
-	)
+	}
 	base.update(overrides)
+	if "employee_roles" not in overrides:
+		base["employee_roles"] = {e: ("ER Nurse",) for e in base["employees"]}
+		base["max_rpe"] = {(e, "ER Nurse"): 1 for e in base["employees"]}
 	if "shift_preferences" not in overrides and ("shift_types" in overrides or "employees" in overrides):
 		n_shifts: int = len(base["shift_types"])
 		base["shift_preferences"] = {
@@ -104,10 +111,7 @@ class IntegrationTestOptimizerRun(IntegrationTestCase):
 			datapackage_cache_key(self.test_record.name),
 			pkg(
 				employees=["Alice", "Bob", "Caoimhe"],
-				designation={"Alice": "Nurse", "Bob": "Nurse", "Caoimhe": "Nurse"},
-				department={"Alice": "ER", "Bob": "ER", "Caoimhe": "ER"},
 				target_shifts={"Alice": 5, "Bob": 5, "Caoimhe": 5},
-				max_rpe={"Alice": 1, "Bob": 1, "Caoimhe": 1},
 				rooms={("ER", "Branch1"): 1},
 			).dumps(),
 		)
@@ -115,3 +119,67 @@ class IntegrationTestOptimizerRun(IntegrationTestCase):
 		self.test_record.solve()
 		schedule = self.test_record.get_schedule_events()
 		assert {"Alice", "Bob", "Caoimhe"} & {e.name for e in schedule["employees"]} == set()
+
+	# --- utilities tests ---
+
+	def test_fulltime_shifts_counts_weekdays_only(self):
+		"""One shift per weekday, none at the weekend — the attainable maximum, since
+		`one_shift_per_day` caps an employee at a single shift a day.
+
+		Pinned because this was a true divide (`weekday() / 5`) until 2026-08-26, which
+		ramped the weight down across the week and totalled 3.0 for a Mon-Fri week
+		instead of 5, capping everyone at ~60% of their real availability.
+		"""
+		from autoshift.optimizer.data_loader import _fulltime_shifts_in_period
+
+		week = [MONDAY + datetime.timedelta(days=i) for i in range(7)]
+		self.assertEqual(_fulltime_shifts_in_period(week[:5]), 5)  # Mon-Fri
+		self.assertEqual(_fulltime_shifts_in_period(week), 5)  # weekend adds nothing
+		self.assertEqual(_fulltime_shifts_in_period(week[5:]), 0)  # Sat+Sun only
+		self.assertEqual(_fulltime_shifts_in_period(week * 2), 10)  # scales with horizon
+
+	def test_standard_ruleset_outbids_assignment_cost_for_rooms(self):
+		"""The Standard Ruleset's room-utilization weight must beat what the shift-preference
+		objective charges to open one room.
+
+		`room_coverage` takes the minimum over a discipline's roles, so a room costs at least
+		two assignments; at equal weights the solver mostly declines to schedule anyone.
+		"""
+		from autoshift.optimizer.rules import BUILTIN_RULES
+
+		weights = {
+			row.rule: row.weight
+			for row in frappe.get_all(
+				"Optimization Ruleset Rule",
+				filters={"parent": "Standard Ruleset", "parenttype": "Optimization Ruleset"},
+				fields=["rule", "weight"],
+			)
+		}
+		names = {
+			row.builtin_key: row.name
+			for row in frappe.get_all(
+				"Optimization Rule",
+				filters={"implementation_type": "Built-in"},
+				fields=["name", "builtin_key"],
+			)
+		}
+		rooms = weights.get(names.get("room_utilization_objective"))
+		preferences = weights.get(names.get("shift_preference_objective"))
+		self.assertIsNotNone(rooms, "Standard Ruleset has no room-utilization row")
+		self.assertEqual(rooms, BUILTIN_RULES["room_utilization_objective"].default_weight)
+		if preferences is not None:
+			self.assertGreater(rooms, 2 * preferences)
+
+	def test_unbounded_exceeds_any_bounded_integrated(self):
+		modes = frappe.get_meta("Optimizer Run").get_field("mode").options.split("\n")
+		bounded_max = max(
+			len(d)  # ty:ignore[invalid-argument-type]
+			for d in (planning_days(MONDAY, m) for m in modes)
+			if hasattr(d, "__len__")  # => is bounded
+		)
+
+		for i, _ in enumerate(planning_days(MONDAY, "Unbounded")):
+			if i > bounded_max:
+				break
+		else:
+			self.fail(f"Unbounded planning_days is bounded by {bounded_max}")
