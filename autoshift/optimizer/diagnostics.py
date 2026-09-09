@@ -293,8 +293,8 @@ def model_dump(prob: pulp.LpProblem, examples: int = 3) -> str:
 	"""Human-readable shape of the built problem: variable families, constraint families."""
 	lines = [
 		f"Problem {prob.name!r}: {len(prob.variables())} variables, "
-		f"{len(_constraints(prob))} constraints, "
-		f"sense={'maximize' if prob.sense == pulp.LpMaximize else 'minimize'}",
+		+ f"{len(_constraints(prob))} constraints, "
+		+ f"sense={'maximize' if prob.sense == pulp.LpMaximize else 'minimize'}",
 		"",
 		"Variables by family (fixed = lower bound equals upper bound):",
 	]
@@ -463,7 +463,7 @@ def package_summary(data: DataPackage) -> str:
 		f"roles             {len(data.roles)}",
 		f"leave-blocked     {len(data.leave_blocked)} (employee, day) pairs",
 		f"existing assign.  {len(data.forced)} resolved, {len(data.binding_conflicts)} lost to leave, "
-		f"{len(data.unresolved_assignments)} unplaceable",
+		+ f"{len(data.unresolved_assignments)} unplaceable",
 		f"binding pairs     {len(data.binding_pairs)} over {len(bound_employees)} employees",
 		f"pinned to 1       {len(pinned)} assignments",
 		f"rules             {len(selected)} built-in{origin}",
