@@ -322,6 +322,10 @@ The **Week** wall chart is available in Studio before you have previewed anythin
 no run to show, it falls back to the Shift Assignments already on the books, so it doubles as
 a way to look at any week.
 
+**Export PDF**, next to Fullscreen, opens the current week in its own tab with the browser's
+print dialog already up — choose "Save as PDF" as the destination. It prints exactly the week
+you were looking at, minus the navigation buttons.
+
 ### Step 1 — Create an Optimizer Run
 
 **Autoshift → Optimizer Run → New**

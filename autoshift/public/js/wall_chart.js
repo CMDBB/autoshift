@@ -291,14 +291,19 @@ function leaves_markup(payload) {
 	)}</b><table>${rows}</table></div>`;
 }
 
-function bar_markup(payload) {
-	const monday = frappe.datetime.str_to_user(payload.week);
+// What the legend's trailing chip says the table is showing — shared between
+// the on-screen bar and the exported page so they never disagree.
+function chart_source_label(payload) {
 	const run = payload.run;
-	const source = !run
+	return !run
 		? __("Shift Assignments on the books")
 		: run.compared
 		? __("Run {0} vs. the books", [run.name])
 		: __("Shift Assignments on the books — run {0} is {1}", [run.name, run.status]);
+}
+
+function legend_markup(payload) {
+	const run = payload.run;
 	const keys =
 		run && run.compared
 			? [
@@ -307,12 +312,19 @@ function bar_markup(payload) {
 					[__("Dropped"), "awc-dropped"],
 			  ]
 			: [[__("On the books"), "awc-existing"]];
-	const legend = keys
+	const swatches = keys
 		.map(
 			([label, cls]) =>
 				`<span class="awc-key"><span class="awc-swatch ${cls}"></span>${esc(label)}</span>`
 		)
 		.join("");
+	return `<span class="awc-legend">${swatches}<span class="awc-key">${esc(
+		chart_source_label(payload)
+	)}</span></span>`;
+}
+
+function bar_markup(payload) {
+	const monday = frappe.datetime.str_to_user(payload.week);
 	return `<div class="awc-bar">
 		<button type="button" class="btn btn-default btn-xs awc-prev" title="${__(
 			"Previous week"
@@ -322,11 +334,11 @@ function bar_markup(payload) {
 			"Next week"
 		)}">&#9654;</button>
 		<button type="button" class="btn btn-default btn-xs awc-today">${__("This week")}</button>
-		<span class="awc-legend">${legend}<span class="awc-key">${esc(
-		source
-	)}</span><button type="button" class="btn btn-default btn-xs awc-fullscreen">${__(
-		"Fullscreen"
-	)}</button></span>
+		${legend_markup(payload)}
+		<button type="button" class="btn btn-default btn-xs awc-export" title="${__(
+			"Opens a print dialog — choose “Save as PDF” as the destination"
+		)}">${__("Export PDF")}</button>
+		<button type="button" class="btn btn-default btn-xs awc-fullscreen">${__("Fullscreen")}</button>
 	</div>`;
 }
 
@@ -390,6 +402,131 @@ autoshift.wall_chart.build_html = function (payload) {
 		</table></div>${leaves_markup(payload)}`;
 };
 
+// A self-contained stylesheet for the exported page: no `var(--…)` theme
+// tokens (the popup never loads the desk's CSS), no sticky positioning (the
+// export is not scrolled — `<th rowspan>` already keeps a band's label next
+// to all of its rows) and no interactive chrome. Colors are the screen
+// stylesheet's own fallback values, so the export reads the same way the
+// chart does in a browser that has never seen the desk theme.
+const EXPORT_CSS = `
+	* { box-sizing: border-box; }
+	body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; color: #1f2937; margin: 1.2rem; }
+	h2 { margin: 0 0 0.15rem; font-size: 1.1rem; }
+	.awc-legend { display: flex; gap: 0.7rem; flex-wrap: wrap; font-size: 0.75rem; color: #6b7280; margin-bottom: 0.6rem; }
+	.awc-key { display: inline-flex; align-items: center; gap: 0.3rem; }
+	.awc-swatch { display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 2px; border: 1.2px solid; }
+	.awc-totals { font-size: 0.85rem; color: #6b7280; margin-bottom: 0.5rem; }
+	.awc-totals b { color: #1f2937; }
+	.awc-warning {
+		border-left: 3px solid #facc15; padding: 0.3rem 0.55rem; margin-bottom: 0.3rem;
+		font-size: 0.8rem; color: #4b5563; background: #fafafa;
+	}
+	table { border-collapse: separate; border-spacing: 0; width: 100%; margin-bottom: 0.8rem; }
+	th, td {
+		border-bottom: 1px solid #d1d5db; border-right: 1px solid #d1d5db;
+		padding: 0.15rem 0.3rem; font-size: 7.5pt; text-align: center; white-space: nowrap;
+	}
+	thead { display: table-header-group; }
+	thead th { font-weight: 600; background: #f9fafb; }
+	.awc-lane { font-weight: 400; color: #6b7280; font-size: 6.5pt; }
+	.awc-section-title {
+		text-align: left; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;
+		background: #f3f4f6; font-size: 6.5pt;
+	}
+	.awc-band {
+		text-align: left; vertical-align: top; min-width: 8rem; max-width: 8rem;
+		white-space: normal; font-weight: 600;
+	}
+	.awc-band-branch { display: block; font-weight: 400; color: #6b7280; font-size: 6.5pt; }
+	.awc-band.awc-overflow { color: #dc2626; }
+	.awc-ord { color: #6b7280; font-size: 6.5pt; min-width: 1.4rem; max-width: 1.4rem; }
+	.awc-day-start { border-left: 2px solid #9ca3af; }
+	.awc-nonworking { background: #f4f5f6; }
+	.awc-outside { opacity: 0.55; }
+	.awc-today-col { background: #eff6ff; }
+	.awc-who {
+		display: inline-block; border: 1.2px solid transparent; border-radius: 3px;
+		padding: 0.03rem 0.25rem; font-family: "SFMono-Regular", Consolas, monospace; font-size: 7pt;
+	}
+	.awc-existing { background: #f3f4f6; border-color: #9ca3af; }
+	.awc-kept { background: #eef2ff; border-color: #a5b4fc; color: #312e81; }
+	.awc-added { background: #ecfdf5; border-color: #6ee7b7; color: #065f46; }
+	.awc-dropped { background: #fef2f2; border-color: #fca5a5; color: #991b1b; text-decoration: line-through; }
+	.awc-uncertain { border-style: dashed; }
+	.awc-mark { font-size: 0.7em; vertical-align: super; }
+	.awc-leaves { margin-top: 0.5rem; font-size: 0.8rem; }
+	.awc-leaves table { width: auto; }
+	.awc-leaves .awc-who { background: #fdf2f8; border-color: #f9a8d4; color: #9d174d; }
+	tr { page-break-inside: avoid; }
+	@page { size: landscape; margin: 10mm; }
+`;
+
+// The exported page's body: same data, same placement functions as the
+// on-screen table (`section_markup`, `head_markup`, `leaves_markup`,
+// `totals_markup`), just without the week-navigation and fullscreen controls
+// that make no sense on paper.
+function export_markup(payload) {
+	const { days, run } = payload;
+	const today = frappe.datetime.get_today();
+	const width = lane_width(payload);
+	const sections = payload.sections
+		.map((section) => section_markup(section, days, run, width, today))
+		.filter(Boolean)
+		.join("");
+	const warnings = (payload.warnings || [])
+		.map((w) => `<div class="awc-warning">${esc(w)}</div>`)
+		.join("");
+	const title = __("Week of {0}", [esc(frappe.datetime.str_to_user(payload.week))]);
+	const heading = `<h2>${title}</h2>${legend_markup(payload)}`;
+
+	if (!sections) {
+		return `${heading}<div>${__("Nothing to draw for this week.")}</div>`;
+	}
+
+	return `${heading}${totals_markup(payload)}${warnings}
+		<table>
+			<thead><tr>
+				<th class="awc-band"></th><th class="awc-ord"></th>${head_markup(days, run, width, today)}
+			</tr></thead>
+			<tbody>${sections}</tbody>
+		</table>${leaves_markup(payload)}`;
+}
+
+/**
+ * Open the current week in its own window, pre-filled with the print dialog —
+ * choosing "Save as PDF" there is the export. A real print, not a server-side
+ * render, so what comes out is exactly what the browser just showed: same
+ * data, same placement, no second rendering pipeline to keep in sync with
+ * `build_html`.
+ *
+ * A new window rather than printing the desk page in place: the desk's own
+ * chrome (sidebar, navbar, other panes) would otherwise have to be hidden by
+ * CSS trickery that is fragile across themes and print engines, and the
+ * popup's stylesheet can stay small and self-contained instead of overriding
+ * the desk's.
+ */
+autoshift.wall_chart.export_pdf = function (payload) {
+	const win = window.open("", "_blank");
+	if (!win) {
+		frappe.msgprint(
+			__(
+				"Your browser blocked the export window. Please allow pop-ups for this site and try again."
+			)
+		);
+		return;
+	}
+	win.document.title = __("Wall chart — week of {0}", [
+		frappe.datetime.str_to_user(payload.week),
+	]);
+	const style = win.document.createElement("style");
+	style.textContent = EXPORT_CSS;
+	win.document.head.appendChild(style);
+	win.document.body.innerHTML = export_markup(payload);
+	win.addEventListener("afterprint", () => win.close());
+	win.focus();
+	win.print();
+};
+
 /**
  * Render the wall chart into `$wrapper`.
  *
@@ -434,6 +571,7 @@ autoshift.wall_chart.render = function ($wrapper, fetch, week) {
 		$wrapper
 			.find(".awc-today")
 			.on("click", () => autoshift.wall_chart.render($wrapper, fetch, null));
+		$wrapper.find(".awc-export").on("click", () => autoshift.wall_chart.export_pdf(payload));
 		$wrapper.find(".awc-materialize").on("click", () => {
 			const pending = payload.pending_bound;
 			frappe.require("/assets/autoshift/js/rota.js", () => {
