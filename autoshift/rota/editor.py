@@ -368,7 +368,7 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 	names = (
 		{
 			e.name: {
-				"employee_label": f"{e.name}:{e.custom_initials or 'n/a'}",
+				"employee_label": f"{e.name}:{e.custom_initials}" if e.custom_initials else e.name,
 				"employee_name": e.employee_name,
 			}
 			for e in frappe.get_all(

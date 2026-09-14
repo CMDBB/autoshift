@@ -1,7 +1,7 @@
 {
  "app": "autoshift",
  "charts": [],
- "content": "[{\"id\":\"qUFnSCk4-8\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">Optimizer</span>\",\"col\":12}},{\"id\":\"opStudioSC1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Optimizer Studio\",\"col\":4}},{\"id\":\"reShortcutSC1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Rota Editor\",\"col\":4}},{\"id\":\"rmShortcutSC1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Role Matrix\",\"col\":4}},{\"id\":\"16kR2EavJE\",\"type\":\"quick_list\",\"data\":{\"quick_list_name\":\"Optimizer Run\",\"col\":12}},{\"id\":\"8GRm_ygwFs\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"uwKHYkUujp\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Configurations</b></span>\",\"col\":12}},{\"id\":\"GXtcU6X9ix\",\"type\":\"card\",\"data\":{\"card_name\":\"Optimizer Settings\",\"col\":6}},{\"id\":\"PlwQsvArE8\",\"type\":\"card\",\"data\":{\"card_name\":\"Optimization Data\",\"col\":6}}]",
+ "content": "[{\"id\":\"qUFnSCk4-8\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\">Optimizer</span>\",\"col\":12}},{\"id\":\"opStudioSC1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Optimizer Studio\",\"col\":4}},{\"id\":\"reShortcutSC1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Rota Editor\",\"col\":4}},{\"id\":\"Z8iXZNcjtW\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Role Matrix\",\"col\":4}},{\"id\":\"16kR2EavJE\",\"type\":\"quick_list\",\"data\":{\"quick_list_name\":\"Optimizer Run\",\"col\":12}},{\"id\":\"8GRm_ygwFs\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"uwKHYkUujp\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Configurations</b></span>\",\"col\":12}},{\"id\":\"GXtcU6X9ix\",\"type\":\"card\",\"data\":{\"card_name\":\"Optimizer Settings\",\"col\":6}},{\"id\":\"PlwQsvArE8\",\"type\":\"card\",\"data\":{\"card_name\":\"Optimization Data\",\"col\":6}}]",
  "creation": "2026-06-12 11:50:02.644895",
  "custom_blocks": [],
  "docstatus": 0,
@@ -104,7 +104,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-09-01 15:18:04.920709",
+ "modified": "2026-09-14 11:41:47.212454",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Autoshift",
@@ -122,21 +122,23 @@
  "sequence_id": 0.0,
  "shortcuts": [
   {
-   "color": "Blue",
-   "label": "Optimizer Studio",
-   "link_to": "optimizer-studio",
+   "color": "Green",
+   "doc_view": "",
+   "label": "Rota Editor",
+   "link_to": "role-matrix",
    "type": "Page"
   },
   {
    "color": "Green",
-   "label": "Rota Editor",
-   "link_to": "rota-editor",
+   "doc_view": "",
+   "label": "Role Matrix",
+   "link_to": "role-matrix",
    "type": "Page"
   },
   {
-   "color": "Orange",
-   "label": "Role Matrix",
-   "link_to": "role-matrix",
+   "color": "Blue",
+   "label": "Optimizer Studio",
+   "link_to": "optimizer-studio",
    "type": "Page"
   }
  ],

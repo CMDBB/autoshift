@@ -199,7 +199,8 @@ entitlement. If you do need it enforced, add the non-standard
 #### The Role Matrix
 
 The **Role Matrix** (a shortcut on the Autoshift workspace) shows the same
-records as one table: a row per employee, a column per Scheduling Role, and the
+records as one table: a row per employee, a column per Scheduling Role (headed by
+its initials, as on the wall chart; hover for the full name), and the
 Suitability in every cell where the employee has that role. Pick a discipline
 (or all of them) and type into a cell to give someone a role or change how
 suitable they are for it; clear a cell to take the role away. Tick **All

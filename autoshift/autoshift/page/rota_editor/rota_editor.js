@@ -165,7 +165,7 @@ autoshift.RotaEditor = class RotaEditor {
 		this.$body = $(`
 			<div class="rota-editor">
 				<div class="re-hint text-muted">${__(
-					"Drag a chip to move a shift within the same person's row — any day, shift type or branch in this discipline. Drop it on Remove to drop it, or click an empty cell to add one."
+					"Drag a chip to move a shift within the same person's row — any day, shift type or branch in this discipline. Drop it outside the table (or on Remove) to delete it, or click an empty cell to add one."
 				)} ${__(
 			"A dotted grey border marks a pattern imported but not yet confirmed. Editing a pattern confirms it; Promote all confirms the rest of that person's patterns as they stand."
 		)}</div>
@@ -229,6 +229,23 @@ autoshift.RotaEditor = class RotaEditor {
 			.on("drop", (e) => {
 				e.preventDefault();
 				if (!this.drag) return;
+				const drag = this.drag;
+				this.drag = null;
+				this.stage_remove(drag);
+			});
+
+		// A chip dropped anywhere that isn't a valid target — outside the table entirely, or
+		// on it but rejected (see the td.re-cell handlers above) — is a delete. This listens
+		// on the whole document, not just $body, since a drag can end past the page's own
+		// content (the sidebar, navbar, and so on).
+		$(document)
+			.on("dragover", (e) => {
+				if (this.drag) e.preventDefault();
+			})
+			.on("drop", (e) => {
+				if (!this.drag) return;
+				if ($(e.target).closest(".re-table, .re-trash").length) return;
+				e.preventDefault();
 				const drag = this.drag;
 				this.drag = null;
 				this.stage_remove(drag);

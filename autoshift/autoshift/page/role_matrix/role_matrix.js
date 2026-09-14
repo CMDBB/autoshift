@@ -52,9 +52,9 @@ function inject_role_matrix_styles() {
 		.role-matrix .rm-chip:hover { text-decoration: none; filter: brightness(0.95); }
 		.role-matrix .rm-chip-none { background: transparent; color: var(--text-muted); border-style: dashed; }
 		.role-matrix .rm-chip-inactive { background: var(--gray-100, #f3f3f3); color: var(--text-muted); }
-		.role-matrix td.rm-cell { position: relative; padding: 0; min-width: 4rem; }
+		.role-matrix td.rm-cell { position: relative; padding: 0; min-width: 2.6rem; }
 		.role-matrix .rm-input {
-			width: 100%; min-width: 4rem; height: 1.8rem; border: none; background: transparent;
+			width: 100%; min-width: 2.6rem; max-width: 3.2rem; height: 1.8rem; border: none; background: transparent;
 			text-align: center; color: inherit; font-variant-numeric: tabular-nums;
 		}
 		.role-matrix .rm-input:focus { outline: 2px solid var(--primary, #2490ef); outline-offset: -2px; }
@@ -83,6 +83,13 @@ function inject_role_matrix_styles() {
 }
 
 const esc = (value) => frappe.utils.escape_html(value == null ? "" : String(value));
+
+// Word initials, the wall chart's lane-header abbreviation ("Dental Hygienist" -> "DH");
+// the full name goes in the title. Falls back to the name when it has no letters at all.
+function abbreviate(name) {
+	const initials = String(name || "").match(/(?<!\p{L})[\p{L}]/gu);
+	return initials ? initials.map((c) => c.toUpperCase()).join("") : String(name || "");
+}
 
 // 1 is a regular holder; the bands only colour how much worse than that a substitute is.
 function suitability_band(value) {
@@ -236,9 +243,9 @@ autoshift.RoleMatrix = class RoleMatrix {
 				groups
 					.map(
 						(g) =>
-							`<th class="rm-disc-head" colspan="${g.span}">${esc(
+							`<th class="rm-disc-head" colspan="${g.span}" title="${esc(
 								g.discipline
-							)}</th>`
+							)}">${esc(g.span > 2 ? g.discipline : abbreviate(g.discipline))}</th>`
 					)
 					.join("") +
 				"</tr>";
@@ -259,7 +266,7 @@ autoshift.RoleMatrix = class RoleMatrix {
 						title
 					)}"><a href="/app/scheduling-role/${encodeURIComponent(
 						r.role
-					)}" target="_blank" class="text-muted">${esc(r.role)}</a></th>`;
+					)}" target="_blank" class="text-muted">${esc(abbreviate(r.role))}</a></th>`;
 				})
 				.join("") + "</tr>";
 
