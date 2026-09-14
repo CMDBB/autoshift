@@ -14,3 +14,4 @@ autoshift.patches.add_binding_rule_and_topics
 autoshift.patches.rebind_standard_ruleset_to_settled_schedules
 autoshift.patches.add_soft_role_binding
 autoshift.patches.add_fte_soft_ceiling
+autoshift.patches.drop_manually_edited_rota_flag

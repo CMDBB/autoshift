@@ -18,6 +18,7 @@ a `Change`, so it doesn't need to survive a chain of edits on its own.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 
 import frappe
@@ -147,6 +148,7 @@ def _rotas_by_branch(employees: list[str]) -> list[Rota]:
 			weekdays=r.weekdays,
 			cycle_weeks=r.cycle_weeks,
 			anchor=r.anchor,
+			unconfirmed=r.unconfirmed,
 		)
 		for r in rotas
 	]
@@ -228,11 +230,67 @@ def _view_start(start) -> datetime.date:
 	return monday_of(frappe.utils.getdate(start)) + datetime.timedelta(days=7)
 
 
+def editor_start_for(day) -> str:
+	"""The toolbar `start` value whose view opens on `day`'s week — the inverse of
+	`_view_start`, for a link into the editor from elsewhere."""
+	return (monday_of(frappe.utils.getdate(day)) - datetime.timedelta(days=7)).isoformat()
+
+
+def unconfirmed_rotas(first=None, last=None) -> dict:
+	"""Bound employees who still have a silver (imported, unconfirmed) pattern, per
+	discipline — what a pre-solve warning points the planner at.
+
+	With `first`/`last`, only patterns that put someone on at least one day of that span
+	count: a silver rota the horizon never reaches cannot affect the run. An employee
+	holding binding roles in several disciplines is listed under each, as the Rota Editor
+	lists them.
+
+	Cheap, like `materialize.pending`: configuration plus one rota read, no DataPackage.
+	"""
+	from autoshift.optimizer import data_loader
+
+	role_discipline = _role_discipline()
+	disciplines_of: dict[str, set[str]] = {}
+	for employee, role in data_loader.configured_binding_pairs():
+		if role in role_discipline:
+			disciplines_of.setdefault(employee, set()).add(role_discipline[role])
+
+	first = frappe.utils.getdate(first) if first else None
+	last = frappe.utils.getdate(last) if last else None
+	silver: dict[str, int] = {}
+	for rota in load_rotas(set(disciplines_of)) if disciplines_of else []:
+		if not rota.unconfirmed:
+			continue
+		if first and last and not occurrences(rota, first, last):
+			continue
+		silver[rota.employee] = silver.get(rota.employee, 0) + 1
+
+	by_discipline: dict[str, set[str]] = {}
+	for employee in silver:
+		for discipline in disciplines_of[employee]:
+			by_discipline.setdefault(discipline, set()).add(employee)
+
+	return {
+		"patterns": sum(silver.values()),
+		"employees": len(silver),
+		"disciplines": [
+			{"discipline": discipline, "employees": len(employees)}
+			for discipline, employees in sorted(by_discipline.items())
+		],
+		"editor_start": editor_start_for(first) if first else None,
+	}
+
+
 def _effective_rotas(rotas: list[Rota], plan: edit.EditPlan) -> list[Rota]:
 	"""What the grid should draw: the current rotas with the draft's plan folded in,
 	its creations given placeholder names so a chip can still be dragged again before
-	Apply ever runs."""
-	kept = [r for r in rotas if r.assignment not in plan.delete]
+	Apply ever runs. A staged promotion already draws gold, and so does every creation."""
+	promoted = set(plan.promote)
+	kept = [
+		dataclasses.replace(r, unconfirmed=False) if r.assignment in promoted else r
+		for r in rotas
+		if r.assignment not in plan.delete
+	]
 	created = [
 		Rota(
 			assignment=f"NEW-{index}",
@@ -255,6 +313,7 @@ def _hidden_cells(emp_rotas: list[Rota], days: list[datetime.date], view_start: 
 	them there — see `edit.phase_fractions` for why this is an average over a full
 	cycle rather than the (possibly misleading) single phase this view happens to show.
 	Sparse like a normal row's `cells` — a cell with zero occupancy is simply absent.
+	`unconfirmed` is set when any silver pattern contributes to the cell.
 	"""
 	shift_types = sorted({r.shift_type for r in emp_rotas})
 	weekdays = sorted({d.weekday() for d in days})
@@ -270,6 +329,11 @@ def _hidden_cells(emp_rotas: list[Rota], days: list[datetime.date], view_start: 
 				"occupied": occupied,
 				"cycle_weeks": cycle_weeks,
 				"branch": branch,
+				"unconfirmed": any(
+					r.unconfirmed and day.weekday() in r.weekdays
+					for r in emp_rotas
+					if r.shift_type == shift_type
+				),
 			}
 	return cells
 
@@ -320,6 +384,8 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 	visible, hidden = [], []
 	for employee in employees:
 		emp_rotas = by_employee.get(employee, [])
+		# Drives the row's "Promote all" button, which works at any view width.
+		unconfirmed = sum(1 for r in emp_rotas if r.unconfirmed)
 		bad_cadences = sorted(
 			{r.cycle_weeks for r in emp_rotas if not edit.rota_view_weeks(r.cycle_weeks, view_weeks)}
 		)
@@ -329,6 +395,7 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 					"employee": employee,
 					"cycle_weeks": bad_cadences,
 					"cells": _hidden_cells(emp_rotas, days, start_date),
+					"unconfirmed": unconfirmed,
 					**names[employee],
 				}
 			)
@@ -340,11 +407,13 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 					"branch": rota.shift_location,
 					"assignment": rota.assignment,
 					"cycle_weeks": rota.cycle_weeks,
+					"unconfirmed": rota.unconfirmed,
 				}
 		visible.append(
 			{
 				"employee": employee,
 				"cells": cells,
+				"unconfirmed": unconfirmed,
 				**names[employee],
 			}
 		)
@@ -353,6 +422,10 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 	return {
 		"discipline": discipline,
 		"start": start_date.isoformat(),
+		# The banner: how many people here still have an imported pattern nobody has
+		# confirmed. Counted on the draft-folded rotas, so a staged promotion or edit
+		# already takes someone off it.
+		"unconfirmed_employees": sum(1 for emp in visible + hidden if emp["unconfirmed"]),
 		"view_weeks": view_weeks,
 		"days": [{"date": d.isoformat(), "weekday": WEEKDAY_LABEL[d.weekday()]} for d in days],
 		"shift_types": shift_types_of(discipline),
@@ -375,7 +448,8 @@ def stage_change(discipline: str, change: str | dict, start: str, view_weeks: in
 	`get_state` in the same round trip.
 
 	`change` mirrors a `Rota Edit Draft Change` row: `{op, employee, from_assignment,
-	from_weekday, to_shift_type, to_weekday, to_branch}`, weekdays as `Assignment Rule
+	from_weekday, to_shift_type, to_weekday, to_branch}` (a "promote" carries only
+	`{op, employee}`), weekdays as `Assignment Rule
 	Day` labels ("Monday" etc — the grid's own day columns already carry that label, so
 	the browser never has to think in a different weekday numbering than the one it drew).
 	"""
@@ -404,6 +478,11 @@ def stage_change(discipline: str, change: str | dict, start: str, view_weeks: in
 	effective_before = _effective_rotas(
 		rotas, edit.apply_changes(rotas, prior, view_start=start_date, view_weeks=view_weeks)
 	)
+
+	if change["op"] == "promote" and not any(
+		r.unconfirmed for r in effective_before if r.employee == change["employee"]
+	):
+		frappe.throw(frappe._("{0} has no unconfirmed pattern left to promote.").format(change["employee"]))
 
 	from_assignment = change.get("from_assignment") or None
 	source = None
@@ -478,8 +557,9 @@ def discard_draft(discipline: str, start: str, view_weeks: int | str) -> dict:
 @frappe.whitelist()
 def apply_draft(discipline: str, start: str, view_weeks: int | str) -> dict:
 	"""Commit the draft's `EditPlan`: delete the assignments it supersedes, create its
-	replacements tagged `custom_manually_edited`, and clean up any private Shift Schedule
-	an edit emptied out.
+	replacements (gold, i.e. without `custom_unconfirmed`), clear the flag on every
+	assignment a "promote" confirms, and clean up any private Shift Schedule an edit
+	emptied out.
 
 	`start`/`view_weeks` are the editor's current toolbar state — the same view every
 	staged `Change`'s `from_phase`/`to_phase` was recorded against (see `edit.apply_changes`
@@ -497,7 +577,7 @@ def apply_draft(discipline: str, start: str, view_weeks: int | str) -> dict:
 
 	draft = _existing_draft(discipline)
 	if not draft or not draft.changes:
-		return {"created": 0, "deleted": 0}
+		return {"created": 0, "deleted": 0, "confirmed": 0}
 
 	employees = _employees_of(discipline)
 	rotas = _rotas_by_branch(employees)
@@ -538,9 +618,11 @@ def apply_draft(discipline: str, start: str, view_weeks: int | str) -> dict:
 		assignment.shift_status = "Inactive"
 		if new.anchor:
 			assignment.create_shifts_after = new.anchor
-		assignment.custom_manually_edited = 1
 		assignment.insert(ignore_permissions=True)
 		created.append(assignment.name)
+
+	for name in plan.promote:
+		frappe.db.set_value("Shift Schedule Assignment", name, "custom_unconfirmed", 0)
 
 	# A private (manually_edited) Shift Schedule an edit fully emptied is dead weight.
 	# A shared, zawin2frappe-owned one is never touched here — only unlinked, by the
@@ -555,4 +637,4 @@ def apply_draft(discipline: str, start: str, view_weeks: int | str) -> dict:
 			doc.cancel()
 		frappe.delete_doc("Shift Schedule", schedule_name, ignore_permissions=True)
 
-	return {"created": len(created), "deleted": len(plan.delete)}
+	return {"created": len(created), "deleted": len(plan.delete), "confirmed": len(plan.promote)}

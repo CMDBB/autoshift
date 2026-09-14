@@ -65,17 +65,20 @@ zawin2frappe never saw. `edit.py` (pure) and `editor.py` (the DB half, same spli
 employee's shifts around directly: same discipline, but freely across shift type, day
 and branch.
 
-A hand edit is **gold standard** — it is the planner correcting the record, not a guess
-— so it is never expressed as a patch on top of the detected schedule. Editing an
-assignment always replaces it wholesale with a fresh `Shift Schedule Assignment` (+ a
-private `Shift Schedule` backing it), tagged `custom_manually_edited`. That tag is the
-whole mechanism for keeping this app and zawin2frappe from fighting over the same
-record: **zawin2frappe's import must skip any row already carrying it** rather than
-overwriting a planner's correction on the next re-run. (That check lives in
-zawin2frappe, not here — this app only sets the tag and never touches a schedule that
-doesn't carry it, so a shared, zawin2frappe-owned `Shift Schedule` is never edited or
-deleted, only unlinked by removing the one `Shift Schedule Assignment` row that pointed
-at it.)
+An imported pattern is **silver standard**: the legacy agenda is the best evidence of
+someone's week, but it is not their contract. An importer marks every pattern it infers
+`custom_unconfirmed`; anything unflagged, whether a Rota Editor edit or a row HR entered in
+the Desk, is gold. That flag is the whole mechanism for keeping this app and zawin2frappe
+from fighting over the same record: **zawin2frappe's import may only overwrite a flagged
+row** (enforced there, not here).
+
+A planner confirms a pattern by editing it, which replaces it wholesale with a fresh,
+unflagged `Shift Schedule Assignment` (+ a private `Shift Schedule` backing it, tagged
+`Shift Schedule.custom_manually_edited` so the editor knows it may delete it later). An
+employee's untouched silver patterns are confirmed as they stand with **Promote all**,
+which clears the flag in place. A shared, zawin2frappe-owned `Shift Schedule` is never
+edited or deleted, only unlinked by removing the one `Shift Schedule Assignment` row that
+pointed at it.
 
 A created assignment is `enabled = 0` / `shift_status = "Inactive"`, exactly like an
 imported one — HRMS's nightly generator staying off it is the entire point regardless of

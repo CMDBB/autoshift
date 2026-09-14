@@ -30,6 +30,30 @@ autoshift.rota.pending_note = function (pending) {
 };
 
 /**
+ * The paragraph a pre-solve confirm carries when the horizon binds people to rotas the
+ * import inferred and nobody has confirmed yet. A warning only: the solve still runs on
+ * them, but the planner should know the week being frozen is the old agenda's reading.
+ * Each discipline links to the Rota Editor on the horizon's first week, in a new tab so
+ * the dialog (and the run) stay where they are.
+ */
+autoshift.rota.unconfirmed_note = function (unconfirmed) {
+	if (!unconfirmed || !unconfirmed.employees) return "";
+	const links = unconfirmed.disciplines
+		.map((row) => {
+			const params = new URLSearchParams({ discipline: row.discipline });
+			if (unconfirmed.editor_start) params.set("start", unconfirmed.editor_start);
+			return `<a href="/app/rota-editor?${params}" target="_blank">${frappe.utils.escape_html(
+				row.discipline
+			)}</a> (${row.employees})`;
+		})
+		.join(", ");
+	return `<p class="text-warning">${__(
+		"{0} employee(s) are bound to imported rotas nobody has confirmed yet ({1} pattern(s)). Their week will be frozen as the old agenda reads it. Review in the Rota Editor: {2}",
+		[unconfirmed.employees, unconfirmed.patterns, links]
+	)}</p>`;
+};
+
+/**
  * Report the rows HRMS refused. One bad record never blocks the rest, so there is
  * usually nothing to say — but when there is, it names the day rather than a count.
  */

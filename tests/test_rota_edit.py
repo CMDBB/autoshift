@@ -24,16 +24,19 @@ MON, TUE, WED, THU, FRI, SAT, SUN = range(7)
 ANCHOR = datetime.date(2026, 8, 30)  # a Sunday
 
 
-def rota(name, weekdays, shift_type="AM", branch="B1", cycle=1, anchor=None) -> Rota:
+def rota(
+	name, weekdays, shift_type="AM", branch="B1", cycle=1, anchor=None, employee="E1", unconfirmed=False
+) -> Rota:
 	return Rota(
 		assignment=name,
-		employee="E1",
+		employee=employee,
 		company="C1",
 		shift_type=shift_type,
 		shift_location=branch,
 		weekdays=frozenset(weekdays),
 		cycle_weeks=cycle,
 		anchor=anchor,
+		unconfirmed=unconfirmed,
 	)
 
 
@@ -301,6 +304,60 @@ def test_a_still_pending_add_can_be_moved_to_a_different_pattern():
 	assert created.shift_type == "PM" and created.branch == "B2"
 	assert created.weekdays == frozenset({TUE})
 	assert created.company == "C1"  # carried across the chain, not lost with the source
+
+
+# ── apply_changes: silver and gold ───────────────────────────────────────────
+
+
+def test_an_untouched_batch_promotes_nothing():
+	r = rota("SSA1", [MON], unconfirmed=True)
+	plan = apply_changes(
+		[r],
+		[Change(op="add", employee="E1", company="C1", to_shift_type="PM", to_weekday=TUE, to_branch="B1")],
+	)
+	assert plan.promote == ()
+
+
+def test_promote_confirms_every_silver_pattern_of_that_employee_in_place():
+	rows = [
+		rota("S1", [MON], unconfirmed=True),
+		rota("S2", [TUE], shift_type="PM", unconfirmed=True),
+		rota("G1", [WED], shift_type="PM", branch="B2"),
+		rota("OTHER", [MON], employee="E2", unconfirmed=True),
+	]
+
+	plan = apply_changes(rows, [Change(op="promote", employee="E1")])
+
+	assert plan.promote == ("S1", "S2")
+	assert plan.delete == ()
+	assert plan.create == ()
+
+
+def test_promote_skips_a_pattern_the_same_batch_replaces():
+	"""An edited pattern is recreated gold already; promoting the row it replaces would
+	write to a document Apply is about to delete."""
+	rows = [rota("S1", [MON, TUE], unconfirmed=True), rota("S2", [MON], shift_type="PM", unconfirmed=True)]
+	changes = [
+		Change(op="promote", employee="E1"),
+		Change(op="move", employee="E1", from_assignment="S1", from_weekday=TUE, to_weekday=WED),
+	]
+
+	plan = apply_changes(rows, changes)
+
+	assert plan.delete == ("S1",)
+	assert plan.promote == ("S2",)
+
+
+def test_describe_promote_counts_the_patterns_it_confirms():
+	rows = [
+		rota("S1", [MON], unconfirmed=True),
+		rota("S2", [TUE], shift_type="PM", unconfirmed=True),
+		rota("G1", [WED]),
+	]
+	assert (
+		describe_change(Change(op="promote", employee="E1"), rows)
+		== "E1: confirmed 2 unconfirmed pattern(s) as they stand"
+	)
 
 
 # ── describe_change ───────────────────────────────────────────────────────────

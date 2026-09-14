@@ -141,6 +141,19 @@ class OptimizerRun(Document):
 		return {key: value for key, value in found.items() if key != "rows"}
 
 	@frappe.whitelist()
+	def check_unconfirmed_rotas(self):
+		"""Imported, unconfirmed rotas this horizon binds people to, per discipline.
+
+		A warning, not a blocker: binding freezes those people to the import's reading of
+		the old agenda, which is evidence rather than their contract. Cheap config query —
+		safe to call before solving.
+		"""
+		from autoshift.rota import editor
+
+		first, last = self.planning_window()
+		return editor.unconfirmed_rotas(first, last)
+
+	@frappe.whitelist()
 	def materialize_bound_shifts(self):
 		"""Create the Shift Assignments :meth:`check_pending_bound_shifts` reports missing."""
 		from autoshift.rota import materialize as rota

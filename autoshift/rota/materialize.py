@@ -57,7 +57,15 @@ def load_rotas(employees: set[str] | None = None) -> list[Rota]:
 	rows = frappe.get_all(
 		"Shift Schedule Assignment",
 		filters=filters,
-		fields=["name", "employee", "company", "shift_schedule", "shift_location", "create_shifts_after"],
+		fields=[
+			"name",
+			"employee",
+			"company",
+			"shift_schedule",
+			"shift_location",
+			"create_shifts_after",
+			"custom_unconfirmed",
+		],
 	)
 	if not rows:
 		return []
@@ -107,6 +115,7 @@ def load_rotas(employees: set[str] | None = None) -> list[Rota]:
 				weekdays=frozenset(days_by_schedule.get(schedule.name, ())),
 				cycle_weeks=cycle,
 				anchor=_getdate(row.create_shifts_after),
+				unconfirmed=bool(row.custom_unconfirmed),
 			)
 		)
 	# Deterministic, because under the one-a-day rule two of an employee's own

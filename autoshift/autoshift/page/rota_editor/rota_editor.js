@@ -15,10 +15,17 @@ frappe.pages["rota-editor"].on_page_load = function (wrapper) {
 	wrapper.rota_editor = new autoshift.RotaEditor(page);
 };
 
+// Loaded once per Desk session, so a link arriving later (a pre-solve warning's, say)
+// has to be applied on every show, not only on load.
+frappe.pages["rota-editor"].on_page_show = function (wrapper) {
+	if (wrapper.rota_editor) wrapper.rota_editor.apply_route_options();
+};
+
 function inject_rota_editor_styles() {
 	if (document.getElementById("rota-editor-styles")) return;
 	const css = `
 		.rota-editor .re-hint { margin-bottom: 0.75rem; }
+		.rota-editor .re-banner { margin-bottom: 0.75rem; }
 		.rota-editor .re-grid-wrap { overflow-x: auto; }
 		.rota-editor .re-table { border-collapse: collapse; font-size: var(--text-sm); }
 		.rota-editor .re-table th, .rota-editor .re-table td {
@@ -51,6 +58,10 @@ function inject_rota_editor_styles() {
 			border: 1px solid var(--chip-border, rgba(0, 0, 0, 0.1));
 		}
 		.rota-editor .re-chip-pending { background: var(--yellow-100, #fff3cd); opacity: 0.85; color: inherit; }
+		/* Silver standard: imported, nobody has confirmed it yet. Declared after .re-chip so
+		   it wins over the branch colour's border without !important. */
+		.rota-editor .re-chip-unconfirmed { border: 2px dotted var(--gray-500, #888); }
+		.rota-editor .re-promote { margin-top: 0.2rem; }
 		.rota-editor .re-chip-cadence {
 			font-size: 0.6em; opacity: 0.75; margin-left: 1px; vertical-align: super;
 		}
@@ -155,7 +166,10 @@ autoshift.RotaEditor = class RotaEditor {
 			<div class="rota-editor">
 				<div class="re-hint text-muted">${__(
 					"Drag a chip to move a shift within the same person's row — any day, shift type or branch in this discipline. Drop it on Remove to drop it, or click an empty cell to add one."
-				)}</div>
+				)} ${__(
+			"A dotted grey border marks a pattern imported but not yet confirmed. Editing a pattern confirms it; Promote all confirms the rest of that person's patterns as they stand."
+		)}</div>
+				<div class="re-banner form-message yellow" hidden></div>
 				<div class="re-grid-wrap"><div class="re-grid"></div></div>
 				<div class="re-trash">🗑 ${__("Remove")}</div>
 				<div class="re-transcript"></div>
@@ -195,6 +209,9 @@ autoshift.RotaEditor = class RotaEditor {
 				if (to_shift_type === drag.shiftType && to_date === drag.date) return;
 				this.stage_move(drag, to_shift_type, to_date);
 			})
+			.on("click", ".re-promote", (e) => {
+				this.stage({ op: "promote", employee: $(e.currentTarget).attr("data-employee") });
+			})
 			.on("click", ".re-cell-empty", (e) => {
 				const $el = $(e.currentTarget);
 				this.stage_add(
@@ -218,6 +235,40 @@ autoshift.RotaEditor = class RotaEditor {
 			});
 	}
 
+	// `?discipline=…&start=…` (a plain link) or `frappe.route_options` (set_route). Returns
+	// whether it changed anything; the options are consumed so a later visit starts clean.
+	take_route_options() {
+		const options = Object.assign(
+			{},
+			frappe.utils.get_query_params(),
+			frappe.route_options || {}
+		);
+		frappe.route_options = null;
+		if (window.location.search) {
+			// Otherwise the stale query would override the planner's own choice on every
+			// return to the page.
+			window.history.replaceState(null, "", window.location.pathname);
+		}
+		let changed = false;
+		if (options.start && options.start !== this.date_field.get_value()) {
+			this.date_field.set_value(options.start);
+			changed = true;
+		}
+		const known = (this.discipline_field.df.options || "").split("\n");
+		if (options.discipline && known.includes(options.discipline)) {
+			if (options.discipline !== this.discipline_field.get_value()) {
+				this.discipline_field.set_value(options.discipline);
+				changed = true;
+			}
+		}
+		return changed;
+	}
+
+	apply_route_options() {
+		if (!this.disciplines_loaded) return; // load_disciplines applies them itself
+		if (this.take_route_options()) this.refresh();
+	}
+
 	load_disciplines() {
 		frappe.call({ method: "autoshift.rota.editor.list_disciplines" }).then(({ message }) => {
 			const disciplines = message || [];
@@ -234,6 +285,8 @@ autoshift.RotaEditor = class RotaEditor {
 				return;
 			}
 			this.discipline_field.set_value(disciplines[0]);
+			this.take_route_options();
+			this.disciplines_loaded = true;
 			this.refresh();
 		});
 	}
@@ -350,6 +403,7 @@ autoshift.RotaEditor = class RotaEditor {
 			this.day_labels[d.date] = d.weekday;
 			this.day_phases[d.date] = Math.floor(i / 7);
 		});
+		this.render_banner();
 		this.render_grid();
 		this.render_transcript();
 	}
@@ -371,6 +425,14 @@ autoshift.RotaEditor = class RotaEditor {
 			readOnly && emp.cycle_weeks
 				? ` <span class="text-muted">(${emp.cycle_weeks.join(", ")}-week)</span>`
 				: "";
+		// Promotion needs no particular view width, so read-only rows offer it too.
+		const promote = emp.unconfirmed
+			? `<br><button class="btn btn-xs btn-default re-promote" data-employee="${
+					emp.employee
+			  }" title="${__("Confirm this person's {0} unconfirmed pattern(s) as they stand", [
+					emp.unconfirmed,
+			  ])}">${__("Promote all")}</button>`
+			: "";
 		let rows = "";
 		sections.forEach((section, index) => {
 			const shift_type = frappe.utils.escape_html(section.name);
@@ -381,7 +443,9 @@ autoshift.RotaEditor = class RotaEditor {
 					sections.length
 				}" title="${frappe.utils.escape_html(
 					emp.employee_name
-				)}">${frappe.utils.escape_html(emp.employee_label)}<br>${cadence_note}</td>`;
+				)}">${frappe.utils.escape_html(
+					emp.employee_label
+				)}<br>${cadence_note}${promote}</td>`;
 			}
 			rows += `<td class="re-shift-col" title="${shift_type}">${shift_label}</td>`;
 			days.forEach((d) => {
@@ -390,11 +454,12 @@ autoshift.RotaEditor = class RotaEditor {
 				if (readOnly) {
 					rows += `<td class="re-cell re-cell-readonly${todayClass}">`;
 					if (cell) {
+						const silver = cell.unconfirmed ? " re-chip-unconfirmed" : "";
 						if (cell.occupied >= cell.cycle_weeks) {
 							const branch = frappe.utils.escape_html(cell.branch || "");
 							const color = branch_color(cell.branch || "");
 							rows +=
-								`<span class="re-chip" draggable="false" ` +
+								`<span class="re-chip${silver}" draggable="false" ` +
 								`style="--chip-bg: ${color.bg}; --chip-fg: ${color.fg}; --chip-border: ${color.border};" ` +
 								`title="${branch}">${(cell.branch || "?").slice(0, 3)}</span>`;
 						} else {
@@ -428,12 +493,16 @@ autoshift.RotaEditor = class RotaEditor {
 							? " — " + __("every {0} weeks", [cell.cycle_weeks])
 							: "";
 					const pending_title = pending ? " — " + __("pending") : "";
+					const silver_title = cell.unconfirmed ? " — " + __("unconfirmed") : "";
+					const chip_class =
+						(pending ? " re-chip-pending" : "") +
+						(cell.unconfirmed ? " re-chip-unconfirmed" : "");
 					rows +=
-						`<span class="re-chip${pending ? " re-chip-pending" : ""}" ` +
+						`<span class="re-chip${chip_class}" ` +
 						`draggable="true" ` +
 						`data-assignment="${frappe.utils.escape_html(cell.assignment)}" ` +
 						`data-employee="${emp.employee}" data-shift-type="${shift_type}" data-date="${d.date}" ` +
-						`data-branch="${branch}" ${style} title="${branch}${cadence_title}${pending_title}">` +
+						`data-branch="${branch}" ${style} title="${branch}${cadence_title}${pending_title}${silver_title}">` +
 						`${(cell.branch || "?").slice(0, 3)}${cadence}</span>`;
 				} else {
 					rows +=
@@ -516,6 +585,19 @@ autoshift.RotaEditor = class RotaEditor {
 		$grid.html(`<table class="re-table"><thead>${head}</thead><tbody>${rows}</tbody></table>`);
 	}
 
+	render_banner() {
+		const $banner = this.$body.find(".re-banner");
+		const n = this.state.unconfirmed_employees || 0;
+		$banner.prop("hidden", !n);
+		if (!n) return;
+		$banner.text(
+			__(
+				"{0} employee(s) in this discipline still have imported rotas nobody has confirmed. The optimizer binds them to those patterns as they stand: edit or Promote all to confirm.",
+				[n]
+			)
+		);
+	}
+
 	render_transcript() {
 		const $t = this.$body.find(".re-transcript");
 		const changes = this.state.pending_changes || [];
@@ -569,9 +651,10 @@ autoshift.RotaEditor = class RotaEditor {
 					})
 					.then(({ message }) => {
 						frappe.show_alert({
-							message: __("Created {0}, replaced {1}.", [
+							message: __("Created {0}, replaced {1}, confirmed {2}.", [
 								message.created,
 								message.deleted,
+								message.confirmed,
 							]),
 							indicator: "green",
 						});

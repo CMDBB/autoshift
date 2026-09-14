@@ -51,36 +51,47 @@ function confirm_and_solve(frm) {
 			frm.call("check_duplicates"),
 			frm.call("check_binding_rule_gap"),
 			frm.call("check_pending_bound_shifts"),
-		]).then(([{ message: duplicates }, { message: binding }, { message: pending }]) => {
-			const { n: cache_hits_n, cached_runs_list_link: link } = duplicates;
-			let msg =
-				cache_hits_n == 0
-					? __(
-							"Run the optimizer? Large problems that don't finish quickly will automatically continue in the background."
-					  )
-					: __(
-							"Identical run detected: {0} {1} already solved this exact input. Run the optimizer anyway?",
-							[cache_hits_n, link]
-					  );
-			// A settled schedule that no rule enforces is silently overwritten, and
-			// nothing downstream would show that — so say it before solving, not after.
-			if (binding && binding.gap) {
+			frm.call("check_unconfirmed_rotas"),
+		]).then(
+			([
+				{ message: duplicates },
+				{ message: binding },
+				{ message: pending },
+				{ message: unconfirmed },
+			]) => {
+				const { n: cache_hits_n, cached_runs_list_link: link } = duplicates;
+				let msg =
+					cache_hits_n == 0
+						? __(
+								"Run the optimizer? Large problems that don't finish quickly will automatically continue in the background."
+						  )
+						: __(
+								"Identical run detected: {0} {1} already solved this exact input. Run the optimizer anyway?",
+								[cache_hits_n, link]
+						  );
+				// A settled schedule that no rule enforces is silently overwritten, and
+				// nothing downstream would show that — so say it before solving, not after.
+				if (binding && binding.gap) {
+					msg =
+						`<p class="text-warning">${__(
+							"{0} employee(s) hold a Scheduling Role whose assignments are binding ({1}), but this ruleset includes neither <b>Bind settled schedules</b> rule. Their settled schedules will be ignored and re-planned from scratch.",
+							[binding.employees, frappe.utils.escape_html(binding.roles.join(", "))]
+						)}</p>` + `<p>${msg}</p>`;
+				}
 				msg =
-					`<p class="text-warning">${__(
-						"{0} employee(s) hold a Scheduling Role whose assignments are binding ({1}), but this ruleset includes neither <b>Bind settled schedules</b> rule. Their settled schedules will be ignored and re-planned from scratch.",
-						[binding.employees, frappe.utils.escape_html(binding.roles.join(", "))]
-					)}</p>` + `<p>${msg}</p>`;
-			}
-			msg = autoshift.rota.pending_note(pending) + msg;
+					autoshift.rota.pending_note(pending) +
+					autoshift.rota.unconfirmed_note(unconfirmed) +
+					msg;
 
-			frappe.confirm(msg, () => {
-				const ready =
-					pending && pending.count
-						? autoshift.rota.create(() => frm.call("materialize_bound_shifts"))
-						: Promise.resolve();
-				ready.then(() => frm.call("solve").then(() => frm.reload_doc()));
-			});
-		});
+				frappe.confirm(msg, () => {
+					const ready =
+						pending && pending.count
+							? autoshift.rota.create(() => frm.call("materialize_bound_shifts"))
+							: Promise.resolve();
+					ready.then(() => frm.call("solve").then(() => frm.reload_doc()));
+				});
+			}
+		);
 	});
 }
 

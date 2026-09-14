@@ -116,6 +116,15 @@ def check_pending_bound_shifts(mode: str, date: str) -> dict:
 
 
 @frappe.whitelist()
+def check_unconfirmed_rotas(mode: str, date: str) -> dict:
+	"""Studio's counterpart to ``OptimizerRun.check_unconfirmed_rotas``."""
+	from autoshift.rota import editor
+
+	first, last = _planning_window(mode, date)
+	return editor.unconfirmed_rotas(first, last)
+
+
+@frappe.whitelist()
 def materialize_bound_shifts(mode: str, date: str) -> dict:
 	"""Create the Shift Assignments :func:`check_pending_bound_shifts` reports missing."""
 	from autoshift.rota import materialize as rota

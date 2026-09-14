@@ -11,12 +11,15 @@ never touching Frappe itself, so the one invariant that matters (a batch of edit
 a coherent new set of assignments, not a half-applied mess) is testable without a database.
 
 A hand edit never rewrites a `Rota` in place: the assignment it touches is always replaced
-wholesale by a fresh one, tagged `custom_manually_edited` — see `autoshift.rota` for why
-(a hand-edited rota is gold standard, and zawin2frappe's import must never overwrite one;
-the tag is how it recognises which ones are its own). A `Shift Schedule` an edit no longer
-needs is only ever deleted if it was itself tagged, i.e. this app created it — a shared,
+wholesale by a fresh one, created without `custom_unconfirmed` — see `autoshift.rota` for
+why (an imported rota is silver standard until a planner has looked at it, and touching a
+pattern is looking at it). A `Shift Schedule` an edit no longer needs is only ever deleted
+if this app created it (`Shift Schedule.custom_manually_edited`) — a shared,
 zawin2frappe-owned schedule is never touched, only unlinked (the one `Shift Schedule
 Assignment` row pointing at it for this employee is what changes).
+
+The one edit that replaces nothing is a "promote": it confirms every silver pattern one
+employee still has, as they stand, by clearing the flag in place (`EditPlan.promote`).
 
 **Periodicity is derived, not identity.** A group of edits is keyed on
 `(employee, shift_type, branch)` alone — cadence and anchor are *outcomes* of folding the
@@ -74,7 +77,8 @@ def _cadence_label(cycle_weeks: int) -> str:
 class Change:
 	"""One staged edit, at single-occurrence granularity.
 
-	`op` is one of "add", "move", "remove". A "move" or "remove" identifies the
+	`op` is one of "add", "move", "remove", "promote". A "promote" carries only `employee`
+	— see `EditPlan.promote`. A "move" or "remove" identifies the
 	occurrence it touches via `from_assignment` (a `Shift Schedule Assignment` docname)
 	+ `from_weekday`; an "add" has neither, and needs `company` since there is no source
 	`Rota` to take it from. `to_shift_type`/`to_branch` left `None` on a "move" mean
@@ -131,7 +135,11 @@ class EditPlan:
 	replacements to create. An assignment untouched by any change, and one whose net
 	effect is a no-op (e.g. a move immediately undone), appears in neither list.
 
-	`cadence_changes` is separate from both: informational lines for a pattern whose
+	`promote` lists silver assignments to confirm in place, i.e. to keep exactly as they are
+	but clear `custom_unconfirmed` on. It never names an assignment that is also in
+	`delete`: that one is being replaced, and every replacement is gold anyway.
+
+	`cadence_changes` is separate from all three: informational lines for a pattern whose
 	*cadence* moved as a side effect of folding the batch (a 1-week rota that just
 	picked up a second, differing phase; or one that converged back to weekly) — see the
 	module docstring. Never itself a reason to delete or create anything beyond what the
@@ -140,6 +148,7 @@ class EditPlan:
 
 	delete: tuple[str, ...] = ()
 	create: tuple[NewAssignment, ...] = ()
+	promote: tuple[str, ...] = ()
 	cadence_changes: tuple[str, ...] = ()
 
 
@@ -224,6 +233,7 @@ def apply_changes(
 		return start, start + datetime.timedelta(days=6)
 
 	groups: dict[tuple, _Group] = {}
+	promoted: set[str] = set()
 
 	def group_for(key) -> _Group:
 		if key not in groups:
@@ -241,6 +251,9 @@ def apply_changes(
 		return groups[key]
 
 	for change in changes:
+		if change.op == "promote":
+			promoted.add(change.employee)
+			continue
 		src_rota = by_name.get(change.from_assignment) if change.from_assignment else None
 		# Prefer the caller-supplied source identity — it still resolves when the touched
 		# occurrence is itself an unapplied edit with no real Shift Schedule Assignment to
@@ -326,8 +339,18 @@ def apply_changes(
 					f"{_cadence_label(old_cycle)} to {_cadence_label(new_cycle)}"
 				)
 
+	replaced = set(deletes)
+	promote = sorted(
+		r.assignment
+		for r in rotas
+		if r.unconfirmed and r.employee in promoted and r.assignment not in replaced
+	)
+
 	return EditPlan(
-		delete=tuple(sorted(deletes)), create=tuple(creates), cadence_changes=tuple(cadence_changes)
+		delete=tuple(sorted(deletes)),
+		create=tuple(creates),
+		promote=tuple(promote),
+		cadence_changes=tuple(cadence_changes),
 	)
 
 
@@ -351,6 +374,10 @@ def describe_change(change: Change, rotas: Iterable[Rota], view_weeks: int = 1) 
 	from_weekday = WEEKDAY_LABEL.get(change.from_weekday) if change.from_weekday is not None else None
 	to_suffix = _phase_suffix(change.to_phase, view_weeks)
 	from_suffix = _phase_suffix(change.from_phase, view_weeks)
+
+	if change.op == "promote":
+		silver = [r for r in by_name.values() if r.employee == change.employee and r.unconfirmed]
+		return f"{change.employee}: confirmed {len(silver)} unconfirmed pattern(s) as they stand"
 
 	if change.op == "remove":
 		src = by_name.get(change.from_assignment)

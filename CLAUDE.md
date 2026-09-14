@@ -35,8 +35,8 @@ Three apps split the responsibility; keep them separate.
   value becomes a *field* on an existing config doctype; the value lives in `cmdb_frappe`.
 - **Custom field ownership.** This app owns (module `Autoshift`, in
   `autoshift/fixtures/custom_field.json`): `Shift Location.custom_discipline`,
-  `Shift Location.custom_branch`, `Employee.custom_fte`, and `custom_manually_edited` on both
-  `Shift Schedule` and `Shift Schedule Assignment`. `zawin2frappe` owns
+  `Shift Location.custom_branch`, `Employee.custom_fte`, `Shift Schedule Assignment.custom_unconfirmed` and
+  `Shift Schedule.custom_manually_edited`. `zawin2frappe` owns
   `Shift Assignment.custom_zawin_key` and `Employee.custom_initials` — **do not re-add
   them here**; two apps shipping one fieldname under different modules fight on every
   `migrate`. Check the other apps' fixtures before adding any `Custom Field`.
@@ -199,7 +199,12 @@ first call a binding-gap check (`OptimizerRun.check_binding_rule_gap` /
 `optimizer_studio.check_binding_rule_gap`, thin wrappers over `data_loader.binding_rule_gap`)
 and confirm before running when the site marks roles binding but the selection omits
 `bind_role_assignments`. The same confirm carries the count from `check_pending_bound_shifts`
-and creates those records before solving.
+and creates those records before solving. It also warns, without blocking, about bound employees
+whose rotas in the horizon are still unconfirmed (`check_unconfirmed_rotas`, over
+`rota.editor.unconfirmed_rotas`), with one link per discipline into the Rota Editor
+(`?discipline=…&start=…`, applied by the page's `take_route_options` and then stripped from
+the URL). The editor itself shows a banner while the discipline has any
+(`get_state`'s `unconfirmed_employees`, counted on the draft-folded rotas).
 
 **The schedule view** (`autoshift/public/js/schedule_view.js`, namespaced
 `autoshift.schedule_view`) — one tab bar, **Week / Statistics / Roster / Solver Log**,
@@ -281,13 +286,18 @@ package is deleted.
 **Hand-editing (`rota/edit.py` + `rota/editor.py`)** — same split: `edit.py` is Frappe-free
 (`tests/test_rota_edit.py`), `editor.py` is the DB half.
 
-- A hand edit is **gold standard**: editing an assignment replaces it wholesale with a fresh
-  `Shift Schedule Assignment` (+ private `Shift Schedule`), tagged `custom_manually_edited`.
-  **zawin2frappe's import must skip any row carrying that tag** (enforced there, not here). A
-  shared zawin2frappe-owned `Shift Schedule` is only unlinked, never edited or deleted; a
-  private schedule an edit empties is cancelled and deleted. Created assignments are
-  `enabled = 0` / `shift_status = "Inactive"` — `materialize.py` stays the sole generator.
-- `edit.Change` stages one edit at single-occurrence granularity (`add`/`move`/`remove`),
+- An imported pattern is **silver standard**, `Shift Schedule Assignment.custom_unconfirmed = 1`
+  (set by the importer); unflagged is gold. **zawin2frappe's import may only overwrite a
+  flagged row** (enforced there, not here). Editing a pattern replaces it wholesale with a
+  fresh, unflagged `Shift Schedule Assignment` (+ private `Shift Schedule`, tagged
+  `Shift Schedule.custom_manually_edited`, which now only means "the editor owns this and may
+  delete it"). A shared zawin2frappe-owned `Shift Schedule` is only unlinked, never edited or
+  deleted; a private schedule an edit empties is cancelled and deleted. Created assignments
+  are `enabled = 0` / `shift_status = "Inactive"` — `materialize.py` stays the sole generator.
+- **Promote all** (per employee) stages a `promote` `Change`; `EditPlan.promote` lists that
+  employee's silver assignments not already being replaced, and Apply clears the flag in
+  place. Silver chips draw with a grey dotted border (`re-chip-unconfirmed`).
+- `edit.Change` stages one edit at single-occurrence granularity (`add`/`move`/`remove`; `promote` is per employee),
   identified by weekday **and** `from_phase`/`to_phase`. `apply_changes(rotas, changes,
   view_start, view_weeks) -> EditPlan` folds a batch onto the current `Rota`s.
   **Periodicity is derived, not identity** — groups key on `(employee, shift_type, branch)`

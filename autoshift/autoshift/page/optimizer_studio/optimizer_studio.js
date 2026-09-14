@@ -592,9 +592,15 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 					method: "autoshift.optimizer_studio.check_pending_bound_shifts",
 					args: { mode, date },
 				}),
-			]).then(([{ message: binding }, { message: pending }]) => {
+				frappe.call({
+					method: "autoshift.optimizer_studio.check_unconfirmed_rotas",
+					args: { mode, date },
+				}),
+			]).then(([{ message: binding }, { message: pending }, { message: unconfirmed }]) => {
 				const go = () => this.materialize_then_preview(mode, date, rows, pending);
-				let notes = autoshift.rota.pending_note(pending);
+				let notes =
+					autoshift.rota.pending_note(pending) +
+					autoshift.rota.unconfirmed_note(unconfirmed);
 				if (binding && binding.gap) {
 					notes += `<p class="text-warning">${__(
 						"{0} employee(s) hold a Scheduling Role whose assignments are binding ({1}), but no <b>Bind settled schedules</b> rule is selected. Their settled schedules will be ignored and re-planned from scratch.",

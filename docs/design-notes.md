@@ -67,11 +67,12 @@ order; the regression tests now build specs from the real document titles (`titl
 
 ## Role binding: freeze completely, or only cap
 
-Some roles' holders set their own schedules — a fact about a practice's power structure, so
-nothing about *which* roles those are belongs in this repo. autoshift ships the mechanism,
-defaulting to off; `zawin2frappe` populates the flags from the `cmdb_frappe` profile, and
-the recency-biased statistical inference of whether a given person's schedule has actually
-settled lives there too.
+Some roles' holders work a fixed week that the plan has to fit around. That was first
+modelled as a practitioner privilege, but it has since turned out to be true of most staff.
+Which roles, at any one practice, is still site data, so nothing about it belongs in this
+repo. autoshift ships the mechanism, defaulting to off; `zawin2frappe` populates the flags
+(binding unless its profile opts a job out), and the recency-biased statistical inference
+of whether a given person's schedule has actually settled lives there too.
 
 Semantics are **freeze-completely**, not "honor what exists": for a bound `(employee, role)`
 pair, `bind_role_assignments` calls `fixValue()` on *every* one of their variables, so
@@ -215,14 +216,34 @@ those records, so declining would silently re-plan the one group whose week is s
 
 ---
 
-## Rota editor: why edits are gold standard, and why periodicity is derived
+## Rota editor: why imports are silver standard, and why periodicity is derived
 
-**Gold standard, never a patch.** Editing an assignment replaces it wholesale with a fresh
-`Shift Schedule Assignment` (+ a private `Shift Schedule`), tagged `custom_manually_edited`.
-That tag is the whole mechanism keeping this app and zawin2frappe from fighting over the
-same record — **zawin2frappe's import must skip any row already carrying it**, enforced
-there, not here. A shared, zawin2frappe-owned `Shift Schedule` is never edited or deleted,
-only unlinked; a private schedule an edit empties out is cancelled and deleted.
+**Mark the guess, not the truth.** This used to be the other way round: a hand edit was
+tagged `custom_manually_edited` (gold) and everything else was fair game for a re-import. Two
+things turned that over. Fixed schedules turned out to be the norm across a practice's staff,
+not something only practitioners have, so the editor stopped being a niche correction tool.
+And a legacy agenda, however close to reality, is not a legally binding record of anyone's
+contract. The import is a guess that has to be confirmed, and flagging only the hand edits
+left a pattern HR typed straight into the Desk looking like one more guess to overwrite.
+
+So `Shift Schedule Assignment.custom_unconfirmed` marks a pattern an importer *inferred*
+(silver). Unflagged, which is the default, is gold. **An importer may overwrite only a
+flagged row**, enforced in zawin2frappe, not here. A silver pattern turns gold in two ways:
+
+- **Editing it.** An edit replaces the pattern wholesale with a fresh, unflagged
+  `Shift Schedule Assignment` (+ a private `Shift Schedule`). Because a group is
+  `(employee, shift_type, branch)`, moving one Tuesday confirms that whole row's weekday set,
+  and a move across groups confirms both. The planner was looking at both when they did it.
+- **Promote all**, per employee. It stages a `promote` change, which clears the flag in place
+  on every silver pattern that person has left (`EditPlan.promote`). Nothing is replaced, so
+  the `custom_zawin_key` provenance survives. It is per employee rather than per chip because
+  a chip is one occurrence of a pattern, and "confirm this Tuesday" would silently confirm
+  every other day in the pattern.
+
+A shared, zawin2frappe-owned `Shift Schedule` is never edited or deleted, only unlinked; a
+private schedule an edit empties out is cancelled and deleted. `Shift Schedule` keeps
+`custom_manually_edited` for exactly that ownership test. On a schedule the flag says whose
+record it is, never whether it is true.
 
 **Periodicity is derived, not identity.** A group is keyed on `(employee, shift_type,
 branch)` alone — no cadence, no anchor. Every member `Rota` is resampled into a

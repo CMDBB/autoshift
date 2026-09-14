@@ -82,6 +82,9 @@ class Rota:
 	#: schedule has no boundary — every week in the window is fair game and a
 	#: rota's phase falls back to the window's own first week.
 	anchor: datetime.date | None = None
+	#: `custom_unconfirmed`: an importer inferred this pattern and nobody has confirmed
+	#: it yet (silver standard). Never changes which days it covers.
+	unconfirmed: bool = False
 
 	@property
 	def is_rota(self) -> bool:

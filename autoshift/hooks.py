@@ -5,7 +5,7 @@ fixtures = [
 ]
 app_title = "Autoshift"
 app_publisher = "CMDBB"
-app_description = "WIP (mixed integer programming for shift optimization, natural language constraints and preference, explainable decisions)"
+app_description = "Mixed integer programming for shift optimization. WIP: natural language constraints and preference, explainable decisions"
 app_color = "#88ffee"
 app_email = "adrian.schemel@cmdbalexert.ch"
 app_license = "gpl-3.0"
