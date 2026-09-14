@@ -7,9 +7,11 @@
  "engine": "InnoDB",
  "field_order": [
   "employee",
+  "scheduling_role",
   "shift_type",
   "date",
   "shift_location",
+  "branch",
   "forced"
  ],
  "fields": [
@@ -21,6 +23,14 @@
    "label": "Employee",
    "options": "Employee",
    "reqd": 1
+  },
+  {
+   "fieldname": "scheduling_role",
+   "fieldtype": "Link",
+   "in_grid_view": 1,
+   "in_list_view": 1,
+   "label": "Scheduling Role",
+   "options": "Scheduling Role"
   },
   {
    "fieldname": "shift_type",

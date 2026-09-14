@@ -42,6 +42,7 @@ ITERTOOLS_MEMBERS = ("product", "chain", "combinations", "permutations")
 # local util methods from the rules.py
 RULE_UTILS = (
 	"cname",  # _cname in rules.py
+	"vname",  # _vname in rules.py — names auxiliary variables a rule introduces
 )
 
 # ranking in the completion popup: domain API above library members

@@ -5,7 +5,7 @@ fixtures = [
 ]
 app_title = "Autoshift"
 app_publisher = "CMDBB"
-app_description = "WIP (mixed integer programming for shift optimization, natural language constraints and preference, explainable decisions)"
+app_description = "Mixed integer programming for shift optimization. WIP: natural language constraints and preference, explainable decisions"
 app_color = "#88ffee"
 app_email = "adrian.schemel@cmdbalexert.ch"
 app_license = "gpl-3.0"
@@ -13,7 +13,10 @@ app_license = "gpl-3.0"
 # Apps
 # ------------------
 
-required_apps = ["frappe/hrms"]
+required_apps = [
+	"frappe/hrms",
+	"frappe/payments",
+]
 
 # Each item in the list will be shown as an app in the apps page
 add_to_apps_screen = [
