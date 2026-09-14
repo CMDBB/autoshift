@@ -164,7 +164,7 @@ class IntegrationTestOptimizerRun(IntegrationTestCase):
 			)
 		}
 		rooms = weights.get(names.get("room_utilization_objective"))
-		preferences = weights.get(names.get("shift_preference_objective"))
+		preferences = weights.get(names.get("suitability_preference_objective"))
 		self.assertIsNotNone(rooms, "Standard Ruleset has no room-utilization row")
 		self.assertEqual(rooms, BUILTIN_RULES["room_utilization_objective"].default_weight)
 		if preferences is not None:

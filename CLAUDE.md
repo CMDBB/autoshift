@@ -94,9 +94,12 @@ Three apps split the responsibility; keep them separate.
 - **Employee Scheduling Role** — the employee × role relation. A **standalone doctype, not a
   child table**, so `zawin2frappe` can import into it directly. Carries `role_fte` (the
   *informally* agreed FTE % in that role; blank = no expectation), an optional `max_rooms`
-  override, a `binding_override` Select (blank inherits the role's flag), `active`, and a
-  `valid_from`/`valid_to` window. **An employee holding no in-window role is not scheduled at
-  all** — that is how non-clinical staff stay out of scope.
+  override, a `binding_override` Select (blank inherits the role's flag), `suitability`
+  (Float ≥ 1, default 1: 1 = regular holder, 1.2 = good backup, 3 = terrible but feasible
+  substitute), `active`, and a `valid_from`/`valid_to` window. **An employee holding no
+  in-window role is not scheduled at all** — that is how non-clinical staff stay out of
+  scope. A substitute is just a row with `suitability > 1`; the loader treats it as held
+  like any other.
 - **Scheduling Rule Topic** — optional heading an `Optimization Rule` files itself under, so
   Studio's toggle panel renders as collapsible sections. Built-ins declare theirs in
   `rules.py` (`TOPIC_*`, `TOPIC_ORDER`); the seeding re-syncs the topic docs (`is_system=1`)
@@ -125,14 +128,19 @@ module.
    caching, `planning_days()` (raises `NotImplementedError` for `"Unbounded"`).
 2. `rules.py` — constraint groups *and* objective terms as named rules. `BUILTIN_RULES`
    registry populated by the `@builtin_rule` decorator; `STANDARD_RULES` is the
-   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 15 built-ins:
+   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 16 built-ins:
    `one_shift_per_day`, `warm_start`, `leave_blocklist`, `use_existing_assignments`,
    `bind_role_assignments`, `soft_bind_role_assignments`, `one_branch_per_shift`,
    `room_coverage`, `fte_ceiling`,
    `role_fte_ceiling` (constraints) and `room_utilization_objective`, `fte_soft_ceiling`,
-   `role_fte_target_objective`, `shift_preference_objective`, `weigh_assignments_objective`
-   (objectives). Three choice groups: `existing_assignments`, `role_binding` and
-   `workload_ceiling` (`fte_ceiling` vs `fte_soft_ceiling`). `_cname()`/`_vname()` name
+   `role_fte_target_objective`, `shift_preference_objective`,
+   `suitability_preference_objective`, `weigh_assignments_objective`
+   (objectives). Four choice groups: `existing_assignments`, `role_binding`,
+   `workload_ceiling` (`fte_ceiling` vs `fte_soft_ceiling`) and `shift_preference`
+   (`shift_preference_objective` vs the **standard** `suitability_preference_objective`, which
+   charges `(-1 + pref) * suitability` per assignment and equals the former while every
+   suitability is 1; `DataPackage.role_suitability` is sparse and left out of `input_hash`
+   when empty). `_cname()`/`_vname()` name
    constraints and any auxiliary variables (`role_fte_target_objective` linearizes an
    absolute deviation with a pair of them, `fte_soft_ceiling` a one-sided one with a
    single variable). `compile_custom_rule()` execs Custom Code source expecting `apply(ctx)`.
@@ -243,6 +251,15 @@ are *disabled with a tooltip* rather than hidden; Solver Log needs only a run, s
 bound employee's shifts to a different day, shift type or branch within their own discipline,
 or add one. Edits stage into a `Rota Edit Draft` (server-side, survives a reload) and apply as
 one `EditPlan`. See "Materialising settled schedules" below.
+
+**Role Matrix** (`autoshift/role_matrix.py` + Desk Page `autoshift/autoshift/page/role_matrix/`)
+— Employee Scheduling Role drawn as the dense employee × role matrix it is a sparse
+representation of. Rows are active employees holding a role among the shown columns (or all,
+with the toggle); one Settings column holds a one-chip summary of Employee Settings (opens
+the doc, or a new one, in a new tab); each role cell is an inline `suitability` input, blank
+= no row. Edits stage **client-side only** (no draft doctype) and `apply_changes` writes the
+batch in one request, so one failing row rolls it all back. Clearing a cell deletes the row —
+HR Manager has no delete permission on the doctype, and the page refuses the edit up front.
 
 ---
 

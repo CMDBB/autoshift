@@ -1148,6 +1148,113 @@ def test_fte_soft_ceiling_ignores_employees_without_a_target():
 	assert not [v for v in ctx.prob.variables() if v.name.startswith("fte_over")]
 
 
+# ── role substitution suitability ─────────────────────────────────────────────
+
+
+SUITABILITY_RULES = default_weight_specs(
+	"warm_start",
+	"one_shift_per_day",
+	"room_coverage",
+	"room_utilization_objective",
+	"suitability_preference_objective",
+)
+
+
+def two_candidates(**overrides) -> DataPackage:
+	"""E1 and E2 both hold R1; one room, one shift, one day — only one of them is needed."""
+	base: dict[str, Any] = {
+		"employees": ["E1", "E2"],
+		"employee_roles": {"E1": ("R1",), "E2": ("R1",)},
+		"target_shifts": {"E1": 1, "E2": 1},
+		"max_rpe": {("E1", "R1"): 1, ("E2", "R1"): 1},
+		"shift_preferences": {"E1": {"AM": 0.5}, "E2": {"AM": 0.5}},
+		"rules": SUITABILITY_RULES,
+	}
+	base.update(overrides)
+	return pkg(**base)
+
+
+def test_the_two_preference_objectives_are_mutually_exclusive():
+	with pytest.raises(ValueError, match="mutually exclusive"):
+		BuiltinRule.check_ruleset({"shift_preference_objective", "suitability_preference_objective"})
+
+
+def test_suitability_objective_replaces_shift_preferences_in_the_standard_ruleset():
+	assert "suitability_preference_objective" in STANDARD_RULES
+	assert "shift_preference_objective" not in STANDARD_RULES
+
+
+def test_suitability_objective_is_shift_preferences_when_every_suitability_is_one():
+	"""The default matrix is all ones: swapping the rule in must not move the optimum."""
+	data = pkg(
+		employees=["E1", "E2"],
+		shift_types=["AM", "PM"],
+		working_days=days_from(3),
+		employee_roles={"E1": ("R1",), "E2": ("R1",)},
+		target_shifts={"E1": 3, "E2": 2},
+		max_rpe={("E1", "R1"): 1, ("E2", "R1"): 1},
+		rooms={("D1", "B1"): 2},
+		shift_preferences={"E1": {"AM": 0.8, "PM": 0.2}, "E2": {"AM": 0.3, "PM": 0.7}},
+	)
+	common = ("warm_start", "one_shift_per_day", "fte_ceiling", "room_coverage", "room_utilization_objective")
+	plain, _, _ = solve(
+		dataclasses.replace(data, rules=default_weight_specs(*common, "shift_preference_objective"))
+	)
+	scaled, _, _ = solve(
+		dataclasses.replace(data, rules=default_weight_specs(*common, "suitability_preference_objective"))
+	)
+	assert status(plain) == status(scaled) == "Optimal"
+	assert pulp.value(scaled.objective) == pytest.approx(pulp.value(plain.objective))
+
+
+def test_a_regular_holder_is_preferred_over_a_substitute():
+	prob, x, _ = solve(two_candidates(role_suitability={("E2", "R1"): 1.2}))
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 1
+	assert assigned(x, employee="E2") == 0
+
+
+def test_a_better_backup_is_preferred_over_a_worse_one():
+	prob, x, _ = solve(two_candidates(role_suitability={("E1", "R1"): 3.0, ("E2", "R1"): 1.2}))
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 0
+	assert assigned(x, employee="E2") == 1
+
+
+def test_a_terrible_substitute_still_opens_a_room_nobody_else_can():
+	"""Suitability 3 costs -1.5 against the room's +3: feasible, and still worth it."""
+	prob, x, ar = solve(
+		pkg(
+			shift_preferences={"E1": {"AM": 0.5}},
+			role_suitability={("E1", "R1"): 3.0},
+			rules=SUITABILITY_RULES,
+		)
+	)
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1") == 1
+	assert sum(pulp.value(v) or 0 for v in ar.values()) == pytest.approx(1)
+
+
+def test_role_suitability_changes_input_hash_only_when_set():
+	assert pkg().input_hash() == pkg(role_suitability={}).input_hash()
+	assert pkg().input_hash() != pkg(role_suitability={("E1", "R1"): 1.2}).input_hash()
+
+
+def test_dumps_loads_round_trips_role_suitability():
+	data = pkg(role_suitability={("E1", "R1"): 1.2})
+	restored = DataPackage.loads(data.dumps())
+	assert restored == data
+	assert restored.input_hash() == data.input_hash()
+
+
+def test_loads_reads_a_package_without_role_suitability_as_all_ones():
+	payload = json.loads(pkg().dumps())
+	del payload["role_suitability"]
+	restored = DataPackage.loads(json.dumps(payload))
+	assert restored.role_suitability == {}
+	assert restored.suitability("E1", "R1") == 1.0
+
+
 # ── multi-employee integration ────────────────────────────────────────────────
 
 

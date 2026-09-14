@@ -13,6 +13,7 @@
   "role_fte",
   "max_rooms",
   "binding_override",
+  "suitability",
   "section_break_validity",
   "active",
   "column_break_2",
@@ -72,6 +73,16 @@
    "options": "\nBinding\nNot Binding"
   },
   {
+   "default": "1",
+   "description": "How suitable this employee is to work in this role, as a divisor of how desirable the resulting shift is: 1 for a regular holder, 1.2 for a good backup, 3 for a terrible but feasible one. Read by the \"Shift preferences and role suitability\" objective; easiest to maintain in the Role Matrix.",
+   "fieldname": "suitability",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Suitability",
+   "non_negative": 1,
+   "precision": "2"
+  },
+  {
    "fieldname": "section_break_validity",
    "fieldtype": "Section Break",
    "label": "Validity"
@@ -100,7 +111,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-19 00:00:00.000000",
+ "modified": "2026-09-14 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Employee Scheduling Role",

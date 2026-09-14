@@ -282,6 +282,7 @@ def load(run_doc) -> DataPackage:
 			"role_fte",
 			"max_rooms",
 			"binding_override",
+			"suitability",
 			"valid_from",
 			"valid_to",
 		],
@@ -315,6 +316,7 @@ def load(run_doc) -> DataPackage:
 	max_rpe: dict[tuple[str, str], int] = {}
 	role_fte_pct: dict[tuple[str, str], float] = {}
 	binding_pairs: set[tuple[str, str]] = set()
+	role_suitability: dict[tuple[str, str], float] = {}
 	for row in held_rows:
 		if row.employee not in active_employees:
 			continue
@@ -323,6 +325,9 @@ def load(run_doc) -> DataPackage:
 		max_rpe[pair] = int(row.max_rooms or role_max_rooms.get(row.scheduling_role, 1))
 		if row.role_fte:
 			role_fte_pct[pair] = float(row.role_fte)
+		# blank reads as a regular holder, like the field's default; kept sparse
+		if row.suitability and float(row.suitability) != 1.0:
+			role_suitability[pair] = float(row.suitability)
 		if _is_binding(row, role_binding):
 			binding_pairs.add(pair)
 	employee_roles = {e: tuple(sorted(rs)) for e, rs in employee_role_lists.items()}
@@ -581,4 +586,5 @@ def load(run_doc) -> DataPackage:
 		binding_pairs=frozenset(binding_pairs),
 		binding_conflicts=tuple(sorted(binding_conflicts)),
 		unresolved_assignments=tuple(sorted(set(unresolved_assignments))),
+		role_suitability=role_suitability,
 	)

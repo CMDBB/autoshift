@@ -174,6 +174,42 @@ reason: a hard reading that cannot be satisfied takes the whole run down with it
 
 ---
 
+## Role substitution: suitability scales the cost, not the reward
+
+A role an employee only *substitutes* in is still a capability — the loader has to create
+their variables for it, so it is an Employee Scheduling Role row like any other, with
+`suitability > 1`. Keeping it on the one doctype is what lets the Role Matrix be a plain
+dense view of that sparse relation; a separate substitution doctype would have made it a
+merge of two.
+
+The user-facing meaning is "a divisor for the desirability of the resulting shift". The
+existing preference term is not a desirability, though: `(-1 + pref) * x` is ≤ 0 for every
+assignment, a cost that doubles as a rough cost-to-company proxy (see "half-empty" above).
+Dividing a negative number by the suitability would make a poor substitute *cheaper* than
+the holder. So the cost is multiplied instead: `(-1 + pref) * suitability`. Two alternatives were weighed:
+
+- `-1 + pref / suitability` — literal divisor on the reward only. With `pref ≈ 0.5`, even
+  suitability 3 costs less than 0.5 extra, so nothing distinguishes "terrible" from "good".
+- `pref - suitability` — so harsh that suitability 3 (-2.5) nearly cancels a room's +3.
+
+With the multiplied cost, 1.2 is -0.6 against a holder's -0.5 and 3 is -1.5: a room nobody
+else can staff (worth 3 at the default weights) still opens with a terrible backup, which is
+what "feasible" was meant to say.
+
+It is a **new rule in a choice group with `shift_preference_objective`**, not an edit of
+it: the new one is standard (the seeding swaps the Standard Ruleset row; that one row's
+weight resets to the default), and a ruleset that wants to ignore the matrix can still pick
+the old one. With every suitability at 1 the two are the same model, and
+`DataPackage.role_suitability` is sparse and omitted from `input_hash` when empty, so a site
+that never opens the Role Matrix keeps its cache hits.
+
+**Open:** a substitute row inherits `binding_override` like every other row, so on a role
+marked binding the substitute is bound too — and with nothing on the books in that role,
+both binding rules pin them to zero there. Substitution in binding roles therefore does
+nothing yet.
+
+---
+
 ## Why `autoshift/rota/` exists at all
 
 A settled week is a rule, and stock HR has somewhere to put a rule: a `Shift Schedule`

@@ -150,6 +150,7 @@ class BuiltinRule:
 GROUP_EXISTING_ASSIGNMENTS = "existing_assignments"
 GROUP_ROLE_BINDING = "role_binding"
 GROUP_WORKLOAD_CEILING = "workload_ceiling"
+GROUP_SHIFT_PREFERENCE = "shift_preference"
 
 
 BUILTIN_RULES: dict[str, BuiltinRule] = {}  # empty -> filled by the builtin_rule decorator
@@ -555,9 +556,11 @@ def role_fte_target_objective(ctx: RuleContext) -> None:
 @builtin_rule(
 	"Objective: Shift preferences",
 	"Reward assignments matching each employee's normalized shift preferences (from Employee "
-	"Settings); assignments to less-preferred shifts score lower.",
+	"Settings); assignments to less-preferred shifts score lower. Ignores role substitution "
+	"suitability: every role an employee holds counts as fully suitable.",
 	kind=KIND_OBJECTIVE,
-	standard=True,
+	standard=False,
+	group=GROUP_SHIFT_PREFERENCE,
 	topic=TOPIC_PREFERENCES,
 )
 def shift_preference_objective(ctx: RuleContext) -> None:
@@ -566,6 +569,36 @@ def shift_preference_objective(ctx: RuleContext) -> None:
 		pulp.lpSum(
 			(-1 + data.shift_preferences.get(e, {}).get(s, 0.0)) * var
 			for (e, _r, s, _d, _b), var in ctx.x.items()
+		)
+	)
+
+
+@builtin_rule(
+	"Objective: Shift preferences and role suitability",
+	"Reward assignments matching each employee's normalized shift preferences (from Employee "
+	"Settings), and make an assignment in a role the employee only substitutes in cost more. "
+	"Each assignment's cost is scaled by the Suitability on its Employee Scheduling Role "
+	"(maintained in the Role Matrix): 1 is a regular holder and costs what 'Shift preferences' "
+	"charges, 1.2 a good backup, 3 a terrible but feasible one. With every suitability at 1 "
+	"this is exactly 'Shift preferences'.",
+	kind=KIND_OBJECTIVE,
+	standard=True,
+	group=GROUP_SHIFT_PREFERENCE,
+	topic=TOPIC_PREFERENCES,
+)
+def suitability_preference_objective(ctx: RuleContext) -> None:
+	"""`(-1 + pref) * suitability` per assignment.
+
+	The per-assignment term is a (negative) net value, so "divide the desirability by the
+	suitability" has to scale the cost *up*: dividing a negative value would make a poor
+	substitute cheaper than the holder. At the default weights a staffed room pays 3, so
+	a suitability-3 backup (about -1.5) still opens a room nobody else can staff.
+	"""
+	data = ctx.data
+	ctx.add_objective(
+		pulp.lpSum(
+			(-1 + data.shift_preferences.get(e, {}).get(s, 0.0)) * data.suitability(e, r) * var
+			for (e, r, s, _d, _b), var in ctx.x.items()
 		)
 	)
 

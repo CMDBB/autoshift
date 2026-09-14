@@ -10,7 +10,21 @@ class EmployeeSchedulingRole(Document):
 	def validate(self):
 		self._validate_unique()
 		self._validate_window()
+		self._validate_suitability()
 		self._warn_on_overcommitted_fte()
+
+	def _validate_suitability(self):
+		"""1 is the best there is; below it a substitute would outbid the role's holders."""
+		if not self.suitability:
+			# a Float left blank arrives as 0; the loader reads that as a holder too
+			self.suitability = 1
+		elif self.suitability < 1:
+			frappe.throw(
+				frappe._(
+					"Suitability cannot be below 1: 1 is a regular holder of the role, higher is a "
+					"less suitable substitute."
+				)
+			)
 
 	def _validate_unique(self):
 		"""The autoname already collides on a duplicate; say so legibly."""

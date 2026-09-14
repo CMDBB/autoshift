@@ -99,6 +99,15 @@ class DataPackage:
 	# so it does not perturb `input_hash` between otherwise identical runs.
 	unresolved_assignments: tuple[tuple[str, datetime.date, str], ...] = ()
 
+	# Substitution suitability of an (employee, role) pair, from Employee Scheduling
+	# Role.suitability: 1 is a regular holder, 1.2 a good backup, 3 a terrible but feasible
+	# one. Sparse — only pairs that differ from 1 are present, so a site that never touches
+	# the Role Matrix hashes and solves exactly as before.
+	role_suitability: dict[tuple[str, str], float] = dataclasses.field(default_factory=dict)
+
+	def suitability(self, employee: str, role: str) -> float:
+		return self.role_suitability.get((employee, role), 1.0)
+
 	def input_hash(self) -> str:
 		"""
 		Stable hash of every field that influences the MILP solution.
@@ -118,6 +127,9 @@ class DataPackage:
 			return value
 
 		payload = {f.name: normalize(getattr(self, f.name)) for f in dataclasses.fields(self)}
+		if not self.role_suitability:
+			# keep the cache hits of runs solved before the field existed
+			del payload["role_suitability"]
 		blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 		return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -155,6 +167,9 @@ class DataPackage:
 			],
 			"unresolved_assignments": [
 				[employee, date.isoformat(), reason] for employee, date, reason in self.unresolved_assignments
+			],
+			"role_suitability": [
+				[employee, role, factor] for (employee, role), factor in sorted(self.role_suitability.items())
 			],
 		}
 		return json.dumps(payload)
@@ -208,6 +223,10 @@ class DataPackage:
 				(employee, datetime.date.fromisoformat(date), reason)
 				for employee, date, reason in payload.get("unresolved_assignments", [])
 			),
+			# absent from packages captured before the Role Matrix existed: everyone was a holder
+			role_suitability={
+				(employee, role): factor for employee, role, factor in payload.get("role_suitability", [])
+			},
 		)
 
 

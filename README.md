@@ -87,6 +87,7 @@ is scheduled without either discipline over-stating its capacity.
 | Agreed FTE % in Role | *Optional.* The informally agreed share of their time in this role. Blank means no expectation. |
 | Max Rooms Override | *Optional.* Overrides the role's figure for this person (e.g. an apprentice covering one chair, not three) |
 | Binding Override | *Optional.* Overrides the role's Assignments Are Binding for this person. Blank inherits |
+| Suitability | How suitable they are to work this role: **1** for a regular holder (the default), higher for a substitute — 1.2 a good backup, 3 a terrible but feasible one. Must be at least 1 |
 | Valid From / Valid To | *Optional.* Time-boxes a capability acquired or dropped mid-year |
 
 **An employee with no Scheduling Role is not scheduled at all.** This is how
@@ -194,6 +195,34 @@ from it (see the "Agreed role FTE split" objective rule) but never forbidden,
 because these splits are normally an informal expectation rather than an
 entitlement. If you do need it enforced, add the non-standard
 **Agreed role FTE ceiling** constraint rule to your ruleset.
+
+#### The Role Matrix
+
+The **Role Matrix** (a shortcut on the Autoshift workspace) shows the same
+records as one table: a row per employee, a column per Scheduling Role, and the
+Suitability in every cell where the employee has that role. Pick a discipline
+(or all of them) and type into a cell to give someone a role or change how
+suitable they are for it; clear a cell to take the role away. Tick **All
+Employees** to list people who have no role there yet. Cells are coloured from
+green (1) to red (3 and up), and a role that is inactive or outside its
+validity window today is struck through. Hover a cell for its Agreed FTE,
+overrides and validity, or click its ↗ to open the record.
+
+The **Settings** column sums up each person's Employee Settings in one chip —
+★ for a favourite shift, ↑ for the shift they weight highest, *Uniform* for
+none — and opens the record in a new tab (or creates one, if they have none).
+
+Like the Rota Editor, nothing is written until you click **Apply Changes**,
+and **Discard Changes** drops your edits. Removing a role deletes its Employee
+Scheduling Role, including any Agreed FTE or validity window on it.
+
+The optimiser uses Suitability through the standard **Shift preferences and
+role suitability** objective: every shift an employee works in a role costs
+its usual preference cost multiplied by their suitability for that role. So
+the practice prefers a regular holder over a backup, and a good backup over a
+poor one, but still uses a poor backup to staff a room nobody else can. With
+every Suitability at 1 this is exactly the older **Shift preferences** rule,
+which you can still pick instead (they are a choice of one).
 
 ### 4. Employee Settings *(optional per employee)*
 
@@ -568,7 +597,8 @@ document per constraint group. The built-in constraint rules:
 scaled by its row weight. The built-in objective rules:
 
 - Room utilisation: `weight × Σ active_rooms`
-- Shift preferences: `weight × Σ pref[employee, shift] × x[...]`
+- Shift preferences and role suitability *(standard)*: `weight × Σ (pref[employee, shift] − 1) × suitability[employee, role] × x[...]`
+- Shift preferences *(its alternative)*: the same with every suitability at 1
 - Agreed role FTE split: `−weight × Σ |assigned[employee, role] − agreed[employee, role]|`,
   linearised with a pair of non-negative slack variables per pair. Only pairs whose Employee
   Scheduling Role names an agreed figure contribute.
