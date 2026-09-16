@@ -97,7 +97,8 @@ def objective_breakdown(
 	the real solution. A rule that introduces auxiliary variables (a linearized
 	absolute value, say) creates fresh, unsolved ones on that throwaway problem, so
 	their values are copied back from the solved problem by name — without that they
-	are `None` and the rule silently reports 0.0. Only built-ins of kind "objective"
+	are `None` and the rule silently reports 0.0. The presence variables are rebuilt the
+	same way, for the same reason. Only built-ins of kind "objective"
 	are broken out —
 	constraint rules never call `ctx.add_objective` (0 contribution, skipped), and
 	Custom Code rules don't carry their `rule_kind` in a captured snapshot, so
@@ -112,7 +113,17 @@ def objective_breakdown(
 			not builtin_key and not name.startswith("Objective: ")
 		):
 			continue
-		ctx = RuleContext(prob=pulp.LpProblem(), x=x, active_rooms=active_rooms, data=data)
+		throwaway = pulp.LpProblem()
+		# Fresh presence variables under the names the real model used, so the copy-back
+		# below fills them in: the preference objectives are charged per presence, and
+		# without these they would evaluate to nothing at all.
+		ctx = RuleContext(
+			prob=throwaway,
+			x=x,
+			active_rooms=active_rooms,
+			data=data,
+			presence=model_builder.presence_variables(data, throwaway),
+		)
 		ctx._current_weight = weight
 		if builtin_key and BUILTIN_RULES[builtin_key].kind == KIND_OBJECTIVE:
 			BUILTIN_RULES[builtin_key].apply(ctx)

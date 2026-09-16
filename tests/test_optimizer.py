@@ -29,7 +29,13 @@ from autoshift.optimizer.rules import (
 	leave_blocklist,
 	order_specs,
 )
-from autoshift.optimizer.types import DataPackage, planning_days
+from autoshift.optimizer.types import (
+	MODE_COLLATERAL,
+	MODE_EXCLUSIVE,
+	MODE_FLEXIBLE,
+	DataPackage,
+	planning_days,
+)
 
 MON = datetime.date(day=1, month=6, year=2026)  # a known Monday
 
@@ -534,7 +540,15 @@ def test_order_specs_survives_a_dependency_cycle():
 # ── role binding (settled schedules) ──────────────────────────────────────────
 
 
-BINDING_RULES = builtin_specs("warm_start", "bind_role_assignments", "one_shift_per_day", "room_coverage")
+BINDING_RULES = builtin_specs(
+	"warm_start",
+	"bind_role_assignments",
+	"one_shift_per_day",
+	"room_coverage",
+	# an objective, so "staffs the room" is something the model wants rather than something
+	# CBC happens to return: a pure feasibility model is equally happy leaving every room dark
+	"room_utilization_objective",
+)
 
 
 def test_binding_role_freezes_the_whole_schedule():
@@ -596,7 +610,12 @@ def test_binding_rule_is_inert_without_binding_pairs():
 	data = {"working_days": days_from(2), "target_shifts": {"E1": 2}}
 	_prob, with_rule, _ = solve(pkg(**data, rules=BINDING_RULES))
 	_prob2, without, _ = solve(
-		pkg(**data, rules=builtin_specs("warm_start", "one_shift_per_day", "room_coverage"))
+		pkg(
+			**data,
+			rules=builtin_specs(
+				"warm_start", "one_shift_per_day", "room_coverage", "room_utilization_objective"
+			),
+		)
 	)
 	assert assigned(with_rule) == assigned(without)
 
@@ -1360,3 +1379,140 @@ def test_completion_items_have_editor_shape():
 		assert set(item) == {"value", "meta", "score"}
 		assert item["meta"] in ("ctx", "data", "pulp", "itertools", "utils")
 		assert isinstance(item["score"], int)
+
+
+# ── role modes: collateral duties and exclusive roles ─────────────────────────
+
+
+def with_collateral(**overrides) -> DataPackage:
+	"""E1 holds a working role R1 and a collateral duty RC, both in discipline D1."""
+	base: dict[str, Any] = {
+		"roles": ["R1", "RC"],
+		"role_discipline": {"R1": "D1", "RC": "D1"},
+		"employee_roles": {"E1": ("R1", "RC")},
+		"max_rpe": {("E1", "R1"): 1, ("E1", "RC"): 3},
+		"role_mode": {"RC": MODE_COLLATERAL},
+		"rules": builtin_specs(*STANDARD_RULES),
+	}
+	base.update(overrides)
+	return pkg(**base)
+
+
+def solved(data: DataPackage):
+	"""`solve`, with the presence variables — the rest of the file only needs x."""
+	prob, x, ar, _logs, ctx = build(data)
+	prob.solve(pulp.COIN_CMD(msg=False))
+	return prob, x, ar, ctx.presence
+
+
+def test_a_collateral_duty_is_worked_alongside_a_shift_on_one_presence():
+	"""Both roles in the same slot, and that counts as one half-day of somebody's life."""
+	prob, x, _ar, presence = solved(with_collateral(target_shifts={"E1": 1}))
+
+	assert status(prob) == "Optimal"
+	assert assigned(x, role="R1") == 1
+	assert assigned(x, role="RC") == 1
+	assert (pulp.value(presence[("E1", "AM", MON, "B1")]) or 0) > 0.5
+	assert sum(1 for var in presence.values() if (pulp.value(var) or 0) > 0.5) == 1
+
+
+def test_a_collateral_duty_does_not_count_against_the_fte_ceiling():
+	"""An FTE target of one shift is not spent twice by a lead duty worked during it."""
+	data = with_collateral(
+		working_days=days_from(2),
+		target_shifts={"E1": 1},  # one half-day over two days
+		rooms={("D1", "B1"): 2},
+	)
+	prob, x, _ar, presence = solved(data)
+
+	assert status(prob) == "Optimal"
+	assert sum(1 for var in presence.values() if (pulp.value(var) or 0) > 0.5) == 1
+	assert assigned(x) == 2  # the shift and the duty worked during it
+
+
+def test_a_collateral_duty_can_stand_alone():
+	"""Nothing requires a host: a lead whose rooms are covered may spend the day leading."""
+	data = with_collateral(
+		employees=["E1", "E2"],
+		employee_roles={"E1": ("RC",), "E2": ("R1",)},
+		target_shifts={"E1": 1, "E2": 1},
+		max_rpe={("E1", "RC"): 3, ("E2", "R1"): 1},
+	)
+	prob, x, _ar, presence = solved(data)
+
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1", role="RC") == 1
+	assert (pulp.value(presence[("E1", "AM", MON, "B1")]) or 0) > 0.5
+
+
+def test_collateral_roles_do_not_gate_room_coverage():
+	"""
+	`room_coverage` takes the minimum over a discipline's roles. A collateral role counted
+	there would cap the discipline at the rooms its leads span — and leave every room dark
+	whenever nobody is leading.
+	"""
+	data = with_collateral(
+		employees=["E1", "E2"],
+		employee_roles={"E1": ("R1",), "E2": ("RC",)},
+		target_shifts={"E1": 1, "E2": 0},  # E2 cannot work, so nobody leads
+		max_rpe={("E1", "R1"): 1, ("E2", "RC"): 3},
+	)
+	prob, _x, ar, _presence = solved(data)
+
+	assert status(prob) == "Optimal"
+	assert pulp.value(ar[("D1", "AM", MON, "B1")]) == 1
+
+
+def test_a_collateral_duty_is_worth_the_rooms_it_oversees_and_no_more():
+	"""`min(rooms staffed, max-rooms of the duty)`, so a lead over one room earns one."""
+	data = with_collateral(rooms={("D1", "B1"): 3}, target_shifts={"E1": 1})
+	prob, _x, _ar, _presence = solved(data)
+	values = {
+		var.name: pulp.value(var) for var in prob.variables() if var.name.startswith("collateral_value")
+	}
+
+	assert status(prob) == "Optimal"
+	# one employee staffs one room, though the duty spans three
+	assert set(values.values()) == {1.0}
+
+
+def test_an_exclusive_role_admits_no_collateral_duty():
+	"""The same slot the flexible version works both ways round is worked one way only."""
+	flexible = with_collateral(target_shifts={"E1": 1})
+	exclusive = with_collateral(
+		target_shifts={"E1": 1}, role_mode={"R1": MODE_EXCLUSIVE, "RC": MODE_COLLATERAL}
+	)
+
+	_prob, x_flexible, _ar, _p = solved(flexible)
+	prob, x_exclusive, _ar, _p = solved(exclusive)
+
+	assert assigned(x_flexible, role="R1") == 1 and assigned(x_flexible, role="RC") == 1
+	assert status(prob) == "Optimal"
+	assert assigned(x_exclusive, role="R1") == 1  # staffing the room is worth more
+	assert assigned(x_exclusive, role="RC") == 0
+
+
+def test_a_holders_own_mode_override_wins():
+	"""
+	The same two assignments in one slot: legal while the second role is a collateral duty,
+	impossible once this holder works it as an ordinary role, because a presence spends
+	itself on one role.
+	"""
+	both = {("E1", "R1", "AM", MON, "B1"), ("E1", "RC", "AM", MON, "B1")}
+	rules = builtin_specs("warm_start", "use_existing_assignments", "one_shift_per_day")
+
+	as_collateral = with_collateral(forced=both, rules=rules)
+	as_role = with_collateral(forced=both, rules=rules, role_mode_overrides={("E1", "RC"): MODE_FLEXIBLE})
+
+	assert as_collateral.mode("E1", "RC") == MODE_COLLATERAL
+	assert as_role.working_roles("E1") == ("R1", "RC")
+	prob, _x, _ar, _p = solved(as_collateral)
+	assert status(prob) == "Optimal"
+	prob, _x, _ar, _p = solved(as_role)
+	assert status(prob) == "Infeasible"
+
+
+def test_role_modes_leave_the_input_hash_of_a_site_without_them_alone():
+	"""A site where every role is Flexible must keep hitting the solver cache."""
+	assert pkg().input_hash() == pkg(role_mode={}, role_mode_overrides={}).input_hash()
+	assert pkg().input_hash() != pkg(role_mode={"R1": MODE_COLLATERAL}).input_hash()

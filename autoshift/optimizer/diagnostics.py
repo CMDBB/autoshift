@@ -45,7 +45,7 @@ from .rules import (
 	role_fte_ceiling,
 	use_existing_assignments,
 )
-from .types import DataPackage
+from .types import MODE_FLEXIBLE, DataPackage
 
 #: Slack variables the elastic analysis introduces are named with this prefix so they
 #: never collide with a rule's own auxiliary variables (`_vname`).
@@ -53,6 +53,14 @@ SLACK_PREFIX = "__elastic"
 
 #: Below this a slack is rounding noise from CBC, not a real violation.
 VIOLATION_EPS = 1e-6
+
+#: Constraint families the elastic analysis leaves rigid, for the same reason it leaves
+#: variable bounds rigid: they are the *input*, not a policy that could give way.
+#: ``bind_presence`` is the settled week the strict binding rule freezes — relax it and every
+#: infeasibility binding causes gets blamed on binding rather than on the rule it collides
+#: with. The ``presence_*`` families are what a presence variable means (`model_builder`);
+#: relaxing them buys feasibility by inventing somebody who is in and doing nothing.
+INELASTIC_GROUPS = frozenset({"bind_presence", "presence_role", "presence_collateral", "presence_idle"})
 
 COMB = tuple[str, str, str, datetime.date, str]  # (employee, role, shift_type, date, branch)
 
@@ -113,10 +121,12 @@ def pinned_assignments(data: DataPackage) -> dict[COMB, str]:
 	"""
 	The ``forced`` combinations the selected rules nail to 1, and which rule nails them.
 
-	``bind_role_assignments`` pins only the combinations belonging to a binding
-	``(employee, role)`` pair — and, separately, pins everything *else* of theirs to 0,
-	which no conflict here can be about. ``use_existing_assignments`` pins the lot.
-	``soft_bind_role_assignments`` pins *nothing* on: a bound holder's own shifts stay
+	``use_existing_assignments`` pins the lot. ``bind_role_assignments`` pins a bound
+	employee's booked *presence* instead (see :func:`pinned_presence`), and of their
+	assignments only the ones whose role cannot be swapped out of — an Exclusive role, or a
+	collateral duty. Which flexible role a settled half-day is worked in is free under it, so
+	nothing about that choice can be infeasible in advance.
+	``soft_bind_role_assignments`` pins *nothing* on: a bound holder's own half-days stay
 	free variables under it, which is exactly why it cannot produce these conflicts and
 	why it is the default.
 	"""
@@ -125,17 +135,77 @@ def pinned_assignments(data: DataPackage) -> dict[COMB, str]:
 	if use_existing_assignments.__name__ in selected:
 		pinned |= dict.fromkeys(data.forced, use_existing_assignments.__name__)
 	if bind_role_assignments.__name__ in selected:
+		bound = data.bound_employees()
 		pinned |= {
 			comb: bind_role_assignments.__name__
 			for comb in data.forced
-			if (comb[0], comb[1]) in data.binding_pairs
+			if comb[0] in bound and data.mode(comb[0], comb[1]) != MODE_FLEXIBLE
 		}
 	return pinned
+
+
+def pinned_presence(data: DataPackage) -> dict[tuple[str, str, datetime.date], tuple[set[str], str]]:
+	"""
+	The half-days the selected rules oblige somebody to be in for, and which rule obliges it.
+
+	Keyed by ``(employee, shift, day)``, valued with the branches that slot is pinned to and
+	the rule responsible. The set is **empty where the branch is free**: strict binding
+	settles that the person is in, not where, so its equality is over every branch at once.
+	``use_existing_assignments`` pins whole assignments, so its slots name their branch — and
+	two branches in one slot is then two presences, not one.
+	"""
+	selected = selected_builtins(data)
+	slots: dict[tuple[str, str, datetime.date], tuple[set[str], str]] = {}
+	if bind_role_assignments.__name__ in selected:
+		bound = data.bound_employees()
+		for e, s, d, _b in data.forced_presence():
+			if e in bound:
+				slots[(e, s, d)] = (set(), bind_role_assignments.__name__)
+	if use_existing_assignments.__name__ in selected:
+		for e, _r, s, d, b in data.forced:
+			branches, _by = slots.get((e, s, d), (set(), ""))
+			slots[(e, s, d)] = (branches | {b}, use_existing_assignments.__name__)
+	return slots
+
+
+def _presence_count(branches: set[str]) -> int:
+	"""How many presence variables a pinned slot obliges: one per branch, or one if free."""
+	return max(1, len(branches))
+
+
+def _pinned_role_counts(
+	data: DataPackage,
+	pinned: dict[COMB, str],
+	presence: dict[tuple[str, str, datetime.date], tuple[set[str], str]],
+) -> collections.Counter:
+	"""Shifts each ``(employee, role)`` is obliged to work, as far as that is knowable.
+
+	A pinned assignment names its role outright. A pinned *presence* usually does not — that
+	is the point of it — except where the employee holds exactly one role that can spend a
+	shift: the half-day has nowhere else to go, so a role ceiling can still be broken by a
+	settled week without a single assignment being pinned.
+	"""
+	counts: collections.Counter = collections.Counter()
+	counted_slots = set()
+	for e, r, s, d, _b in pinned:
+		counts[(e, r)] += 1
+		counted_slots.add((e, s, d))
+	for (e, s, d), (branches, _by) in presence.items():
+		working = data.working_roles(e)
+		if (e, s, d) in counted_slots or len(working) != 1:
+			continue
+		counts[(e, working[0])] += _presence_count(branches)
+	return counts
 
 
 def conflict_scan(data: DataPackage) -> list[Conflict]:
 	"""
 	Find, without solving anything, where the pinned assignments contradict a selected rule.
+
+	Two pinned sets, because two things can be settled: whole assignments (`pinned_assignments`,
+	role and branch included) and bare presence (`pinned_presence`, a half-day somebody is in
+	for). The workload rules count presence; only the rules about *which* role or branch read
+	assignments.
 
 	Only the constraint rules whose feasibility is decidable from the pinned set alone are
 	checked: an assignment pinned on either fits under a ceiling or it does not, no search
@@ -144,13 +214,21 @@ def conflict_scan(data: DataPackage) -> list[Conflict]:
 	"""
 	selected = selected_builtins(data)
 	pinned = pinned_assignments(data)
+	presence = pinned_presence(data)
 	day_set = set(data.working_days)
 	conflicts: list[Conflict] = []
 
-	# Structural: a pinned combination with no variable behind it. The loader normally
-	# catches this (`_unresolvable` throws for a bound employee), so reaching it means a
-	# package was hand-built or captured before that check existed.
-	for e, r, s, d, b in sorted(pinned):
+	# Structural: a combination with no variable behind it. Everything a rule pins on, plus a
+	# bound employee's whole books — binding reads their week as *input*, so a day of it the
+	# model cannot express is a data error however loosely the rule holds them. The loader
+	# normally catches this (`_unresolvable` throws for a bound employee), so reaching it means
+	# a package was hand-built or captured before that check existed.
+	structural = dict(pinned)
+	if bind_role_assignments.__name__ in selected:
+		structural |= {
+			comb: bind_role_assignments.__name__ for comb in data.forced if comb[0] in data.bound_employees()
+		}
+	for e, r, s, d, b in sorted(structural):
 		missing = (
 			e not in data.employees
 			or r not in data.employee_roles.get(e, ())
@@ -172,14 +250,14 @@ def conflict_scan(data: DataPackage) -> list[Conflict]:
 	# leave_blocklist fixes every variable of a blocked (employee, day) to 0; warm_start
 	# raises on the collision first, so this reports the same thing more legibly.
 	if leave_blocklist.__name__ in selected:
-		for comb, by in sorted(pinned.items()):
-			e, _r, s, d, b = comb
+		for (e, s, d), (branches, by) in sorted(presence.items()):
 			if (e, d) in data.leave_blocked:
+				where = f" at {', '.join(sorted(branches))}" if branches else ""
 				conflicts.append(
 					Conflict(
 						leave_blocklist.__name__,
 						f"{e} on {d}",
-						f"on leave, but {by} pins {s} at {b} that day",
+						f"on leave, but {by} pins them in for {s}{where} that day",
 					)
 				)
 
@@ -187,25 +265,26 @@ def conflict_scan(data: DataPackage) -> list[Conflict]:
 	# A practice running half-day rotas trips this the moment somebody's settled week has
 	# a morning and an afternoon on the same date.
 	if one_shift_per_day.__name__ in selected:
-		by_day: dict[tuple[str, datetime.date], list[COMB]] = collections.defaultdict(list)
-		for comb in pinned:
-			by_day[(comb[0], comb[3])].append(comb)
-		for (e, d), combs in sorted(by_day.items()):
-			if len(combs) > 1:
-				spelled = ", ".join(f"{s} at {b} as {r}" for _e, r, s, _d, b in sorted(combs))
+		by_day: dict[tuple[str, datetime.date], list[tuple[str, set[str]]]] = collections.defaultdict(list)
+		for (e, s, d), (branches, _by) in presence.items():
+			by_day[(e, d)].append((s, branches))
+		for (e, d), slots in sorted(by_day.items()):
+			count = sum(_presence_count(branches) for _s, branches in slots)
+			if count > 1:
+				spelled = ", ".join(
+					f"{s} at {', '.join(sorted(branches))}" if branches else s
+					for s, branches in sorted(slots)
+				)
 				conflicts.append(
 					Conflict(
 						one_shift_per_day.__name__,
 						f"{e} on {d}",
-						f"pinned to {len(combs)} shifts ({spelled}), but the rule allows one per day",
+						f"pinned in for {count} shifts ({spelled}), but the rule allows one per day",
 					)
 				)
 
 	if one_branch_per_shift.__name__ in selected:
-		by_slot: dict[tuple[str, str, datetime.date], set[str]] = collections.defaultdict(set)
-		for e, _r, s, d, b in pinned:
-			by_slot[(e, s, d)].add(b)
-		for (e, s, d), branches in sorted(by_slot.items()):
+		for (e, s, d), (branches, _by) in sorted(presence.items()):
 			if len(branches) > 1:
 				conflicts.append(
 					Conflict(
@@ -219,7 +298,9 @@ def conflict_scan(data: DataPackage) -> list[Conflict]:
 	# optimizer's own assignments do, so a settled rota fuller than the contract is fatal.
 	tol = 1.05
 	if fte_ceiling.__name__ in selected:
-		per_employee = collections.Counter(comb[0] for comb in pinned)
+		per_employee: collections.Counter = collections.Counter()
+		for (e, _s, _d), (branches, _by) in presence.items():
+			per_employee[e] += _presence_count(branches)
 		for e, count in sorted(per_employee.items()):
 			target = data.target_shifts.get(e, 0)
 			if target > 0 and count > tol * target:
@@ -227,14 +308,13 @@ def conflict_scan(data: DataPackage) -> list[Conflict]:
 					Conflict(
 						fte_ceiling.__name__,
 						e,
-						f"pinned to {count} shifts over the horizon, ceiling is "
+						f"pinned in for {count} shifts over the horizon, ceiling is "
 						f"{tol * target:.2f} (105% x an FTE target of {target})",
 					)
 				)
 
 	if role_fte_ceiling.__name__ in selected:
-		per_pair = collections.Counter((comb[0], comb[1]) for comb in pinned)
-		for (e, r), count in sorted(per_pair.items()):
+		for (e, r), count in sorted(_pinned_role_counts(data, pinned, presence).items()):
 			target = data.role_target_shifts.get((e, r), 0.0)
 			if target > 0 and count > tol * target:
 				conflicts.append(
@@ -336,13 +416,16 @@ def elasticize(prob: pulp.LpProblem) -> dict[str, list[pulp.LpVariable]]:
 	sides, for an equality), the objective is replaced by the sum of those slacks, and the
 	sense is flipped to minimize. Variable *bounds* are deliberately left alone: the
 	binding rules express themselves as fixed bounds, so leaving them rigid is what makes
-	the resulting slacks say "given the schedule you froze, here is what breaks".
+	the resulting slacks say "given the schedule you froze, here is what breaks". The
+	constraint families in `INELASTIC_GROUPS` are left rigid for that same reason.
 
 	Mutates `prob` in place — build a throwaway model for it.
 	"""
 	slacks: dict[str, list[pulp.LpVariable]] = {}
 	for con in _constraints(prob):
 		name = str(con.name)
+		if group_of(name) in INELASTIC_GROUPS:
+			continue
 		match con.sense:
 			case pulp.LpConstraintLE:
 				surplus = prob.add_variable(f"{SLACK_PREFIX}_over_{name}", lowBound=0)

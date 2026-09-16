@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 
 import pulp
 
-from .types import DataPackage
+from .types import MODE_COLLATERAL, MODE_EXCLUSIVE, DataPackage
 
 KIND_CONSTRAINT = "Constraint"
 KIND_OBJECTIVE = "Objective"
@@ -73,9 +73,15 @@ class RuleContext:
 	"""Everything a rule may act on: the problem, its variables, and the input data."""
 
 	prob: pulp.LpProblem
-	x: dict[tuple, pulp.LpVariable]  # x[employee, shift, day, branch] binary
+	x: dict[tuple, pulp.LpVariable]  # x[employee, role, shift, day, branch] binary
 	active_rooms: dict[tuple, pulp.LpVariable]  # ar[discipline, shift, day, branch] integer
 	data: DataPackage
+	# p[employee, shift, day, branch] binary: is this person *in* for that shift, whatever
+	# they end up doing. `model_builder` ties it to `x` — at most one working role per
+	# presence, collateral duties beside it, never a presence spent on nothing. Rules that
+	# count somebody's workload or freeze their week work on presence, not on `x`: which
+	# role a settled half-day is worked in is exactly what the optimizer may still decide.
+	presence: dict[tuple, pulp.LpVariable] = field(default_factory=dict)
 
 	# objective terms accumulated by the applied rules; model_builder sums these
 	# into the problem's (maximized) objective after all rules have run
@@ -219,9 +225,12 @@ def _vname(*parts) -> str:
 
 @builtin_rule(
 	"One shift per employee per day",
-	"An employee works at most one shift per day, across all shift types, branches and "
-	"Scheduling Roles. Holding a second role widens where somebody can be scheduled, never "
-	"how much they can work.",
+	"An employee is present for at most one shift per day, across all shift types and "
+	"branches. Holding a second role widens where somebody can be scheduled, never how much "
+	"they can work, and a collateral duty worked alongside their shift is not a second shift. "
+	"Two half-days on one date are refused even where their times do not overlap: shift "
+	"loadouts commonly do overlap, and a genuine double shift is better described by a Shift "
+	"Type of its own.",
 	standard=True,
 	topic=TOPIC_AVAILABILITY,
 )
@@ -229,13 +238,7 @@ def one_shift_per_day(ctx: RuleContext) -> None:
 	data = ctx.data
 	for e, d in itertools.product(data.employees, data.working_days):
 		ctx.prob += (
-			pulp.lpSum(
-				ctx.x[(e, r, s, d, b)]
-				for r in data.employee_roles.get(e, ())
-				for s in data.shift_types
-				for b in data.branches
-			)
-			<= 1,
+			pulp.lpSum(ctx.presence[(e, s, d, b)] for s in data.shift_types for b in data.branches) <= 1,
 			_cname("one_shift", e, d),
 		)
 
@@ -255,6 +258,11 @@ def warm_start(ctx: RuleContext) -> None:
 		if comb in data.forced and (e, d) in data.leave_blocked:
 			raise ValueError(f"Employee {e} cant both be on leave and scheduled for a shift on {d}")
 		var.setInitialValue(1 if comb in data.forced else 0)
+	# Presence follows the books the same way, so the rules that freeze a settled week can
+	# `fixValue()` a presence variable exactly as they do an assignment variable.
+	forced_presence = data.forced_presence()
+	for slot, var in ctx.presence.items():
+		var.setInitialValue(1 if slot in forced_presence else 0)
 
 
 @builtin_rule(
@@ -271,10 +279,12 @@ def leave_blocklist(ctx: RuleContext) -> None:
 	for e, d in data.leave_blocked:
 		if e not in data.employees or d not in day_set:
 			continue
-		for r in data.employee_roles.get(e, ()):
-			for s in data.shift_types:
-				for b in data.branches:
+		for s in data.shift_types:
+			for b in data.branches:
+				for r in data.employee_roles.get(e, ()):
 					ctx.x[(e, r, s, d, b)].fixValue()
+				# a collateral duty is still work, so leave blocks the whole presence
+				ctx.presence[(e, s, d, b)].fixValue()
 
 
 @builtin_rule(
@@ -301,58 +311,115 @@ def use_existing_assignments(ctx: RuleContext) -> None:
 
 @builtin_rule(
 	"Bind settled schedules (strictly)",
-	"Holders of a Scheduling Role whose assignments are binding keep exactly the Shift "
-	"Assignments already on the books: the optimizer may not add, move or drop any of them. "
-	"For a role whose schedule is settled by its holders rather than by the planner. "
-	"Individual holders opt out with a Binding Override on their Employee Scheduling Role — "
-	"somebody whose schedule has not settled yet is scheduled normally. Approved leave still "
-	"wins over a settled assignment. Inert until some Scheduling Role is marked binding.",
+	"Somebody holding a Scheduling Role whose assignments are binding is present for exactly "
+	"the half-days already on their books — the optimizer may not add one or drop one. Which "
+	"<i>role</i> they work during a settled half-day is still the optimizer's to choose among "
+	"the roles they hold, because a rota settles when a person is in, not what the demand that "
+	"day turns out to be; an Exclusive role is the exception and keeps its shift exactly as "
+	"booked, as does a collateral duty. For a role whose week is settled by its holders rather "
+	"than by the planner. Individual holders opt out with a Binding Override on their Employee "
+	"Scheduling Role — somebody whose schedule has not settled yet is scheduled normally. "
+	"Approved leave still wins over a settled assignment. Inert until some Scheduling Role is "
+	"marked binding.",
 	standard=False,
 	requires={warm_start: "{r} fixes variables at their warm-start values, include {req}"},
 	group=GROUP_ROLE_BINDING,
 	topic=TOPIC_EXISTING_ASSIGNMENTS,
 )
 def bind_role_assignments(ctx: RuleContext) -> None:
-	# warm_start has set every variable to 1 (in `forced`) or 0 (not), so fixing *all* of a
-	# bound pair's variables pins their existing shifts on and everything else off. Freezing
-	# only the `forced` ones would honor what they have without stopping the optimizer
-	# adding more, which is not what "settled" means.
-	for (e, r, *_), var in ctx.x.items():
-		if (e, r) in ctx.data.binding_pairs:
-			var.fixValue()
+	"""Presence equals the books, day for day; only the role worked stays open.
+
+	Bound employees, not bound pairs: presence is personal (see `DataPackage.bound_employees`).
+	A day with nothing on the books stays empty, which is the half of "settled" that stops a
+	holder quietly growing a schedule that was never the planner's to set — filling those gaps
+	is the free-seat question, deliberately out of scope.
+	"""
+	data = ctx.data
+	bound = data.bound_employees()
+	if not bound:
+		return
+	forced_presence = data.forced_presence()
+	booked_slots = {(e, s, d) for e, s, d, _b in forced_presence}
+
+	branches_of_slot: dict[tuple, list] = {}
+	for (e, s, d, _b), var in ctx.presence.items():
+		if e not in bound:
+			continue
+		if (e, s, d) in booked_slots:
+			branches_of_slot.setdefault((e, s, d), []).append(var)
+		else:
+			var.fixValue()  # warm_start put it at 0: a day off stays a day off
+	for (e, s, d), variables in branches_of_slot.items():
+		# exactly one presence, at a branch of the optimizer's choosing
+		ctx.prob += (pulp.lpSum(variables) == 1, _cname("bind_presence", e, s, d))
+
+	# A role that cannot be swapped out of, and a duty that is not a way of spending a shift,
+	# are both settled as booked rather than merely implied by the presence.
+	for comb in data.forced:
+		e, r, *_ = comb
+		if e in bound and data.mode(e, r) in (MODE_EXCLUSIVE, MODE_COLLATERAL):
+			ctx.x[comb].fixValue()
+	for comb, var in ctx.x.items():
+		e, r, *_ = comb
+		if e in bound and data.mode(e, r) == MODE_COLLATERAL and comb not in data.forced:
+			var.fixValue()  # no collateral duty the books do not already record
 
 
 @builtin_rule(
 	"Bind settled schedules",
 	"The same settled-schedule scope as the strict rule, one step weaker: a bound holder is "
-	"still never given a shift that is not already on their books, but the shifts they do "
-	"have are proposed rather than nailed down. The optimizer keeps them where they pay for "
+	"never in on a half-day their books do not already have, but the half-days they do have "
+	"are proposed rather than nailed down. The optimizer keeps them where they pay for "
 	"themselves and may drop one where keeping it would make the whole schedule infeasible — "
 	"a week that was worked double-booked or off-config comes back as a schedule instead of "
-	"failing outright. On by default for that reason; choose the strict rule when a settled "
-	"schedule may not be touched at all, and add <b>Conserve Existing Assignments</b> for a "
-	"tie-break toward keeping them. Inert until some Scheduling Role is marked binding.",
+	"failing outright. The role worked during a settled half-day is the optimizer's to choose, "
+	"an Exclusive one excepted: there the shift is either worked as booked or not at all. "
+	"Collateral duties stay free, since demand decides those. On by default; choose the strict "
+	"rule when a settled schedule may not be touched at all, and add <b>Conserve Existing "
+	"Assignments</b> for a tie-break toward keeping them. Inert until some Scheduling Role is "
+	"marked binding.",
 	standard=True,
 	requires={warm_start: "{r} supplies the values this rule fixes and suggests, include {req}"},
 	group=GROUP_ROLE_BINDING,
 	topic=TOPIC_EXISTING_ASSIGNMENTS,
 )
 def soft_bind_role_assignments(ctx: RuleContext) -> None:
-	# Half of `bind_role_assignments`: fix everything a bound pair does *not* have on the
-	# books to 0 (warm_start already set those variables to 0, so fixValue() nails them
-	# there), and leave the ones they do have free at their warm-start value of 1. Note
-	# that CBC is not currently invoked with `warmStart=True`, so that initial value is a
-	# proposal on paper only — what actually keeps a settled shift is the objective. Pair
-	# with `weigh_assignments_objective` when the books should win a tie outright.
-	for comb, var in ctx.x.items():
-		e, r, *_ = comb
-		if (e, r) in ctx.data.binding_pairs and comb not in ctx.data.forced:
+	"""Half of `bind_role_assignments`: the ceiling on a settled week, without the floor.
+
+	A half-day the books do not have is fixed to 0 (warm_start already put those presence
+	variables at 0, so `fixValue()` nails them there); a half-day they do have is left free at
+	its warm-start value of 1, so the optimizer may drop it rather than fail the whole solve.
+	Note that CBC is not currently invoked with `warmStart=True`, so that initial value is a
+	proposal on paper only — what actually keeps a settled shift is the objective. Pair with
+	`weigh_assignments_objective` when the books should win a tie outright.
+	"""
+	data = ctx.data
+	bound = data.bound_employees()
+	if not bound:
+		return
+	booked_slots = {(e, s, d) for e, s, d, _b in data.forced_presence()}
+	for (e, s, d, _b), var in ctx.presence.items():
+		if e in bound and (e, s, d) not in booked_slots:
 			var.fixValue()
+
+	# An exclusive booking is worked as booked or not at all: being in for that half-day
+	# implies that very role at that very branch, but nothing forces them to be in.
+	for comb in data.forced:
+		e, r, s, d, b = comb
+		if e not in bound or data.mode(e, r) != MODE_EXCLUSIVE:
+			continue
+		ctx.prob += (
+			pulp.lpSum(ctx.presence[(e, s, d, branch)] for branch in data.branches) <= ctx.x[comb],
+			_cname("soft_bind_exclusive", e, r, s, d, b),
+		)
 
 
 @builtin_rule(
 	"One Branch per Shift",
-	"Employees can't cover more than one branch during a single shift.",
+	"Employees can't cover more than one branch during a single shift. Redundant while "
+	"<b>One shift per employee per day</b> is in the ruleset, which already allows a single "
+	"presence a day; on its own it lets somebody work both half-days of a date, but never in "
+	"two places at once.",
 	standard=False,
 	topic=TOPIC_COVERAGE,
 )
@@ -360,8 +427,7 @@ def one_branch_per_shift(ctx: RuleContext) -> None:
 	data = ctx.data
 	for e, s, d in itertools.product(data.employees, data.shift_types, data.working_days):
 		ctx.prob += (
-			pulp.lpSum(ctx.x[(e, r, s, d, b)] for r in data.employee_roles.get(e, ()) for b in data.branches)
-			<= 1,
+			pulp.lpSum(ctx.presence[(e, s, d, b)] for b in data.branches) <= 1,
 			_cname("one_branch", e, s, d),
 		)
 
@@ -370,7 +436,9 @@ def one_branch_per_shift(ctx: RuleContext) -> None:
 	"Room coverage per discipline",
 	"The rooms staffed in a discipline for a given shift, day and branch equal the room-slots "
 	"contributed by the Scheduling Roles assigned in that discipline (each contributes its "
-	"max-rooms figure), capped at the branch's configured room count.",
+	"max-rooms figure), capped at the branch's configured room count. Collateral roles staff "
+	"no rooms and are left out; what a lead duty is worth is decided by <b>Objective: "
+	"Collateral duties</b> instead.",
 	standard=True,
 	topic=TOPIC_COVERAGE,
 )
@@ -382,7 +450,10 @@ def room_coverage(ctx: RuleContext) -> None:
 	DISCIPLINE = str
 	k_r_es: dict[DISCIPLINE, dict[ROLE, list[EMPLOYEE]]] = {}
 	for e in data.employees:
-		for r in data.employee_roles.get(e, ()):
+		# Collateral roles staff no rooms of their own. Counting them here would be worse
+		# than useless: the constraint takes the *minimum* over a discipline's roles, so a
+		# lead covering two rooms would cap the whole discipline at two.
+		for r in data.working_roles(e):
 			k = data.role_discipline.get(r, "")
 			k_r_es.setdefault(k, {}).setdefault(r, []).append(e)
 
@@ -400,8 +471,8 @@ def room_coverage(ctx: RuleContext) -> None:
 
 @builtin_rule(
 	"FTE ceiling",
-	"An employee's total assigned shifts over the horizon, summed across every Scheduling "
-	"Role they hold, stay at or below "
+	"The half-days an employee is present over the horizon, whatever roles they work during "
+	"them, stay at or below "
 	"105% x their FTE-derived target; utilization pressure toward the target "
 	"comes from the objective. A hard limit: a horizon that cannot be covered without "
 	"somebody going over comes back infeasible. Where the agreed workload is a courtesy "
@@ -415,9 +486,10 @@ def fte_ceiling(ctx: RuleContext) -> None:
 	tol = 0.05
 	for e in data.employees:
 		target = data.target_shifts.get(e, 0)
+		# presence, not assignments: a collateral duty worked alongside a shift is the same
+		# half-day of somebody's life, and must not count against their agreed workload twice
 		total_assigned = pulp.lpSum(
-			ctx.x[(e, r, s, d, b)]
-			for r in data.employee_roles.get(e, ())
+			ctx.presence[(e, s, d, b)]
 			for s in data.shift_types
 			for d in data.working_days
 			for b in data.branches
@@ -451,6 +523,36 @@ def role_fte_ceiling(ctx: RuleContext) -> None:
 		ctx.prob += (assigned <= (1 + tol) * target, _cname("role_fte_max", e, r))
 
 
+@builtin_rule(
+	"Exclusive roles admit no collateral duty",
+	"A shift worked in a role whose Assignment Mode is <b>Exclusive</b> is worked in that role "
+	"and nothing else: no lead duty or other collateral role may be scheduled alongside it. "
+	"Inert until somebody holds both an exclusive role and a collateral one.",
+	standard=True,
+	topic=TOPIC_AVAILABILITY,
+)
+def exclusive_role_purity(ctx: RuleContext) -> None:
+	"""`Σ collateral ≤ |collateral| · (1 - Σ exclusive)` per employee, shift, day and branch.
+
+	One constraint per slot rather than one per (exclusive, collateral) pair: the right-hand
+	side turns off every collateral duty at once as soon as an exclusive role is worked, and
+	leaves them all free otherwise. `Σ exclusive ≤ 1` already holds, since `model_builder`
+	allows one working role per presence.
+	"""
+	data = ctx.data
+	for e in data.employees:
+		exclusive = data.exclusive_roles(e)
+		collateral = data.collateral_roles(e)
+		if not exclusive or not collateral:
+			continue
+		for s, d, b in itertools.product(data.shift_types, data.working_days, data.branches):
+			ctx.prob += (
+				pulp.lpSum(ctx.x[(e, r, s, d, b)] for r in collateral)
+				<= len(collateral) * (1 - pulp.lpSum(ctx.x[(e, r, s, d, b)] for r in exclusive)),
+				_cname("exclusive_purity", e, s, d, b),
+			)
+
+
 # ── Built-in objective rules (formerly hardcoded in model_builder.build) ──────
 
 
@@ -472,8 +574,54 @@ def room_utilization_objective(ctx: RuleContext) -> None:
 
 
 @builtin_rule(
+	"Objective: Collateral duties",
+	"Value a collateral duty — a lead, say — by the rooms it oversees, never as a room of its "
+	"own. A collateral role scheduled in a discipline at some branch, shift and day earns the "
+	"rooms actually staffed there, up to the max-rooms figure its holders carry. Rooms still "
+	"open without it: nothing here makes a lead a condition of staffing a room, and where the "
+	"rooms are already covered without one the duty simply earns less than it costs.",
+	kind=KIND_OBJECTIVE,
+	standard=True,
+	requires={room_coverage: "{r} values the rooms {req} staffs, include {req}"},
+	# Loosely ~1 objective point per overseen room, against the 3 a staffed room itself pays
+	# under `room_utilization_objective`: worth doing where the rooms are open anyway,
+	# never worth opening a room for.
+	default_weight=1.0,
+	topic=TOPIC_COVERAGE,
+)
+def collateral_room_value_objective(ctx: RuleContext) -> None:
+	"""`min(active_rooms, Σ max_rooms · c)`, linearized.
+
+	`min` of two expressions is not linear, but the objective only ever pushes this value
+	*up*, so a free variable under both ceilings is squeezed to exactly their minimum. Two
+	inequalities and no binaries: the duty is worth the rooms it oversees, and the rooms are
+	worth nothing extra without somebody overseeing them.
+	"""
+	data = ctx.data
+	holders: dict[str, list[tuple[str, str]]] = {}
+	for e in data.employees:
+		for r in data.collateral_roles(e):
+			holders.setdefault(data.role_discipline.get(r, ""), []).append((e, r))
+
+	values = []
+	for (k, s, d, b), rooms in ctx.active_rooms.items():
+		pairs = holders.get(k)
+		if not pairs:
+			continue
+		value = ctx.prob.add_variable(_vname("collateral_value", k, s, d, b), lowBound=0)
+		ctx.prob += (value <= rooms, _cname("collateral_rooms", k, s, d, b))
+		ctx.prob += (
+			value <= pulp.lpSum(data.max_rpe.get((e, r), 1) * ctx.x[(e, r, s, d, b)] for e, r in pairs),
+			_cname("collateral_span", k, s, d, b),
+		)
+		values.append(value)
+
+	ctx.add_objective(pulp.lpSum(values))
+
+
+@builtin_rule(
 	"Objective: FTE soft ceiling",
-	"Penalize each shift an employee works beyond their FTE-derived target, instead of "
+	"Penalize each half-day an employee is present beyond their FTE-derived target, instead of "
 	"forbidding it. Statutory limits on working time are usually written against a full-time "
 	"week, so a part-timer's agreed percentage is a courtesy to keep rather than a cap the "
 	"law sets — and a schedule that would otherwise be infeasible is better than no schedule. "
@@ -508,8 +656,7 @@ def fte_soft_ceiling(ctx: RuleContext) -> None:
 		if target <= 0:
 			continue
 		assigned = pulp.lpSum(
-			ctx.x[(e, r, s, d, b)]
-			for r in data.employee_roles.get(e, ())
+			ctx.presence[(e, s, d, b)]
 			for s in data.shift_types
 			for d in data.working_days
 			for b in data.branches
@@ -555,9 +702,10 @@ def role_fte_target_objective(ctx: RuleContext) -> None:
 
 @builtin_rule(
 	"Objective: Shift preferences",
-	"Reward assignments matching each employee's normalized shift preferences (from Employee "
-	"Settings); assignments to less-preferred shifts score lower. Ignores role substitution "
-	"suitability: every role an employee holds counts as fully suitable.",
+	"Reward each half-day an employee is present according to their normalized shift "
+	"preferences (from Employee Settings); a less-preferred shift scores lower. Charged per "
+	"presence, so a collateral duty worked alongside a shift is not billed twice. Ignores role "
+	"substitution suitability: every role an employee holds counts as fully suitable.",
 	kind=KIND_OBJECTIVE,
 	standard=False,
 	group=GROUP_SHIFT_PREFERENCE,
@@ -568,16 +716,17 @@ def shift_preference_objective(ctx: RuleContext) -> None:
 	ctx.add_objective(
 		pulp.lpSum(
 			(-1 + data.shift_preferences.get(e, {}).get(s, 0.0)) * var
-			for (e, _r, s, _d, _b), var in ctx.x.items()
+			for (e, s, _d, _b), var in ctx.presence.items()
 		)
 	)
 
 
 @builtin_rule(
 	"Objective: Shift preferences and role suitability",
-	"Reward assignments matching each employee's normalized shift preferences (from Employee "
-	"Settings), and make an assignment in a role the employee only substitutes in cost more. "
-	"Each assignment's cost is scaled by the Suitability on its Employee Scheduling Role "
+	"Reward each half-day an employee is present according to their normalized shift "
+	"preferences (from Employee Settings), and make working it in a role the employee only "
+	"substitutes in cost more. The surcharge is scaled by the Suitability on its Employee "
+	"Scheduling Role "
 	"(maintained in the Role Matrix): 1 is a regular holder and costs what 'Shift preferences' "
 	"charges, 1.2 a good backup, 3 a terrible but feasible one. With every suitability at 1 "
 	"this is exactly 'Shift preferences'.",
@@ -587,17 +736,25 @@ def shift_preference_objective(ctx: RuleContext) -> None:
 	topic=TOPIC_PREFERENCES,
 )
 def suitability_preference_objective(ctx: RuleContext) -> None:
-	"""`(-1 + pref) * suitability` per assignment.
+	"""`(-1 + pref)` per presence, plus `(-1 + pref) * (suitability - 1)` per assignment.
 
-	The per-assignment term is a (negative) net value, so "divide the desirability by the
+	The per-presence term is a (negative) net value, so "divide the desirability by the
 	suitability" has to scale the cost *up*: dividing a negative value would make a poor
 	substitute cheaper than the holder. At the default weights a staffed room pays 3, so
 	a suitability-3 backup (about -1.5) still opens a room nobody else can staff.
+
+	Split in two because the cost of being in on a Tuesday morning is charged once, on the
+	presence, while the surcharge for spending it in a role somebody merely substitutes in
+	belongs to the assignment. Their sum is `(-1 + pref) * suitability` whenever the presence
+	is spent on exactly one role, which is every case without collateral duties — so with
+	every suitability at 1 this is still exactly `shift_preference_objective`.
 	"""
 	data = ctx.data
+	pref = data.shift_preferences
 	ctx.add_objective(
-		pulp.lpSum(
-			(-1 + data.shift_preferences.get(e, {}).get(s, 0.0)) * data.suitability(e, r) * var
+		pulp.lpSum((-1 + pref.get(e, {}).get(s, 0.0)) * var for (e, s, _d, _b), var in ctx.presence.items())
+		+ pulp.lpSum(
+			(-1 + pref.get(e, {}).get(s, 0.0)) * (data.suitability(e, r) - 1) * var
 			for (e, r, s, _d, _b), var in ctx.x.items()
 		)
 	)

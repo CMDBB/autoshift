@@ -8,6 +8,7 @@
  "field_order": [
   "role_name",
   "discipline",
+  "assignment_mode",
   "column_break_1",
   "max_rooms",
   "display_order_key",
@@ -36,6 +37,17 @@
    "in_standard_filter": 1,
    "label": "Discipline",
    "options": "Department",
+   "reqd": 1
+  },
+  {
+   "default": "Flexible",
+   "description": "How a shift in this role is worked. <b>Flexible</b>: a rota slot in this role means \"present\", and the optimizer may fill it with any non-exclusive role the holder has, at any branch. <b>Exclusive</b>: worked in exactly this role, with no collateral duty alongside it, and a rota slot in it may not be swapped for another role. <b>Collateral</b>: a duty worked on top of another shift at the same shift and branch (a lead, say), or on its own where the rooms are already staffed. An Employee Scheduling Role may override this per person.",
+   "fieldname": "assignment_mode",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Assignment Mode",
+   "options": "Flexible\nExclusive\nCollateral",
    "reqd": 1
   },
   {

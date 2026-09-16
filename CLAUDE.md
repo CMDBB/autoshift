@@ -35,8 +35,10 @@ Three apps split the responsibility; keep them separate.
   value becomes a *field* on an existing config doctype; the value lives in `cmdb_frappe`.
 - **Custom field ownership.** This app owns (module `Autoshift`, in
   `autoshift/fixtures/custom_field.json`): `Shift Location.custom_discipline`,
-  `Shift Location.custom_branch`, `Employee.custom_fte`, `Shift Schedule Assignment.custom_unconfirmed` and
-  `Shift Schedule.custom_manually_edited`. `zawin2frappe` owns
+  `Shift Location.custom_branch`, `Employee.custom_fte`, `Shift Schedule Assignment.custom_unconfirmed`,
+  `Shift Schedule.custom_manually_edited`, and — on both `Shift Assignment` and
+  `Shift Schedule Assignment` — `custom_scheduling_role` (Link) plus `custom_collateral_roles`
+  (Table MultiSelect over the **Collateral Scheduling Role** child doctype). `zawin2frappe` owns
   `Shift Assignment.custom_zawin_key` and `Employee.custom_initials` — **do not re-add
   them here**; two apps shipping one fieldname under different modules fight on every
   `migrate`. Check the other apps' fixtures before adding any `Custom Field`.
@@ -89,14 +91,19 @@ Three apps split the responsibility; keep them separate.
 - **Scheduling Role** — the optimizer's unit of *capability* and the scheduling axis that
   replaced designation: names exactly one discipline (Link to `Department`) plus a
   max-rooms-per-holder figure. `assignments_binding` (Check, default off) marks a role whose
-  schedule is settled by its holders. `display_order_key` (Int, default 0) orders wall-chart
+  **presence** is settled by its holders. `assignment_mode` (Select, default `Flexible`) says
+  how a shift in the role is worked: `Flexible` (a rota slot means "present", and any
+  non-exclusive role the holder has may fill it), `Exclusive` (that role, nothing beside it,
+  no swapping out of it) or `Collateral` (a duty on top of another shift at the same shift and
+  branch, or on its own). `display_order_key` (Int, default 0) orders wall-chart
   lanes.
 - **Employee Scheduling Role** — the employee × role relation. A **standalone doctype, not a
   child table**, so `zawin2frappe` can import into it directly. Carries `role_fte` (the
   *informally* agreed FTE % in that role; blank = no expectation), an optional `max_rooms`
   override, a `binding_override` Select (blank inherits the role's flag), `suitability`
   (Float ≥ 1, default 1: 1 = regular holder, 1.2 = good backup, 3 = terrible but feasible
-  substitute), `active`, and a `valid_from`/`valid_to` window. **An employee holding no
+  substitute), an `assignment_mode_override` Select (blank inherits the role's mode),
+  `active`, and a `valid_from`/`valid_to` window. **An employee holding no
   in-window role is not scheduled at all** — that is how non-clinical staff stay out of
   scope. A substitute is just a row with `suitability > 1`; the loader treats it as held
   like any other.
@@ -125,16 +132,21 @@ Pure-Python where possible, for testability. `data_loader.py` is the only Frappe
 module.
 
 1. `types.py` — `DataPackage` (the engine's only input shape), SHA256 `input_hash()` for
-   caching, `planning_days()` (raises `NotImplementedError` for `"Unbounded"`).
+   caching, `planning_days()` (raises `NotImplementedError` for `"Unbounded"`). Assignment
+   modes live here as `MODE_FLEXIBLE`/`MODE_EXCLUSIVE`/`MODE_COLLATERAL` plus the sparse
+   `role_mode` / `role_mode_overrides` dicts (both omitted from `input_hash` when empty) and
+   the helpers every rule reads them through: `mode()`, `working_roles()`,
+   `collateral_roles()`, `exclusive_roles()`, `bound_employees()`, `forced_presence()`.
 2. `rules.py` — constraint groups *and* objective terms as named rules. `BUILTIN_RULES`
    registry populated by the `@builtin_rule` decorator; `STANDARD_RULES` is the
-   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 16 built-ins:
+   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 18 built-ins:
    `one_shift_per_day`, `warm_start`, `leave_blocklist`, `use_existing_assignments`,
    `bind_role_assignments`, `soft_bind_role_assignments`, `one_branch_per_shift`,
-   `room_coverage`, `fte_ceiling`,
-   `role_fte_ceiling` (constraints) and `room_utilization_objective`, `fte_soft_ceiling`,
+   `room_coverage`, `fte_ceiling`, `role_fte_ceiling`, `exclusive_role_purity`
+   (constraints) and `room_utilization_objective`, `fte_soft_ceiling`,
    `role_fte_target_objective`, `shift_preference_objective`,
-   `suitability_preference_objective`, `weigh_assignments_objective`
+   `suitability_preference_objective`, `weigh_assignments_objective`,
+   `collateral_room_value_objective`
    (objectives). Four choice groups: `existing_assignments`, `role_binding`,
    `workload_ceiling` (`fte_ceiling` vs `fte_soft_ceiling`) and `shift_preference`
    (`shift_preference_objective` vs the **standard** `suitability_preference_objective`, which
@@ -158,8 +170,12 @@ module.
    into `binding_pairs`, leave-vs-books collisions into `binding_conflicts`, and unplaceable
    assignments into `unresolved_assignments` (but **throws** for a bound employee).
 4. `model_builder.py` — builds the PuLP MILP. Vars `x[employee,role,shift,day,branch]` (built
-   **sparse**, over the `(employee, role)` pairs each employee actually holds) and
-   `active_rooms[discipline,shift,day,branch]`. Constraints and objective both via
+   **sparse**, over the `(employee, role)` pairs each employee actually holds),
+   `p[employee,shift,day,branch]` (**presence**: is this person in for that shift at all) and
+   `active_rooms[discipline,shift,day,branch]`. The constraints tying `p` to `x` — one working
+   role per presence, collateral duties beside it, never a presence spent on nothing — are
+   built **here, not in a rule**: they are what `p` means, the same way `active_rooms`'s room
+   cap lives in the variable bound. Rules key workload and binding on `p`. Constraints and objective both via
    `rules.apply_rules`; the maximized objective sums `ctx.objective_terms` (empty = constant
    0, pure feasibility).
 5. `solver.py` — runs CBC (5 s sync, escalating to a 3600 s background job via
@@ -172,11 +188,16 @@ module.
 6. `committer.py` — converts an Approved run into submitted `Shift Assignment` records.
    Raises `NotImplementedError` unconditionally; see "Not built yet".
 7. `diagnostics.py` — Frappe-free. Why a model is infeasible, and what it contains.
-   `conflict_scan` replays the pinned assignments against the *arithmetic* of the selected
-   constraint rules and names the offending Shift Assignment without solving anything;
+   `conflict_scan` replays the pinned assignments (`pinned_assignments`) **and the pinned
+   presence** (`pinned_presence` — binding settles a half-day without settling its role)
+   against the *arithmetic* of the selected constraint rules and names the offending Shift
+   Assignment without solving anything;
    `model_dump`/`write_lp` print the variables and constraints grouped by the rule that
    emitted them (`_cname`'s `prefix:` convention); `elastic_analysis` slacks every
    constraint and minimizes the total, so the non-zero slacks *are* the infeasibility.
+   `INELASTIC_GROUPS` keeps `bind_presence` and the definitional `presence_*` constraints
+   rigid, for the same reason variable bounds stay rigid: they are input, and relaxing them
+   blames binding for every collision instead of the rule it collides with.
    `relax_integrality`/`lp_relaxation`/`shadow_prices` drop integrality so CBC returns
    duals — `pi`/`dj` are `None` on a MILP. **`solver.run_solve` appends `report()` to a
    Failed run's Solver Log**; `bench diagnose-model` and the sandbox helpers are the
@@ -267,13 +288,16 @@ HR Manager has no delete permission on the doctype, and the page refuses the edi
 
 **Role binding** — two rules in the `role_binding` choice group (`rules.GROUP_ROLE_BINDING`),
 so a ruleset picks at most one; `data_loader.binding_rule_gap` warns when it picks neither.
-`soft_bind_role_assignments` (**standard**) fixes every variable of a bound `(employee, role)`
-pair that is *not* on the books to 0 and leaves the ones that are free at their warm-start
-value of 1 — the holder is never given a shift they don't already have, but a settled week
-that breaks the rest of the ruleset loses a shift instead of failing the whole solve.
-`bind_role_assignments` (strict, off by default) fixes *every* one of their variables, so
-`warm_start`'s 1/0 init pins existing shifts on and everything else off. A day with nothing on
-the books stays empty under either. Leave wins over a settled assignment (the loader drops the
+Both key on the **employee** (`DataPackage.bound_employees`, anybody holding a binding role)
+and freeze **presence**, not assignments: which role a settled half-day is worked in stays the
+optimizer's choice among the roles they hold — an `Exclusive` role and a collateral duty
+excepted, since neither is a way of spending a shift that something else could substitute for.
+`soft_bind_role_assignments` (**standard**) fixes presence to 0 on every half-day the books do
+not have and leaves the booked ones free at their warm-start value of 1 — the holder is never
+in on a day they don't already work, but a settled week that breaks the rest of the ruleset
+loses a half-day instead of failing the whole solve. `bind_role_assignments` (strict, off by
+default) makes each booked half-day an equality (`Σ_branches p == 1`) and pins an exclusive or
+collateral booking's own variable. A day with nothing on the books stays empty under either. Leave wins over a settled assignment (the loader drops the
 collision into `binding_conflicts` rather than making the run infeasible). autoshift ships the
 mechanism defaulting to off; `zawin2frappe` populates which roles are binding.
 `use_existing_assignments` is **not** in `STANDARD_RULES`. Rationale for all of this is in the

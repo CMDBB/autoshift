@@ -91,7 +91,7 @@ def test_selected_builtins_falls_back_to_the_standard_set():
 	assert diagnostics.selected_builtins(pkg(rules=specs("one_shift_per_day"))) == {"one_shift_per_day"}
 
 
-def test_pinned_assignments_only_covers_bound_pairs_under_binding():
+def test_binding_pins_a_bound_employees_presence_and_not_their_role():
 	comb_bound = ("E1", "R1", "AM", MON, "B1")
 	comb_free = ("E2", "R1", "AM", MON, "B1")
 	data = bound(
@@ -101,8 +101,10 @@ def test_pinned_assignments_only_covers_bound_pairs_under_binding():
 		max_rpe={("E1", "R1"): 1, ("E2", "R1"): 1},
 		forced={comb_bound, comb_free},
 	)
-	pinned = diagnostics.pinned_assignments(data)
-	assert set(pinned) == {comb_bound}
+	# which role a settled half-day is worked in stays the optimizer's choice, so binding
+	# pins no assignment at all — only the bound employee's presence, branch left free
+	assert diagnostics.pinned_assignments(data) == {}
+	assert diagnostics.pinned_presence(data) == {("E1", "AM", MON): (set(), "bind_role_assignments")}
 
 	# use_existing_assignments pins everybody's, bound or not
 	everyone = diagnostics.pinned_assignments(
@@ -141,7 +143,7 @@ def test_a_settled_rota_over_contract_breaks_the_fte_ceiling():
 
 	conflicts = diagnostics.conflict_scan(data)
 	assert [c.rule for c in conflicts] == ["fte_ceiling"]
-	assert "pinned to 2 shifts" in conflicts[0].detail
+	assert "pinned in for 2 shifts" in conflicts[0].detail
 
 
 def test_an_agreed_role_split_ceiling_is_scanned_too():
@@ -155,15 +157,32 @@ def test_an_agreed_role_split_ceiling_is_scanned_too():
 
 
 def test_two_branches_in_one_shift_breaks_one_branch_per_shift():
+	"""Only where whole assignments are pinned: honoring the books names their branches."""
+	data = bound(
+		branches=["B1", "B2"],
+		rooms={("D1", "B1"): 1, ("D1", "B2"): 1},
+		rules=specs("warm_start", "use_existing_assignments", "one_branch_per_shift"),
+		forced={("E1", "R1", "AM", MON, "B1"), ("E1", "R1", "AM", MON, "B2")},
+	)
+	conflicts = diagnostics.conflict_scan(data)
+	assert [c.rule for c in conflicts] == ["one_branch_per_shift"]
+	assert "2 branches" in conflicts[0].detail
+
+
+def test_binding_picks_one_branch_where_the_books_name_two():
+	"""
+	A half-day booked at two branches at once is a data error, and binding no longer takes
+	the schedule down with it: presence settles that somebody is in, not where, so one of the
+	two stands and the model still solves.
+	"""
 	data = bound(
 		branches=["B1", "B2"],
 		rooms={("D1", "B1"): 1, ("D1", "B2"): 1},
 		rules=specs("warm_start", "bind_role_assignments", "one_branch_per_shift"),
 		forced={("E1", "R1", "AM", MON, "B1"), ("E1", "R1", "AM", MON, "B2")},
 	)
-	conflicts = diagnostics.conflict_scan(data)
-	assert [c.rule for c in conflicts] == ["one_branch_per_shift"]
-	assert "2 branches" in conflicts[0].detail
+	assert diagnostics.conflict_scan(data) == []
+	assert solve(data) == "Optimal"
 
 
 def test_leave_over_a_settled_shift_is_reported():
@@ -194,16 +213,19 @@ def test_a_feasible_settled_rota_scans_clean():
 
 
 def test_model_dump_groups_variables_and_constraints_by_rule():
-	data = bound(forced={("E1", "R1", "AM", MON, "B1")})
+	data = bound(working_days=[MON, TUE], forced={("E1", "R1", "AM", MON, "B1")})
 	prob, *_ = build(data)
 	text = diagnostics.model_dump(prob)
 
 	assert "x" in {group.name for group in diagnostics.variable_summary(prob)}
 	assert "one_shift" in {group.name for group in diagnostics.constraint_summary(prob)}
-	# binding fixes every one of the pair's variables; exactly one of them is fixed *on*
-	x_group = next(g for g in diagnostics.variable_summary(prob) if g.name == "x")
-	assert x_group.fixed == x_group.count
-	assert x_group.fixed_on == 1
+	# binding works on presence now: the booked half-day is an equality (so the variable
+	# itself stays free), and every half-day the books do not have is fixed off
+	assert "bind_presence" in {group.name for group in diagnostics.constraint_summary(prob)}
+	# two days x two shift types: the booked half-day is free under its equality, the other
+	# three are fixed off
+	p_group = next(g for g in diagnostics.variable_summary(prob) if g.name == "p")
+	assert (p_group.count, p_group.fixed, p_group.fixed_on) == (4, 3, 0)
 	assert "Constraints by rule:" in text
 
 

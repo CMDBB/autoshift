@@ -16,3 +16,4 @@ autoshift.patches.add_soft_role_binding
 autoshift.patches.add_fte_soft_ceiling
 autoshift.patches.drop_manually_edited_rota_flag
 autoshift.patches.add_role_suitability
+autoshift.patches.backfill_shift_assignment_roles

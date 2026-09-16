@@ -13,6 +13,7 @@
   "role_fte",
   "max_rooms",
   "binding_override",
+  "assignment_mode_override",
   "suitability",
   "section_break_validity",
   "active",
@@ -51,7 +52,7 @@
    "fieldtype": "Column Break"
   },
   {
-   "description": "Percent, matching Employee's FTE % convention. Blank means no agreed split: the optimizer then only respects this employee's overall FTE ceiling. Not a hard requirement — the solver is merely penalized for deviating.",
+   "description": "Percent, matching Employee's FTE % convention. Blank means no agreed split: the optimizer then only respects this employee's overall FTE ceiling. Not a hard requirement \u2014 the solver is merely penalized for deviating.",
    "fieldname": "role_fte",
    "fieldtype": "Float",
    "in_list_view": 1,
@@ -66,11 +67,18 @@
    "non_negative": 1
   },
   {
-   "description": "Blank inherits Scheduling Role's Assignments Are Binding. Set \"Not Binding\" for a holder whose schedule has not settled yet — they are then scheduled normally while the rest of the role stays frozen.",
+   "description": "Blank inherits Scheduling Role's Assignments Are Binding. Set \"Not Binding\" for a holder whose schedule has not settled yet \u2014 they are then scheduled normally while the rest of the role stays frozen.",
    "fieldname": "binding_override",
    "fieldtype": "Select",
    "label": "Binding Override",
    "options": "\nBinding\nNot Binding"
+  },
+  {
+   "description": "Blank inherits the Scheduling Role's Assignment Mode. Set it where this person works the role differently from everybody else \u2014 a lead duty that is this one person's whole day, say.",
+   "fieldname": "assignment_mode_override",
+   "fieldtype": "Select",
+   "label": "Assignment Mode Override",
+   "options": "\nFlexible\nExclusive\nCollateral"
   },
   {
    "default": "1",

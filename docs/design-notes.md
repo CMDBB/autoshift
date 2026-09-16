@@ -65,6 +65,118 @@ order; the regression tests now build specs from the real document titles (`titl
 
 ---
 
+## Presence, role modes and collateral work (2026-09-15)
+
+**Status (2026-09-16): schema and engine built, everything downstream still to come.**
+Landed: the mode fields, the role/collateral custom fields and their backfill patch,
+`DataPackage`'s modes and presence helpers, the `p` variables and their linking constraints,
+every rule reworked onto presence, the two new rules, and `conflict_scan` / `elastic_analysis`.
+Still on the old footing: `data_loader` (which still infers a role from the Shift Location's
+discipline and does not read modes), the rota package and its editor, the wall chart, the
+statistics panel, and zawin2frappe's side. Supersedes the `(employee, role)` keying of role
+binding described in the next section.
+
+### The observation
+
+Rotas were detected and bound per role, but that is not how the practice works. People
+have a mostly fixed *presence* — which half-days they are in — and work one role or another
+during it depending on demand. The role still matters, because some roles cannot be swapped
+into or out of, and some can be worked on top of another shift. So a rota settles
+**presence**, and the role is the optimizer's to choose within limits the role declares.
+
+### Role modes
+
+A Select on `Scheduling Role`, with a blank-inherits override on `Employee Scheduling Role`
+(the `binding_override` / `max_rooms` convention):
+
+- **Flexible** (default) — a rota slot in this role means "present". The optimizer may fill
+  it with *any* non-exclusive role the employee holds, at any branch.
+- **Exclusive** — a rota slot in this role is worked in exactly this role, with no
+  collateral duty alongside it.
+- **Collateral** — a duty worked *on top of* a shift (e.g. Lead Worker), at the same shift
+  and branch. It may also stand alone: a lead whose team is fully staffed may spend the day
+  on the lead duty only.
+
+`Scheduling Role.assignments_binding` stays on the role. Its meaning becomes "a rota slot in
+this role fixes presence". **Presence is personal:** somebody holding any binding role has
+their presence settled on every day, and a non-binding role they also hold only widens which
+role can fill a rota slot, never adds days. That also resolves the old *Open* note on
+substitutes in binding roles: a substitute row no longer pins anyone to zero.
+
+### The model
+
+A presence variable `p[e, s, d, b]` (binary) is added alongside `x`, and everything hangs off
+it:
+
+| Constraint | Meaning |
+|---|---|
+| `Σ_{s,b} p[e,s,d,b] ≤ 1` | `one_shift_per_day`, now over presence. Never AM+PM: shift loadouts may overlap at another practice, and a genuine double shift is a dedicated Shift Type |
+| `Σ_{non-collateral r} x[e,r,s,d,b] ≤ p[e,s,d,b]` | at most one working role per presence |
+| `c[e,rc,s,d,b] ≤ p[e,s,d,b]` | collateral needs presence at the same shift and branch, not a host |
+| `p ≤ Σ x + Σ c` | no presence without a duty |
+| `c[e,·,s,d,b] ≤ 1 − x_excl[e,s,d,b]` | nothing collateral beside an exclusive role |
+| strict: `Σ_b p[e,s,d,b] = rota(e,s,d)`; soft: `≤` | binding fixes presence; branch and Flexible role stay free |
+| an Exclusive rota slot pins its own `x` | no deviation from an exclusive rota |
+
+`c` is simply `x` over a collateral role (one variable dict; rules tell them apart by mode).
+Custom Code rules summing `ctx.x` will count collateral duties — worth a note in the editor
+completions.
+
+Knock-on changes to the existing rules:
+
+- **`room_coverage` ignores collateral roles.** Its minimum over a discipline's roles would
+  otherwise cap a discipline at however many rooms its leads span.
+- **Collateral is valued through the rooms it oversees, never as rooms of its own.** A new
+  objective: `v[k,s,d,b] ≤ active_rooms[k,s,d,b]`, `v ≤ Σ max_rooms · c` over the collateral
+  roles in discipline `k` at `(s, d, b)`, reward `v`. Rooms open without a lead; a lead only
+  adds value where rooms are open.
+- **FTE rules count `p`**, still at one shift per weekday for 100% (actual-time accounting
+  is backlog).
+- **Preference cost moves to `p`**; the suitability surcharge `(−1 + pref)(suitability − 1)`
+  stays on each `x`/`c`. With no collateral and every suitability at 1, `p = Σ x` and this is
+  exactly today's objective.
+
+### Decisions taken while building it
+
+- **Presence is a binary variable, and the linking constraints are structural.** They live in
+  `model_builder`, not in a rule, because they are what `p` *means* — a rule could otherwise
+  be deselected and leave every workload and binding rule counting a free variable. The cost
+  is real: `p` adds `employees × shifts × days × branches` binaries and about three
+  constraints each, roughly half again the size of `x`. Continuous `p` in `[0, 1]` would be
+  squeezed to the same values by the duty bounds in every ruleset that charges presence, but
+  not in one that charges nothing, so it stays integral until that shows up as a solve-time
+  problem.
+- **A half-day booked at two branches at once is no longer infeasible.** Strict binding used
+  to pin both assignments and fail; presence settles *that* somebody is in, so its equality
+  (`Σ_branches p == 1`) keeps one and drops the other. Double-booked branches are a data
+  error, and the presence model absorbs them the way the soft rule absorbs everything else.
+- **`bind_presence` and the `presence_*` constraints are inelastic** (`INELASTIC_GROUPS` in
+  `diagnostics`). An equality is the cheapest thing in the model to slack, so elasticizing it
+  would blame binding for every collision instead of the ceiling or the leave it collides
+  with — the same reason `elasticize` has always left variable bounds alone.
+- **`conflict_scan` attributes a pinned presence to a role only where there is exactly one it
+  could be** (`_pinned_role_counts`). Binding no longer pins a role, so a settled week that
+  breaks an agreed role split would otherwise go unreported for the single-role holders it
+  most often describes.
+
+### Storage
+
+HRMS refuses time-overlapping Shift Assignments for one employee even with
+`HR Settings.allow_multiple_shift_assignments` on (`validate_overlapping_shifts` checks
+timings regardless), so a collateral duty cannot be its own record beside its host. autoshift
+owns new custom fields on both `Shift Assignment` and `Shift Schedule Assignment`:
+`custom_scheduling_role` (Link) and `custom_collateral_roles` (Table MultiSelect). A
+standalone collateral day is a record whose `custom_scheduling_role` is a collateral role.
+One presence a day means the HR Settings flag stays off.
+
+This retires `data_loader`'s inference of a role from the Shift Location's discipline, which
+guessed by sort order once someone held two roles in a discipline — the normal case now.
+Existing records are backfilled by a patch using that inference **once**, as a stopgap while
+zawin2frappe's re-imports keep overwriting rows; the patch goes when zawin2frappe writes the
+role itself.
+
+---
+
 ## Role binding: freeze completely, or only cap
 
 Some roles' holders work a fixed week that the plan has to fit around. That was first

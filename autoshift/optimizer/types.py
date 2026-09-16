@@ -13,6 +13,16 @@ import typing
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+#: `Scheduling Role.assignment_mode`. How a shift in the role is worked, and therefore what
+#: a rota slot in it settles. **Flexible**: the slot means "present", and any non-exclusive
+#: role the employee holds may fill it. **Exclusive**: worked in exactly this role, with no
+#: collateral duty beside it and no swapping out of it. **Collateral**: a duty worked on top
+#: of another shift at the same shift and branch, or on its own where the rooms are already
+#: staffed.
+MODE_FLEXIBLE = "Flexible"
+MODE_EXCLUSIVE = "Exclusive"
+MODE_COLLATERAL = "Collateral"
+
 
 @dataclass(frozen=True)
 class DataPackage:
@@ -105,8 +115,57 @@ class DataPackage:
 	# the Role Matrix hashes and solves exactly as before.
 	role_suitability: dict[tuple[str, str], float] = dataclasses.field(default_factory=dict)
 
+	# Assignment mode per role, from Scheduling Role.assignment_mode and the per-holder
+	# override on Employee Scheduling Role. Sparse in two ways: only roles that are *not*
+	# MODE_FLEXIBLE appear, and a pair whose holder overrides the role's mode is keyed by
+	# (employee, role) rather than by the role. A site using neither hashes and solves
+	# exactly as it did before modes existed.
+	role_mode: dict[str, str] = dataclasses.field(default_factory=dict)
+	role_mode_overrides: dict[tuple[str, str], str] = dataclasses.field(default_factory=dict)
+
 	def suitability(self, employee: str, role: str) -> float:
 		return self.role_suitability.get((employee, role), 1.0)
+
+	def mode(self, employee: str, role: str) -> str:
+		"""How `employee` works `role`: their own override, else the role's own mode."""
+		return self.role_mode_overrides.get((employee, role)) or self.role_mode.get(role, MODE_FLEXIBLE)
+
+	def is_collateral(self, employee: str, role: str) -> bool:
+		"""A duty worked on top of a shift (or on its own), not a way of spending the shift."""
+		return self.mode(employee, role) == MODE_COLLATERAL
+
+	def working_roles(self, employee: str) -> tuple[str, ...]:
+		"""The roles that *are* a way of spending a shift — everything but collateral duties.
+
+		At most one of these is worked per presence, which is what makes presence and
+		collateral duties countable separately.
+		"""
+		return tuple(r for r in self.employee_roles.get(employee, ()) if not self.is_collateral(employee, r))
+
+	def collateral_roles(self, employee: str) -> tuple[str, ...]:
+		return tuple(r for r in self.employee_roles.get(employee, ()) if self.is_collateral(employee, r))
+
+	def exclusive_roles(self, employee: str) -> tuple[str, ...]:
+		return tuple(
+			r for r in self.employee_roles.get(employee, ()) if self.mode(employee, r) == MODE_EXCLUSIVE
+		)
+
+	def bound_employees(self) -> frozenset[str]:
+		"""Whose presence is settled.
+
+		Presence is personal: holding any binding role settles somebody's week, and a
+		non-binding role they also hold only widens which role can fill a slot of it — it
+		never adds a day. So the binding rules key on the employee, not on the pair.
+		"""
+		return frozenset(employee for employee, _role in self.binding_pairs)
+
+	def forced_presence(self) -> set[tuple[str, str, datetime.date, str]]:
+		"""(employee, shift, day, branch) slots the books put somebody at.
+
+		Derived from `forced` rather than stored: a settled schedule is a set of shifts, and
+		which role each is worked in is exactly the part the optimizer may now decide.
+		"""
+		return {(e, s, d, b) for e, _r, s, d, b in self.forced}
 
 	def input_hash(self) -> str:
 		"""
@@ -130,6 +189,9 @@ class DataPackage:
 		if not self.role_suitability:
 			# keep the cache hits of runs solved before the field existed
 			del payload["role_suitability"]
+		for name in ("role_mode", "role_mode_overrides"):
+			if not getattr(self, name):  # idem, for sites where every role is Flexible
+				del payload[name]
 		blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 		return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -170,6 +232,10 @@ class DataPackage:
 			],
 			"role_suitability": [
 				[employee, role, factor] for (employee, role), factor in sorted(self.role_suitability.items())
+			],
+			"role_mode": self.role_mode,
+			"role_mode_overrides": [
+				[employee, role, mode] for (employee, role), mode in sorted(self.role_mode_overrides.items())
 			],
 		}
 		return json.dumps(payload)
@@ -226,6 +292,12 @@ class DataPackage:
 			# absent from packages captured before the Role Matrix existed: everyone was a holder
 			role_suitability={
 				(employee, role): factor for employee, role, factor in payload.get("role_suitability", [])
+			},
+			# absent from packages captured before assignment modes existed: every role was
+			# a way of spending a whole shift, which is what MODE_FLEXIBLE means
+			role_mode=payload.get("role_mode", {}),
+			role_mode_overrides={
+				(employee, role): mode for employee, role, mode in payload.get("role_mode_overrides", [])
 			},
 		)
 
