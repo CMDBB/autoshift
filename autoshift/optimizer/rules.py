@@ -436,8 +436,10 @@ def one_branch_per_shift(ctx: RuleContext) -> None:
 	"Room coverage per discipline",
 	"The rooms staffed in a discipline for a given shift, day and branch equal the room-slots "
 	"contributed by the Scheduling Roles assigned in that discipline (each contributes its "
-	"max-rooms figure), capped at the branch's configured room count. Collateral roles staff "
-	"no rooms and are left out; what a lead duty is worth is decided by <b>Objective: "
+	"max-rooms figure), capped at the branch's configured room count. Only the roles marked "
+	"<b>Required To Staff A Room</b> count: a room opens where every gating role in its "
+	"discipline is staffed, and a role that gates nothing (a lead duty, a floater) neither "
+	"opens rooms nor holds them shut. What a lead duty is worth is decided by <b>Objective: "
 	"Collateral duties</b> instead.",
 	standard=True,
 	topic=TOPIC_COVERAGE,
@@ -450,10 +452,10 @@ def room_coverage(ctx: RuleContext) -> None:
 	DISCIPLINE = str
 	k_r_es: dict[DISCIPLINE, dict[ROLE, list[EMPLOYEE]]] = {}
 	for e in data.employees:
-		# Collateral roles staff no rooms of their own. Counting them here would be worse
-		# than useless: the constraint takes the *minimum* over a discipline's roles, so a
-		# lead covering two rooms would cap the whole discipline at two.
-		for r in data.working_roles(e):
+		# Only gating roles. The constraint takes the *minimum* over a discipline's roles, so
+		# a non-gating role counted here would hold every room in the discipline shut whenever
+		# nobody is working it — which is exactly what a lead duty must not do.
+		for r in data.gating_roles(e):
 			k = data.role_discipline.get(r, "")
 			k_r_es.setdefault(k, {}).setdefault(r, []).append(e)
 
@@ -757,6 +759,40 @@ def suitability_preference_objective(ctx: RuleContext) -> None:
 			(-1 + pref.get(e, {}).get(s, 0.0)) * (data.suitability(e, r) - 1) * var
 			for (e, r, s, _d, _b), var in ctx.x.items()
 		)
+	)
+
+
+@builtin_rule(
+	"Objective: Value of working a role",
+	"Add each role's own <b>Value Of A Shift In This Role</b> to the objective, once per "
+	"assignment. It is what answers the question room coverage cannot: whether somebody the "
+	"schedule has no room for is better on a standby or float role than left at home. A role "
+	"at the default of 0 contributes nothing, so this rule is inert until somebody prices a "
+	"role — and a negative figure makes a role a last resort rather than a filler. Priced in "
+	"the same points as everything else: a staffed room pays 3 and an assignment costs about "
+	"1, so a standby role has to be worth more than about 1 before the optimizer will place "
+	"anybody on it.",
+	kind=KIND_OBJECTIVE,
+	standard=True,
+	# The figure on the role is already in objective points — that is the whole contract of
+	# the field — so the ruleset weight is a scale factor on a decision the site has already
+	# made, and starts at 1.
+	default_weight=1.0,
+	topic=TOPIC_COVERAGE,
+)
+def role_value_objective(ctx: RuleContext) -> None:
+	"""`value(role)` per assignment.
+
+	Per assignment rather than per presence, because the question is what *this role* is
+	worth rather than what being in is worth: somebody working a gating role with a priced
+	collateral duty beside it earns both, which is the point of pricing the duty.
+	"""
+	data = ctx.data
+	# Always contributes, even when every role is at 0 — an objective rule that sometimes
+	# records no term at all would leave a hole in the run's per-rule objective breakdown,
+	# whose shares are asserted to add back up to the objective.
+	ctx.add_objective(
+		pulp.lpSum(data.value_of(r) * var for (_e, r, _s, _d, _b), var in ctx.x.items() if data.value_of(r))
 	)
 
 

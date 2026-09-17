@@ -13,8 +13,9 @@ import frappe
 import numpy as np
 from frappe.utils import getdate as _getdate
 
+from . import types
 from .rules import BUILTIN_RULES
-from .types import DataPackage
+from .types import MODE_COLLATERAL, MODE_FLEXIBLE, DataPackage, resolve_assignment_role
 from .types import planning_days as _planning_days
 
 
@@ -253,7 +254,15 @@ def load(run_doc) -> DataPackage:
 	role_rows = frappe.get_all(
 		"Scheduling Role",
 		filters={"active": 1, "discipline": ["in", disciplines]},
-		fields=["name", "discipline", "max_rooms", "assignments_binding"],
+		fields=[
+			"name",
+			"discipline",
+			"max_rooms",
+			"assignments_binding",
+			"assignment_mode",
+			"gates_rooms",
+			"assignment_value",
+		],
 	)
 	if not role_rows:
 		frappe.throw(
@@ -267,6 +276,25 @@ def load(run_doc) -> DataPackage:
 	role_max_rooms = {r.name: max(int(r.max_rooms or 1), 1) for r in role_rows}
 	# Roles whose holders' schedules are settled by the holders, not by the planner.
 	role_binding = {r.name: bool(r.assignments_binding) for r in role_rows}
+	# How a shift in the role is worked. Sparse: Flexible is the default and by far the
+	# common case, and leaving it out keeps the input hash of a site that has never touched
+	# the field identical to what it hashed before modes existed.
+	role_mode = {
+		r.name: r.assignment_mode
+		for r in role_rows
+		if r.assignment_mode and r.assignment_mode != MODE_FLEXIBLE
+	}
+	# Whether a room waits on the role. Sparse in the other sense: only where the flag
+	# disagrees with what the mode implies (`DataPackage.gates_rooms`), which is a floater
+	# that opens no rooms, or a collateral duty no room may open without.
+	role_gates_rooms = {}
+	for r in role_rows:
+		gates = bool(r.gates_rooms)
+		if gates != ((r.assignment_mode or MODE_FLEXIBLE) != MODE_COLLATERAL):
+			role_gates_rooms[r.name] = gates
+	# What a shift in the role is worth beyond the rooms it staffs. Sparse: 0 is the default
+	# and means "worth exactly what it staffs", which is every role until somebody prices one.
+	role_value = {r.name: float(r.assignment_value) for r in role_rows if r.assignment_value}
 
 	# ── Employee Scheduling Roles ────────────────────────────────────────────
 	# The validity window is filtered in Python: the condition is
@@ -282,6 +310,7 @@ def load(run_doc) -> DataPackage:
 			"role_fte",
 			"max_rooms",
 			"binding_override",
+			"assignment_mode_override",
 			"suitability",
 			"valid_from",
 			"valid_to",
@@ -317,6 +346,7 @@ def load(run_doc) -> DataPackage:
 	role_fte_pct: dict[tuple[str, str], float] = {}
 	binding_pairs: set[tuple[str, str]] = set()
 	role_suitability: dict[tuple[str, str], float] = {}
+	role_mode_overrides: dict[tuple[str, str], str] = {}
 	for row in held_rows:
 		if row.employee not in active_employees:
 			continue
@@ -328,6 +358,10 @@ def load(run_doc) -> DataPackage:
 		# blank reads as a regular holder, like the field's default; kept sparse
 		if row.suitability and float(row.suitability) != 1.0:
 			role_suitability[pair] = float(row.suitability)
+		# blank inherits the role's mode; an override restating it is not an override
+		override = row.assignment_mode_override
+		if override and override != role_mode.get(row.scheduling_role, MODE_FLEXIBLE):
+			role_mode_overrides[pair] = override
 		if _is_binding(row, role_binding):
 			binding_pairs.add(pair)
 	employee_roles = {e: tuple(sorted(rs)) for e, rs in employee_role_lists.items()}
@@ -484,7 +518,14 @@ def load(run_doc) -> DataPackage:
 			"docstatus": 1,
 			"start_date": ["<=", window_end],
 		},
-		fields=["name", "employee", "shift_type", "start_date", "shift_location"],
+		fields=[
+			"name",
+			"employee",
+			"shift_type",
+			"start_date",
+			"shift_location",
+			"custom_scheduling_role",
+		],
 	)
 	# Assignments outside the horizon (the query has no lower bound) and on non-working
 	# days have no variable to be forced onto, so drop them before doing any resolution.
@@ -501,15 +542,41 @@ def load(run_doc) -> DataPackage:
 			fields=["name", "custom_branch", "custom_discipline"],
 		)
 	}
-	# A Shift Assignment records no role, so it is recovered from its location's
-	# discipline: the role the employee holds there. Somebody holding two roles in one
-	# discipline is unusual but legal (differing max-rooms, say); pick deterministically,
-	# preferring a binding role so a settled schedule is attributed to the role that is
-	# actually settled rather than to whichever one sorts first.
+	# A Shift Assignment records its Scheduling Role in `custom_scheduling_role`. Where it
+	# does not — a record entered by hand, or one older than the field and missed by the
+	# backfill patch — the role is recovered from its location's discipline, but *only* when
+	# the employee holds exactly one role there. Guessing between two is what the field
+	# exists to stop: a rota now settles presence, and which of somebody's roles a half-day
+	# was worked in is precisely the thing that cannot be inferred from where they stood.
+	# Collateral roles are never inferred: a duty is an explicit editorial act, and an
+	# assignment with no role on it is a shift somebody worked, not a lead duty. (Same rule
+	# as `patches.backfill_shift_assignment_roles`, which fills the field in from here.)
 	roles_by_employee_discipline: dict[tuple[str, str], list[str]] = {}
 	for name, held in employee_roles.items():
 		for role in held:
+			mode = role_mode_overrides.get((name, role)) or role_mode.get(role, MODE_FLEXIBLE)
+			if mode == MODE_COLLATERAL:
+				continue
 			roles_by_employee_discipline.setdefault((name, role_discipline[role]), []).append(role)
+
+	# Collateral duties ride on their host's record rather than having one of their own:
+	# HRMS refuses two Shift Assignments whose times overlap. A duty worked *alone* is an
+	# ordinary record whose own Scheduling Role is the collateral one.
+	collateral_by_assignment: dict[str, list[str]] = {}
+	for row in (
+		frappe.get_all(
+			"Collateral Scheduling Role",
+			filters={
+				"parenttype": "Shift Assignment",
+				"parentfield": "custom_collateral_roles",
+				"parent": ["in", [sa.name for sa in existing]],
+			},
+			fields=["parent", "scheduling_role"],
+		)
+		if existing
+		else []
+	):
+		collateral_by_assignment.setdefault(row.parent, []).append(row.scheduling_role)
 
 	def _unresolvable(sa, reason: str) -> None:
 		"""An existing assignment this run cannot place.
@@ -526,6 +593,44 @@ def load(run_doc) -> DataPackage:
 			frappe.throw(message)
 		unresolved_assignments.append((sa.employee, getdate(sa.start_date), reason))
 
+	def _resolve_role(sa) -> str | None:
+		"""The Scheduling Role this assignment is worked in, or None if it cannot be said.
+
+		The decision itself is `types.resolve_assignment_role`; this half turns the outcomes
+		it cannot phrase into messages about the record they are about.
+		"""
+		discipline = (locations.get(sa.shift_location) or frappe._dict()).get("custom_discipline")
+		candidates = roles_by_employee_discipline.get((sa.employee, discipline)) or []
+		outcome, role = resolve_assignment_role(
+			sa.custom_scheduling_role, employee_roles.get(sa.employee, ()), discipline, candidates
+		)
+		match outcome:
+			case types.ROLE_RESOLVED:
+				return role
+			case types.ROLE_NOT_HELD:
+				reason = frappe._(
+					"records Scheduling Role {0}, which {1} does not hold over this horizon — "
+					"give them the role, or correct the assignment"
+				).format(sa.custom_scheduling_role, sa.employee)
+			case types.ROLE_NO_DISCIPLINE:
+				reason = frappe._(
+					"names no Scheduling Role, and Shift Location {0} has no Discipline to infer "
+					"one from — set the Scheduling Role on the assignment"
+				).format(sa.shift_location)
+			case types.ROLE_NONE_IN_DISCIPLINE:
+				reason = frappe._(
+					"{0} holds no Scheduling Role in discipline {1}, but the assignment places "
+					"them there — give them the role, or correct the Shift Location"
+				).format(sa.employee, discipline)
+			case _:
+				reason = frappe._(
+					"names no Scheduling Role, and {0} holds {1} of them in discipline {2} ({3}) — "
+					"which one this shift was worked in cannot be inferred, so set it on the "
+					"assignment"
+				).format(sa.employee, len(candidates), discipline, ", ".join(sorted(candidates)))
+		_unresolvable(sa, reason)
+		return None
+
 	for sa in existing:
 		location = locations.get(sa.shift_location) or frappe._dict()
 		branch = location.get("custom_branch")
@@ -535,35 +640,29 @@ def load(run_doc) -> DataPackage:
 				frappe._("no Shift Location with a Branch set, so it names no branch"),
 			)
 			continue
-		discipline = location.get("custom_discipline")
-		if not discipline:
-			_unresolvable(
-				sa,
-				frappe._("Shift Location {0} has no Discipline set, so it names no Scheduling Role").format(
-					sa.shift_location
-				),
-			)
+		role = _resolve_role(sa)
+		if role is None:
 			continue
-		candidates = roles_by_employee_discipline.get((sa.employee, discipline))
-		if not candidates:
-			_unresolvable(
-				sa,
-				frappe._(
-					"{0} holds no Scheduling Role in discipline {1}, but the assignment places "
-					"them there — give them the role, or correct the Shift Location"
-				).format(sa.employee, discipline),
-			)
-			continue
-		role = sorted(candidates, key=lambda r: ((sa.employee, r) not in binding_pairs, r))[0]
 		day = getdate(sa.start_date)
-		comb = (sa.employee, role, sa.shift_type, day, str(branch))
+		combs = [(sa.employee, role, sa.shift_type, day, str(branch))]
+		for collateral in collateral_by_assignment.get(sa.name, ()):
+			if collateral in employee_roles.get(sa.employee, ()):
+				combs.append((sa.employee, collateral, sa.shift_type, day, str(branch)))
+			else:
+				_unresolvable(
+					sa,
+					frappe._(
+						"records a collateral duty in {0}, which {1} does not hold over this horizon"
+					).format(collateral, sa.employee),
+				)
 		# Approved (or speculated) leave wins over an assignment already on the books —
 		# forcing both would make the model infeasible. Record it so the run-statistics
-		# panel can tell the planner their data disagrees with itself.
+		# panel can tell the planner their data disagrees with itself. A collateral duty
+		# goes down with its host: it is the same half-day.
 		if (sa.employee, day) in leave_blocked:
-			binding_conflicts.append(comb)
+			binding_conflicts.extend(combs)
 			continue
-		forced.add(comb)
+		forced.update(combs)
 
 	return DataPackage(
 		flags=flags,
@@ -584,6 +683,10 @@ def load(run_doc) -> DataPackage:
 		shift_preferences=shift_preferences,
 		rules=rules,
 		binding_pairs=frozenset(binding_pairs),
+		role_mode=role_mode,
+		role_mode_overrides=role_mode_overrides,
+		role_gates_rooms=role_gates_rooms,
+		role_value=role_value,
 		binding_conflicts=tuple(sorted(binding_conflicts)),
 		unresolved_assignments=tuple(sorted(set(unresolved_assignments))),
 		role_suitability=role_suitability,

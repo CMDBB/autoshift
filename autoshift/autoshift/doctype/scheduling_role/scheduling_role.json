@@ -11,6 +11,8 @@
   "assignment_mode",
   "column_break_1",
   "max_rooms",
+  "gates_rooms",
+  "assignment_value",
   "display_order_key",
   "assignments_binding",
   "active",
@@ -63,6 +65,22 @@
    "label": "Max Rooms Per Holder",
    "non_negative": 1,
    "reqd": 1
+  },
+  {
+   "default": "1",
+   "description": "Whether a room in this discipline needs somebody in this role. Room coverage is the <i>minimum</i> over the roles that gate it, so a room opens only where every gating role is staffed \u2014 a room needing a practitioner and an assistant is two gating roles. Switch it off for a role that is worked in the discipline without being a condition of opening a room: a lead duty, a floater, an administrative role. A non-gating role neither opens rooms nor holds them shut.",
+   "fieldname": "gates_rooms",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Required To Staff A Room"
+  },
+  {
+   "default": "0",
+   "description": "What one shift in this role is worth to the practice, beyond the rooms it staffs, in the same objective points every other rule is priced in \u2014 a staffed room is worth 3 at the default weights, and an assignment costs about 1 in preference terms. <b>0</b>, the default, means a shift in this role is worth exactly what it staffs: for a role that gates rooms, that is already the whole story. Set a small positive figure on a standby or float role so somebody who would otherwise be left unassigned is put on it instead, and a negative one on a role to be used only where nothing else covers the work. Requires the <b>Value of working a role</b> objective in the run's ruleset.",
+   "fieldname": "assignment_value",
+   "fieldtype": "Float",
+   "label": "Value Of A Shift In This Role",
+   "precision": "2"
   },
   {
    "default": "0",

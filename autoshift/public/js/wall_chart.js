@@ -83,7 +83,15 @@ autoshift.wall_chart.inject_styles = function () {
 		.autoshift-wall-chart .awc-day-start { border-left: 2px solid var(--border-color); }
 		.autoshift-wall-chart .awc-nonworking { background: var(--bg-light-gray, #f4f5f6); }
 		.autoshift-wall-chart .awc-outside { opacity: 0.55; }
-		.autoshift-wall-chart .awc-cell { min-width: 3.2rem; cursor: default; }
+		.autoshift-wall-chart .awc-cell { min-width: 3.2rem; cursor: default; vertical-align: middle; }
+		.autoshift-wall-chart .awc-uncovered {
+			background-image: repeating-linear-gradient(
+				45deg, transparent, transparent 4px,
+				var(--border-color, #e5e7eb) 4px, var(--border-color, #e5e7eb) 5px
+			);
+		}
+		.autoshift-wall-chart .awc-aside { background-color: var(--bg-light-gray, #fafafa); }
+		.autoshift-wall-chart th.awc-aside { font-style: italic; }
 		.autoshift-wall-chart .awc-who {
 			display: inline-block; border: 1.5px solid transparent; border-radius: var(--border-radius);
 			padding: 0.05rem 0.3rem; font-family: var(--font-stack-mono, monospace);
@@ -130,6 +138,10 @@ autoshift.wall_chart.inject_styles = function () {
 
 const esc = (value) => frappe.utils.escape_html(String(value == null ? "" : value));
 
+// `autoshift.wallchart.api.SPANNED`: a line a chip above it already covers. Not the
+// same as an empty cell — the chip's rowspan is occupying it, so nothing is drawn.
+const SPANNED = "spanned";
+
 function day_label(day) {
 	const dt = frappe.datetime.str_to_obj(day.date);
 	const name = dt.toLocaleDateString(undefined, { weekday: "short" });
@@ -150,7 +162,7 @@ function day_classes(day, run, today) {
 }
 
 function cell_markup(cell) {
-	if (!cell) return "";
+	if (!cell || cell === SPANNED) return "";
 	const classes = ["awc-who", `awc-${cell.kind}`];
 	if (cell.uncertain) classes.push("awc-uncertain");
 	const title = [
@@ -212,6 +224,7 @@ function band_markup(band, days, run, width, today) {
 				.map((lane, lane_index) => {
 					const cls = ["awc-lane", ...day_classes(day, run, today)];
 					if (day_index && !lane_index) cls.push("awc-day-start");
+					if (lane.gates_rooms === false) cls.push("awc-aside");
 					return `<th class="${cls.join(" ")}" colspan="${
 						spans[lane_index]
 					}" scope="col" title="${lane.label}">${esc(
@@ -233,13 +246,24 @@ function band_markup(band, days, run, width, today) {
 	for (let row = 0; row < band.height; row++) {
 		const cells = [`<td class="awc-ord">${band.numbered ? row + 1 : ""}</td>`];
 		days.forEach((day, day_index) => {
-			lanes.forEach((_lane, lane_index) => {
+			// How many of this band's rooms are genuinely open that day. A line past
+			// it holds somebody without holding everybody the room needs, so it is
+			// hatched: a half-staffed room is not an open room.
+			const covered = (band.covered || [])[day_index] || 0;
+			lanes.forEach((lane, lane_index) => {
+				const cell = (band.rows[row][lane_index] || [])[day_index];
+				// A line swallowed by the chip above it gets no <td> at all — that is
+				// what the chip's rowspan is standing in for.
+				if (cell === SPANNED) return;
 				const cls = ["awc-cell", ...day_classes(day, run, today)];
 				if (day_index && !lane_index) cls.push("awc-day-start");
+				if (lane.gates_rooms === false) cls.push("awc-aside");
+				if (band.numbered && row + 1 > covered) cls.push("awc-uncovered");
+				const rowspan = cell && cell.span > 1 ? ` rowspan="${cell.span}"` : "";
 				cells.push(
-					`<td class="${cls.join(" ")}" colspan="${spans[lane_index]}">${cell_markup(
-						(band.rows[row][lane_index] || [])[day_index]
-					)}</td>`
+					`<td class="${cls.join(" ")}"${rowspan} colspan="${
+						spans[lane_index]
+					}">${cell_markup(cell)}</td>`
 				);
 			});
 		});
@@ -312,7 +336,7 @@ function legend_markup(payload) {
 					[__("Dropped"), "awc-dropped"],
 			  ]
 			: [[__("On the books"), "awc-existing"]];
-	const swatches = keys
+	const swatches = [...keys, [__("Room not fully staffed"), "awc-uncovered"]]
 		.map(
 			([label, cls]) =>
 				`<span class="awc-key"><span class="awc-swatch ${cls}"></span>${esc(label)}</span>`
@@ -369,7 +393,7 @@ function totals_markup(payload) {
 			? ` · ${__("{0} kept, {1} added, {2} dropped", [t.kept, t.added, t.dropped])}`
 			: "";
 	return `<div class="awc-totals"><b>${t.staffed}</b> ${__("of")} <b>${t.capacity}</b> ${__(
-		"configured room-slots staffed on working days"
+		"configured room-slots fully staffed on working days"
 	)} (${pct}%)${diff}</div>`;
 }
 
@@ -444,6 +468,14 @@ const EXPORT_CSS = `
 	.awc-nonworking { background: #f4f5f6; }
 	.awc-outside { opacity: 0.55; }
 	.awc-today-col { background: #eff6ff; }
+	.awc-cell { vertical-align: middle; }
+	.awc-uncovered {
+		background-image: repeating-linear-gradient(
+			45deg, transparent, transparent 4px, #e5e7eb 4px, #e5e7eb 5px
+		);
+	}
+	.awc-aside { background-color: #fafafa; }
+	th.awc-aside { font-style: italic; }
 	.awc-who {
 		display: inline-block; border: 1.2px solid transparent; border-radius: 3px;
 		padding: 0.03rem 0.25rem; font-family: "SFMono-Regular", Consolas, monospace; font-size: 7pt;

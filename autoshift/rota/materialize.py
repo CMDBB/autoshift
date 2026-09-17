@@ -65,6 +65,7 @@ def load_rotas(employees: set[str] | None = None) -> list[Rota]:
 			"shift_location",
 			"create_shifts_after",
 			"custom_unconfirmed",
+			"custom_scheduling_role",
 		],
 	)
 	if not rows:
@@ -91,6 +92,7 @@ def load_rotas(employees: set[str] | None = None) -> list[Rota]:
 		if index is not None:
 			days_by_schedule.setdefault(row.parent, set()).add(index)
 
+	collateral = collateral_roles([row.name for row in rows])
 	rotas = []
 	for row in rows:
 		schedule = schedules.get(row.shift_schedule)
@@ -116,12 +118,38 @@ def load_rotas(employees: set[str] | None = None) -> list[Rota]:
 				cycle_weeks=cycle,
 				anchor=_getdate(row.create_shifts_after),
 				unconfirmed=bool(row.custom_unconfirmed),
+				scheduling_role=row.custom_scheduling_role,
+				collateral_roles=tuple(collateral.get(row.name, ())),
 			)
 		)
 	# Deterministic, because under the one-a-day rule two of an employee's own
 	# schedules landing on the same day are settled by whichever comes first.
 	rotas.sort(key=lambda r: (r.employee, r.shift_type, r.assignment))
 	return rotas
+
+
+def collateral_roles(assignments: list[str]) -> dict[str, list[str]]:
+	"""Shift Schedule Assignment -> the collateral roles its shifts carry.
+
+	The rota's counterpart to the same table on `Shift Assignment`: a duty worked on top
+	of a shift has no record of its own to live in, so it rides on the one that generates
+	it and is copied onto every `Shift Assignment` materialised from it.
+	"""
+	if not assignments:
+		return {}
+	out: dict[str, list[str]] = {}
+	for row in frappe.get_all(
+		"Collateral Scheduling Role",
+		filters={
+			"parenttype": "Shift Schedule Assignment",
+			"parentfield": "custom_collateral_roles",
+			"parent": ["in", assignments],
+		},
+		fields=["parent", "scheduling_role"],
+	):
+		if row.scheduling_role:
+			out.setdefault(row.parent, []).append(row.scheduling_role)
+	return out
 
 
 def one_shift_per_day() -> bool:
@@ -214,6 +242,8 @@ def pending(first, last) -> dict:
 					"company": rota.company,
 					"shift_type": rota.shift_type,
 					"shift_location": rota.shift_location,
+					"scheduling_role": rota.scheduling_role,
+					"collateral_roles": list(rota.collateral_roles),
 					"date": day.isoformat(),
 					"cycle_weeks": rota.cycle_weeks,
 				}
@@ -245,6 +275,9 @@ def pending(first, last) -> dict:
 def materialize(first, last) -> dict:
 	"""Create the `Shift Assignment` records :func:`pending` reports missing.
 
+	Each record carries the rota's own Scheduling Role and any collateral duties, so the
+	optimizer reads the role off the record instead of inferring one.
+
 	One record per day rather than one per run of consecutive days: it is what the
 	import writes, it keeps the coverage comparison above a set membership test,
 	and it means a single day that cannot be created costs only that day.
@@ -253,8 +286,6 @@ def materialize(first, last) -> dict:
 	given a conflicting assignment by hand) is collected and reported rather than
 	aborting the rest, so one bad record cannot block a whole week.
 	"""
-	from hrms.hr.doctype.shift_assignment_tool.shift_assignment_tool import create_shift_assignment
-
 	frappe.has_permission("Shift Assignment", "create", throw=True)
 
 	found = pending(first, last)
@@ -263,21 +294,7 @@ def materialize(first, last) -> dict:
 		# A savepoint per row, so a refusal costs that row and not the whole span.
 		frappe.db.savepoint(SAVEPOINT)
 		try:
-			# Always Active: `Shift Schedule Assignment.shift_status` is HRMS's
-			# switch for HRMS's generator, and a rota is marked Inactive there
-			# precisely because that generator would run it wrongly. These are
-			# shifts the person works.
-			doc = create_shift_assignment(
-				row["employee"],
-				row["company"],
-				row["shift_type"],
-				row["date"],
-				row["date"],
-				"Active",
-				row["shift_location"],
-				row["assignment"],
-			)
-			created.append(getattr(doc, "name", str(doc)))
+			created.append(_create_assignment(row))
 		except Exception as error:
 			frappe.db.rollback(save_point=SAVEPOINT)
 			failed.append({**row, "reason": str(error)})
@@ -293,6 +310,35 @@ def materialize(first, last) -> dict:
 		"failed": failed,
 		"employees": found["employees"],
 	}
+
+
+def _create_assignment(row: dict) -> str:
+	"""One day's `Shift Assignment`, built the way HRMS's own helper builds it.
+
+	`shift_assignment_tool.create_shift_assignment` is the same handful of assignments
+	plus `save()`/`submit()`, and it is not called here for one reason: the role has to be
+	on the record **before** it is submitted. Everything downstream reads
+	`custom_scheduling_role` rather than guessing a role from where the person stood, and
+	a submitted document is not the place to start filling that in.
+	"""
+	doc = frappe.new_doc("Shift Assignment")
+	doc.employee = row["employee"]
+	doc.company = row["company"]
+	doc.shift_type = row["shift_type"]
+	doc.start_date = row["date"]
+	doc.end_date = row["date"]
+	# Always Active: `Shift Schedule Assignment.shift_status` is HRMS's switch for HRMS's
+	# generator, and a rota is marked Inactive there precisely because that generator
+	# would run it wrongly. These are shifts the person works.
+	doc.status = "Active"
+	doc.shift_location = row["shift_location"]
+	doc.shift_schedule_assignment = row["assignment"]
+	doc.custom_scheduling_role = row.get("scheduling_role")
+	for role in row.get("collateral_roles") or ():
+		doc.append("custom_collateral_roles", {"scheduling_role": role})
+	doc.save()
+	doc.submit()
+	return doc.name
 
 
 @frappe.whitelist()

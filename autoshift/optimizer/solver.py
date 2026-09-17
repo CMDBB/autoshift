@@ -122,6 +122,7 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 							"shift_type": s,
 							"date": str(d),
 							"branch": b,
+							"collateral": 1 if data.is_collateral(e, r) else 0,
 							"forced": 1 if comb in data.forced else 0,
 						},
 					)

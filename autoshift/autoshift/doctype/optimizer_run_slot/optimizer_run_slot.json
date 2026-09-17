@@ -12,6 +12,7 @@
   "date",
   "shift_location",
   "branch",
+  "collateral",
   "forced"
  ],
  "fields": [
@@ -64,6 +65,15 @@
    "in_list_view": 1,
    "label": "Branch",
    "options": "Branch"
+  },
+  {
+   "default": "0",
+   "description": "A duty worked on top of the shift in this row's slot (or on its own), rather than a way of spending the shift. Collateral rows share their host's half-day, so counting rows counts a collateral duty twice \u2014 count distinct (employee, date, shift type) for presence.",
+   "fieldname": "collateral",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Collateral",
+   "read_only": 1
   },
   {
    "fieldname": "forced",

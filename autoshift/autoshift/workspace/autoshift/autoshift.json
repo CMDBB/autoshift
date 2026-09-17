@@ -104,7 +104,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-09-14 11:41:47.212454",
+ "modified": "2026-09-16 14:43:19.077646",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Autoshift",
@@ -124,15 +124,15 @@
   {
    "color": "Green",
    "doc_view": "",
-   "label": "Rota Editor",
+   "label": "Role Matrix",
    "link_to": "role-matrix",
    "type": "Page"
   },
   {
    "color": "Green",
    "doc_view": "",
-   "label": "Role Matrix",
-   "link_to": "role-matrix",
+   "label": "Rota Editor",
+   "link_to": "rota-editor",
    "type": "Page"
   },
   {

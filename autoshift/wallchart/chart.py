@@ -68,6 +68,11 @@ class Slot:
 	label: str
 	branch: str | None
 	scheduling_role: str | None
+	#: Rooms this person covers in this half-day — `Scheduling Role.max_rooms`, or
+	#: the holder's own override. The chip is drawn that many rows tall, because a
+	#: practitioner covering two rooms occupies two of the band's lines and the
+	#: paper sheet has always drawn them that way.
+	rooms: int = 1
 	kind: str = KIND_EXISTING
 	#: The run pinned this rather than choosing it (warm start / role binding).
 	forced: bool = False
@@ -106,6 +111,11 @@ class Lane:
 	#: `Scheduling Role.chip_sort_descending` for this lane's role. No-op unless
 	#: the role also names a `chip_sort_field` — see `_order_lane`.
 	sort_descending: bool = False
+	#: `Scheduling Role.gates_rooms`. A room is open only where *every* gating
+	#: lane of its band is filled on that line, which is what `_coverage` counts
+	#: and `room_coverage` enforces. A non-gating lane (a lead duty, a floater)
+	#: is drawn like any other and simply does not decide whether a room counts.
+	gates_rooms: bool = True
 
 
 @dataclass(frozen=True)
@@ -158,6 +168,9 @@ class Placement:
 	lane: str
 	day_index: int
 	slot: Slot
+	#: Rows this placement occupies, starting at `row`. `slot.rooms`, except where
+	#: it would run past what the band can draw.
+	span: int = 1
 
 
 @dataclass
@@ -169,6 +182,11 @@ class Chart:
 	placements: list[Placement] = field(default_factory=list)
 	#: Rows actually drawn, per (shift_type, band key).
 	heights: dict[tuple[str, str], int] = field(default_factory=dict)
+	#: Rooms genuinely open, per (shift_type, band key, day index): the rows every
+	#: gating lane covers. A row above this is staffed by somebody but not by
+	#: everybody the room needs, and the chart greys it — a half-staffed room is
+	#: not an open room, and drawing it like one is how a chart lies.
+	covered: dict[tuple[str, str, int], int] = field(default_factory=dict)
 	warnings: list[str] = field(default_factory=list)
 	#: The lanes the overflow band needed, if any.
 	overflow_lanes: tuple[Lane, ...] = ()
@@ -179,6 +197,9 @@ class Chart:
 
 	def height(self, shift_type: str, band_key: str) -> int:
 		return self.heights.get((shift_type, band_key), 0)
+
+	def covered_rooms(self, shift_type: str, band_key: str, day_index: int) -> int:
+		return self.covered.get((shift_type, band_key, day_index), 0)
 
 	def cell(self, shift_type: str, band_key: str, row: int, lane: str, day_index: int) -> list[Slot]:
 		return [
@@ -250,6 +271,7 @@ def _recast(slot: Slot, kind: str, changed: str | None = None) -> Slot:
 		label=slot.label,
 		branch=slot.branch,
 		scheduling_role=slot.scheduling_role,
+		rooms=slot.rooms,
 		kind=kind,
 		forced=slot.forced,
 		role_certain=slot.role_certain,
@@ -271,12 +293,19 @@ def _order_lane(slots: list[Slot], descending: bool) -> list[Slot]:
 	without one — the role names no `chip_sort_field`, the field does not
 	exist, or this employee has no value for it — stay in alphabetical order
 	after every ranked one, rather than raising or guessing.
+
+	`dropped` slots sink to the bottom of the lane whatever their label says.
+	They are on the books and the run does not schedule them, so they are not
+	part of the proposal filling the rooms: keeping them above it would leave a
+	room covered on paper by somebody the run has sent home, and would break the
+	run of covered lines that `_coverage` counts and the chart greys below.
 	"""
 	tied = sorted(slots, key=_sort_key)
 	ranked = [s for s in tied if s.sort_value is not None]
 	unranked = [s for s in tied if s.sort_value is None]
 	ranked.sort(key=lambda s: s.sort_value, reverse=descending)
-	return ranked + unranked
+	ordered = ranked + unranked
+	return [s for s in ordered if s.kind != KIND_DROPPED] + [s for s in ordered if s.kind == KIND_DROPPED]
 
 
 def build(layout: Layout, slots: list[Slot], monday: datetime.date) -> Chart:
@@ -350,8 +379,8 @@ def build(layout: Layout, slots: list[Slot], monday: datetime.date) -> Chart:
 			chart.heights[(section.shift_type, band.key)] = max(band.rooms, used)
 			if used > band.rooms:
 				chart.warnings.append(
-					f"{section.title}: {band.discipline_label} at {band.branch_label} has {used} "
-					f"people on one half-day but only {band.rooms} rooms configured"
+					f"{section.title}: {band.discipline_label} at {band.branch_label} covers {used} "
+					f"rooms on one half-day but only {band.rooms} are configured"
 				)
 		used = _fill(chart, pool, section.shift_type, OVERFLOW, chart.overflow_lanes, len(dates))
 		if used:
@@ -374,12 +403,49 @@ def _fill(
 	lanes: tuple[Lane, ...],
 	days: int,
 ) -> int:
-	"""Stack one band's claimed slots into rows. Returns the rows used."""
+	"""Stack one band's claimed slots into rows. Returns the rows used.
+
+	A slot covering more than one room occupies that many consecutive lines, so
+	the next person in the lane starts below it rather than beside it. The rows a
+	lane reaches on a day are therefore its slots' rooms added up, which is the
+	same sum `room_coverage` puts on the left of its inequality — so the coverage
+	`_coverage` reads back out of this is the chart's own arithmetic, not a second
+	opinion about it.
+	"""
 	used = 0
+	#: (day index, lane key) -> rows this lane covers that day
+	reach: dict[tuple[int, str], int] = {}
 	for lane in lanes:
 		for index in range(days):
 			here = _order_lane(pool.get((band_key, lane.key, index, shift_type), []), lane.sort_descending)
-			used = max(used, len(here))
-			for row, slot in enumerate(here, start=1):
-				chart.placements.append(Placement(shift_type, band_key, row, lane.key, index, slot))
+			row = 1
+			covered = 0
+			for slot in here:
+				span = max(int(slot.rooms or 1), 1)
+				chart.placements.append(Placement(shift_type, band_key, row, lane.key, index, slot, span))
+				row += span
+				# `_order_lane` puts every dropped slot last, so this stays the
+				# count of rows the *proposal* reaches, from the top
+				if slot.kind != KIND_DROPPED:
+					covered = row - 1
+			reach[(index, lane.key)] = covered
+			used = max(used, row - 1)
+
+	gating = [lane.key for lane in lanes if lane.gates_rooms]
+	for index in range(days):
+		chart.covered[(shift_type, band_key, index)] = _coverage(reach, index, gating)
 	return used
+
+
+def _coverage(reach: dict[tuple[int, str], int], day_index: int, gating: list[str]) -> int:
+	"""Rooms open on one day of one band: the rows *every* gating lane reaches.
+
+	The minimum, exactly as `rules.room_coverage` takes it — a room needs each of
+	the roles it is defined by, so one lane running two lines deep next to a lane
+	running one covers one room and leaves a half-staffed line above it. A band
+	with no gating lane at all covers nothing: there is no role to say the room is
+	open, which is the same answer the solver gives.
+	"""
+	if not gating:
+		return 0
+	return min(reach.get((day_index, key), 0) for key in gating)

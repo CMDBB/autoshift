@@ -123,12 +123,47 @@ class DataPackage:
 	role_mode: dict[str, str] = dataclasses.field(default_factory=dict)
 	role_mode_overrides: dict[tuple[str, str], str] = dataclasses.field(default_factory=dict)
 
+	# Scheduling Role.gates_rooms: does a room in the discipline need somebody in this role.
+	# Sparse and explicit — a role absent here falls back to `gates_rooms`'s default, which
+	# is "every role gates except a collateral duty". Kept separate from the mode because the
+	# two really are different questions: the mode says how a shift in the role is *worked*,
+	# gating says whether a room waits on it. Most collateral duties do not gate and most
+	# working roles do, but a floater or an administrative role is a working role that opens
+	# no rooms, and a practice that may not run without a lead on site is a gating duty.
+	role_gates_rooms: dict[str, bool] = dataclasses.field(default_factory=dict)
+
+	# Scheduling Role.assignment_value: what one shift in the role is worth beyond the rooms
+	# it staffs, in objective points. Sparse — only roles carrying a non-zero figure — so a
+	# site that has never set one hashes and solves exactly as before. Read by
+	# `rules.role_value_objective`; every other rule ignores it.
+	role_value: dict[str, float] = dataclasses.field(default_factory=dict)
+
 	def suitability(self, employee: str, role: str) -> float:
 		return self.role_suitability.get((employee, role), 1.0)
 
 	def mode(self, employee: str, role: str) -> str:
 		"""How `employee` works `role`: their own override, else the role's own mode."""
 		return self.role_mode_overrides.get((employee, role)) or self.role_mode.get(role, MODE_FLEXIBLE)
+
+	def value_of(self, role: str) -> float:
+		"""Objective points one shift in `role` is worth on its own. Zero unless set."""
+		return self.role_value.get(role, 0.0)
+
+	def gates_rooms(self, role: str) -> bool:
+		"""Does room coverage in this role's discipline wait on somebody working it.
+
+		A property of the role, not of the holder: a room either needs the role filled or it
+		does not. The default keeps packages that predate the flag (and every hand-built one)
+		reading the way the mode alone used to imply.
+		"""
+		explicit = self.role_gates_rooms.get(role)
+		if explicit is not None:
+			return explicit
+		return self.role_mode.get(role, MODE_FLEXIBLE) != MODE_COLLATERAL
+
+	def gating_roles(self, employee: str) -> tuple[str, ...]:
+		"""The employee's roles a room in their discipline actually waits on."""
+		return tuple(r for r in self.employee_roles.get(employee, ()) if self.gates_rooms(r))
 
 	def is_collateral(self, employee: str, role: str) -> bool:
 		"""A duty worked on top of a shift (or on its own), not a way of spending the shift."""
@@ -189,7 +224,7 @@ class DataPackage:
 		if not self.role_suitability:
 			# keep the cache hits of runs solved before the field existed
 			del payload["role_suitability"]
-		for name in ("role_mode", "role_mode_overrides"):
+		for name in ("role_mode", "role_mode_overrides", "role_gates_rooms", "role_value"):
 			if not getattr(self, name):  # idem, for sites where every role is Flexible
 				del payload[name]
 		blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -234,6 +269,8 @@ class DataPackage:
 				[employee, role, factor] for (employee, role), factor in sorted(self.role_suitability.items())
 			],
 			"role_mode": self.role_mode,
+			"role_gates_rooms": self.role_gates_rooms,
+			"role_value": self.role_value,
 			"role_mode_overrides": [
 				[employee, role, mode] for (employee, role), mode in sorted(self.role_mode_overrides.items())
 			],
@@ -296,10 +333,54 @@ class DataPackage:
 			# absent from packages captured before assignment modes existed: every role was
 			# a way of spending a whole shift, which is what MODE_FLEXIBLE means
 			role_mode=payload.get("role_mode", {}),
+			# absent before the flag existed: gating followed the mode, which is what
+			# `gates_rooms` falls back to
+			role_gates_rooms=payload.get("role_gates_rooms", {}),
+			# absent before the field existed: a shift was worth exactly what it staffed
+			role_value=payload.get("role_value", {}),
 			role_mode_overrides={
 				(employee, role): mode for employee, role, mode in payload.get("role_mode_overrides", [])
 			},
 		)
+
+
+#: Outcomes of :func:`resolve_assignment_role`.
+ROLE_RESOLVED = "resolved"
+ROLE_NOT_HELD = "not_held"  # the record names a role this employee does not hold
+ROLE_NO_DISCIPLINE = "no_discipline"  # nothing to infer from: no role, no location discipline
+ROLE_NONE_IN_DISCIPLINE = "none_in_discipline"  # they hold no role where the record puts them
+ROLE_AMBIGUOUS = "ambiguous"  # they hold several there, and a shift names only one
+
+
+def resolve_assignment_role(
+	recorded: str | None,
+	held: Iterable[str],
+	discipline: str | None,
+	candidates: Iterable[str],
+) -> tuple[str, str | None]:
+	"""
+	Which Scheduling Role an existing Shift Assignment was worked in.
+
+	The record's own `custom_scheduling_role` if it has one; failing that, the single role the
+	employee holds in the Shift Location's discipline. **Never a choice between two.** The
+	loader used to pick by sort order, which was tolerable while a person had one role in a
+	discipline and is wrong now: a rota settles when somebody is in, and which of their roles
+	the half-day went to is the part that cannot be read off where they stood.
+
+	Split out of `data_loader` because it is the one piece of that module worth testing on
+	its own. Returns `(outcome, role)`, with the role set only on `ROLE_RESOLVED`; the caller
+	turns the other outcomes into messages, since only it knows the record they are about.
+	"""
+	candidates = list(candidates)
+	if recorded:
+		return (ROLE_RESOLVED, recorded) if recorded in set(held) else (ROLE_NOT_HELD, None)
+	if not discipline:
+		return (ROLE_NO_DISCIPLINE, None)
+	if not candidates:
+		return (ROLE_NONE_IN_DISCIPLINE, None)
+	if len(candidates) > 1:
+		return (ROLE_AMBIGUOUS, None)
+	return (ROLE_RESOLVED, candidates[0])
 
 
 def planning_days(start_date_raw: datetime.date, mode: str) -> Iterable[datetime.date]:

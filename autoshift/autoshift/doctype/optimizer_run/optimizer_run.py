@@ -328,6 +328,8 @@ class OptimizerRun(Document):
 					"branch": s.branch,
 					"shift_location": s.shift_location,
 					"scheduling_role": s.scheduling_role,
+					# a duty worked on top of the shift beside it, not a second shift
+					"collateral": bool(s.get("collateral")),
 					"forced": bool(s.forced),
 				},
 			)
@@ -491,9 +493,14 @@ class OptimizerRun(Document):
 			)
 
 		# ── employees: assigned vs. FTE target ──────────────────────────────────
+		# Counted in *presences* — distinct (employee, date, shift type) — not in rows. An
+		# FTE target is a number of half-days, and a collateral duty rides on the half-day
+		# its host already occupies, so counting rows would put a lead over their contract
+		# for work that costs them no extra time. `rules.fte_ceiling` counts the same way.
+		presences = {(s.employee, str(s.date), s.shift_type) for s in slots}
 		assigned_per_emp: dict[str, int] = {}
-		for s in slots:
-			assigned_per_emp[s.employee] = assigned_per_emp.get(s.employee, 0) + 1
+		for employee, _day, _shift_type in presences:
+			assigned_per_emp[employee] = assigned_per_emp.get(employee, 0) + 1
 		employee_names = (
 			{
 				row.name: row.employee_name
@@ -616,10 +623,12 @@ class OptimizerRun(Document):
 				"room_slots_staffed": sum(c["staffed"] for c in matrix),
 				"room_slots_capacity": sum(c["capacity"] for c in matrix),
 				"assignments": len(slots),
+				"assignments_collateral": sum(1 for s in slots if s.get("collateral")),
+				"presences": len(presences),
 				"assignments_forced": sum(1 for s in slots if s.forced),
-				"assignments_bound": sum(
-					1 for s in slots if (s.employee, s.scheduling_role) in data.binding_pairs
-				),
+				# binding is personal now: every row of a bound employee is bound, whichever
+				# role the optimizer settled the half-day into
+				"assignments_bound": sum(1 for s in slots if s.employee in data.bound_employees()),
 				"target_shifts": sum(data.target_shifts.get(e, 0) for e in data.employees),
 				"employees_considered": len(data.employees),
 				"employees_scheduled": len(assigned_per_emp),
@@ -671,14 +680,18 @@ def _derive_coverage_matrix(data, slots) -> list[dict]:
 	that rule was selected with the room-utilization objective (the solver never
 	leaves a coverable room unclaimed); an upper bound otherwise.
 	"""
+	# Gating roles only, exactly as `room_coverage` counts them: a role no room waits on
+	# neither opens one nor holds one shut, and taking the minimum over it would report a
+	# discipline as unstaffed whenever nobody is working the lead duty.
 	roles_per_disc: dict[str, set[str]] = {}
 	for role, disc in data.role_discipline.items():
-		roles_per_disc.setdefault(disc, set()).add(role)
+		if data.gates_rooms(role):
+			roles_per_disc.setdefault(disc, set()).add(role)
 
 	staffed_by_role: dict[tuple, int] = {}
 	for s in slots:
 		disc = data.role_discipline.get(s.scheduling_role)
-		if not disc:
+		if not disc or not data.gates_rooms(s.scheduling_role):
 			continue
 		key = (disc, s.scheduling_role, str(s.date), s.shift_type, s.branch)
 		staffed_by_role[key] = staffed_by_role.get(key, 0) + data.max_rpe.get(
@@ -714,7 +727,8 @@ def _derive_coverage_matrix(data, slots) -> list[dict]:
 def _role_supply_bounds(data) -> dict[str, dict]:
 	"""Per discipline: the scarcest role's total room-slot supply over the horizon.
 
-	A discipline's coverage is the minimum over its roles, and each holder can work at
+	A discipline's coverage is the minimum over the roles that *gate* it (`gates_rooms`), and
+	each holder can work at
 	most their FTE ceiling (each shift contributing their max-rooms figure), so the
 	scarcest role's supply bounds what any ruleset can staff. Optimistic where an
 	employee holds several roles (counted fully in each) — presented as "at most",
@@ -728,8 +742,8 @@ def _role_supply_bounds(data) -> dict[str, dict]:
 	for disc in data.disciplines:
 		role_supplies: dict[str, int] = {}
 		for role, role_disc in data.role_discipline.items():
-			if role_disc != disc:
-				continue
+			if role_disc != disc or not data.gates_rooms(role):
+				continue  # a role no room waits on cannot be the scarce one
 			supply = 0
 			for e in data.employees:
 				if role in data.employee_roles.get(e, ()):

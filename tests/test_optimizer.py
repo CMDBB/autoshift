@@ -17,6 +17,7 @@ from unittest import mock
 import pulp
 import pytest
 
+from autoshift.optimizer import types as types_module
 from autoshift.optimizer.editor_support import completion_items
 from autoshift.optimizer.model_builder import build
 from autoshift.optimizer.rules import (
@@ -1445,17 +1446,18 @@ def test_a_collateral_duty_can_stand_alone():
 	assert (pulp.value(presence[("E1", "AM", MON, "B1")]) or 0) > 0.5
 
 
-def test_collateral_roles_do_not_gate_room_coverage():
+def test_collateral_roles_do_not_gate_room_coverage_by_default():
 	"""
-	`room_coverage` takes the minimum over a discipline's roles. A collateral role counted
-	there would cap the discipline at the rooms its leads span — and leave every room dark
-	whenever nobody is leading.
+	`room_coverage` takes the minimum over a discipline's *gating* roles, and a collateral
+	role does not gate unless somebody says so. Counted there it would cap the discipline at
+	the rooms its leads span — and leave every room dark whenever nobody is leading.
 	"""
 	data = with_collateral(
 		employees=["E1", "E2"],
 		employee_roles={"E1": ("R1",), "E2": ("RC",)},
-		target_shifts={"E1": 1, "E2": 0},  # E2 cannot work, so nobody leads
+		target_shifts={"E1": 1, "E2": 1},
 		max_rpe={("E1", "R1"): 1, ("E2", "RC"): 3},
+		leave_blocked={("E2", MON)},  # the lead is on leave, so nobody leads
 	)
 	prob, _x, ar, _presence = solved(data)
 
@@ -1516,3 +1518,149 @@ def test_role_modes_leave_the_input_hash_of_a_site_without_them_alone():
 	"""A site where every role is Flexible must keep hitting the solver cache."""
 	assert pkg().input_hash() == pkg(role_mode={}, role_mode_overrides={}).input_hash()
 	assert pkg().input_hash() != pkg(role_mode={"R1": MODE_COLLATERAL}).input_hash()
+
+
+def test_a_role_that_gates_nothing_leaves_the_rooms_to_the_others():
+	"""A floater: an ordinary role to work, but no room in the discipline waits on it."""
+	data = with_collateral(
+		employees=["E1", "E2"],
+		employee_roles={"E1": ("R1",), "E2": ("R2",)},
+		roles=["R1", "R2"],
+		role_discipline={"R1": "D1", "R2": "D1"},
+		target_shifts={"E1": 1, "E2": 1},
+		max_rpe={("E1", "R1"): 1, ("E2", "R2"): 1},
+		leave_blocked={("E2", MON)},  # the floater is on leave, so nobody floats
+		role_mode={},  # both ordinary roles; only the gating flag separates them
+		role_gates_rooms={"R1": True, "R2": False},
+	)
+	prob, _x, ar, _presence = solved(data)
+
+	assert status(prob) == "Optimal"
+	assert data.gating_roles("E2") == ()
+	assert pulp.value(ar[("D1", "AM", MON, "B1")]) == 1
+
+
+def test_a_collateral_duty_can_be_made_to_gate_rooms():
+	"""The switch is the authority, not the mode: a discipline may not run without its lead."""
+	data = with_collateral(
+		employees=["E1", "E2"],
+		employee_roles={"E1": ("R1",), "E2": ("RC",)},
+		target_shifts={"E1": 1, "E2": 1},
+		max_rpe={("E1", "R1"): 1, ("E2", "RC"): 3},
+		leave_blocked={("E2", MON)},  # nobody can lead today
+		role_gates_rooms={"RC": True},
+	)
+	prob, x, ar, _presence = solved(data)
+
+	assert status(prob) == "Optimal"
+	assert pulp.value(ar[("D1", "AM", MON, "B1")]) == 0  # no lead, no room
+	assert assigned(x) == 0  # and so nothing is worth scheduling
+
+
+def test_the_gating_flag_is_read_before_the_mode():
+	data = with_collateral(role_gates_rooms={"R1": False, "RC": True})
+	assert data.gates_rooms("R1") is False
+	assert data.gates_rooms("RC") is True
+	# ... and a role nobody has ruled on follows its mode
+	assert with_collateral().gates_rooms("R1") is True
+	assert with_collateral().gates_rooms("RC") is False
+
+
+def test_the_gating_flag_leaves_the_hash_of_a_site_without_it_alone():
+	assert pkg().input_hash() == pkg(role_gates_rooms={}).input_hash()
+	assert pkg().input_hash() != pkg(role_gates_rooms={"R1": False}).input_hash()
+
+
+# ── which role an existing Shift Assignment was worked in ─────────────────────
+
+
+def test_a_recorded_role_is_taken_at_its_word():
+	outcome, role = types_module.resolve_assignment_role("R2", ["R1", "R2"], "D1", ["R1", "R2"])
+	assert (outcome, role) == (types_module.ROLE_RESOLVED, "R2")
+
+
+def test_a_recorded_role_the_employee_does_not_hold_is_refused():
+	outcome, role = types_module.resolve_assignment_role("R9", ["R1"], "D1", ["R1"])
+	assert (outcome, role) == (types_module.ROLE_NOT_HELD, None)
+
+
+def test_a_single_role_in_the_discipline_is_inferred():
+	outcome, role = types_module.resolve_assignment_role(None, ["R1", "R2"], "D1", ["R1"])
+	assert (outcome, role) == (types_module.ROLE_RESOLVED, "R1")
+
+
+def test_two_roles_in_the_discipline_are_never_guessed_between():
+	"""The loader used to sort and take the first; that is the guess the field exists to stop."""
+	outcome, role = types_module.resolve_assignment_role(None, ["R1", "R2"], "D1", ["R1", "R2"])
+	assert (outcome, role) == (types_module.ROLE_AMBIGUOUS, None)
+
+
+def test_an_assignment_with_nothing_to_infer_from_says_so():
+	assert types_module.resolve_assignment_role(None, ["R1"], None, []) == (
+		types_module.ROLE_NO_DISCIPLINE,
+		None,
+	)
+	assert types_module.resolve_assignment_role(None, ["R1"], "D2", []) == (
+		types_module.ROLE_NONE_IN_DISCIPLINE,
+		None,
+	)
+
+
+# ── what a role is worth on its own ───────────────────────────────────────────
+
+
+def standby(**overrides) -> DataPackage:
+	"""E1 can only work RS, a standby role: no room in D1 waits on it, so nothing but its
+	own value can ever be a reason to schedule them."""
+	base: dict[str, Any] = {
+		"roles": ["R1", "RS"],
+		"role_discipline": {"R1": "D1", "RS": "D1"},
+		"employee_roles": {"E1": ("RS",)},
+		"max_rpe": {("E1", "RS"): 1},
+		"role_gates_rooms": {"RS": False},
+		"rules": builtin_specs(*STANDARD_RULES),
+	}
+	base.update(overrides)
+	return pkg(**base)
+
+
+def test_an_unpriced_role_is_not_worth_scheduling_anybody_on():
+	"""The default: a shift is worth exactly the rooms it staffs, and standby staffs none."""
+	prob, x, _ar, _p = solved(standby())
+	assert status(prob) == "Optimal"
+	assert assigned(x) == 0
+
+
+def test_a_priced_standby_role_beats_leaving_somebody_unassigned():
+	prob, x, _ar, _p = solved(standby(role_value={"RS": 2.0}))
+	assert status(prob) == "Optimal"
+	assert assigned(x, role="RS") == 1
+
+
+def test_a_negatively_priced_role_stays_a_last_resort():
+	"""Priced below what it costs, it is worked only where something else pays for it."""
+	prob, x, _ar, _p = solved(standby(role_value={"RS": -5.0}))
+	assert status(prob) == "Optimal"
+	assert assigned(x) == 0
+
+
+def test_role_value_is_earned_once_per_assignment():
+	"""Two days of standby are worth two days of it, so the horizon scales the reward."""
+	data = standby(working_days=days_from(2), target_shifts={"E1": 2}, role_value={"RS": 2.0})
+	prob, x, _ar, _p = solved(data)
+	assert status(prob) == "Optimal"
+	assert assigned(x, role="RS") == 2
+
+
+def test_a_priced_collateral_duty_is_earned_beside_the_shift_it_rides_on():
+	"""Per assignment, not per presence: pricing a duty is how a duty gets paid for."""
+	data = with_collateral(target_shifts={"E1": 1}, role_value={"RC": 1.0})
+	prob, x, _ar, _p = solved(data)
+	assert status(prob) == "Optimal"
+	assert assigned(x, role="R1") == 1
+	assert assigned(x, role="RC") == 1
+
+
+def test_role_value_leaves_the_hash_of_a_site_without_it_alone():
+	assert pkg().input_hash() == pkg(role_value={}).input_hash()
+	assert pkg().input_hash() != pkg(role_value={"R1": 1.0}).input_hash()

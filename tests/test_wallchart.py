@@ -109,7 +109,7 @@ def test_a_band_grows_past_its_rooms_rather_than_hiding_anybody():
 	chart = build(layout(band(rooms=1)), slots, MONDAY)
 	assert chart.height(AM, "C1") == 3
 	assert len(chart.placements) == 3
-	assert any("only 1 rooms configured" in w for w in chart.warnings)
+	assert any("only 1 are configured" in w for w in chart.warnings)
 
 
 def test_rows_stack_per_lane_independently():
@@ -331,3 +331,103 @@ def test_an_empty_layout_places_everything_in_overflow():
 	"""A site with no Discipline Branch Config still gets its people shown."""
 	chart = build(Layout(sections=(Section(AM, AM),), bands=()), [slot()], MONDAY)
 	assert chart.height(AM, OVERFLOW) == 1
+
+
+# ── rooms covered: chip height and what counts as an open room ────────────────
+
+
+LEAD = Lane("RC", "Lead", gates_rooms=False)
+
+
+def placement(chart, row, lane, day=0, shift=AM, band_key="C1"):
+	return next(
+		(
+			p
+			for p in chart.placements
+			if p.section == shift
+			and p.band == band_key
+			and p.row == row
+			and p.lane == lane
+			and p.day_index == day
+		),
+		None,
+	)
+
+
+def test_a_chip_is_as_tall_as_the_rooms_it_covers():
+	chart = build(layout(band(rooms=3)), [slot(rooms=2)], MONDAY)
+	assert placement(chart, 1, "R1").span == 2
+
+
+def test_the_next_person_in_a_lane_starts_below_the_chip_above():
+	slots = [slot(employee="E1", rooms=2), slot(employee="E2", rooms=1)]
+	chart = build(layout(band(rooms=4)), slots, MONDAY)
+	assert placement(chart, 1, "R1").slot.employee == "E1"
+	assert placement(chart, 2, "R1") is None  # covered by the chip above it
+	assert placement(chart, 3, "R1").slot.employee == "E2"
+
+
+def test_a_band_grows_for_spans_as_well_as_for_heads():
+	"""Two people covering two rooms each need four lines, however few heads that is."""
+	slots = [slot(employee="E1", rooms=2), slot(employee="E2", rooms=2)]
+	chart = build(layout(band(rooms=2)), slots, MONDAY)
+	assert chart.height(AM, "C1") == 4
+	assert any("covers 4 rooms" in w for w in chart.warnings)
+
+
+def test_a_room_is_covered_only_where_every_gating_lane_reaches_it():
+	"""One practitioner over two rooms, one assistant: one room is open, one is half-staffed."""
+	slots = [slot(employee="E1", role="R1", rooms=2), slot(employee="E2", role="R2", rooms=1)]
+	chart = build(layout(band(rooms=2)), slots, MONDAY)
+	assert chart.covered_rooms(AM, "C1", 0) == 1
+
+
+def test_a_lane_nobody_fills_leaves_every_room_uncovered():
+	chart = build(layout(band(rooms=2)), [slot(employee="E1", role="R1", rooms=2)], MONDAY)
+	assert chart.covered_rooms(AM, "C1", 0) == 0
+
+
+def test_a_non_gating_lane_neither_opens_a_room_nor_holds_one_shut():
+	"""A lead duty is drawn like anything else; the rooms are decided without it."""
+	lanes = (PRACTITIONER, ASSISTANT, LEAD)
+	slots = [
+		slot(employee="E1", role="R1"),
+		slot(employee="E2", role="R2"),
+		slot(employee="E3", role="RC", rooms=3),
+	]
+	chart = build(layout(band(rooms=2, lanes=lanes)), slots, MONDAY)
+	assert chart.covered_rooms(AM, "C1", 0) == 1  # the practitioner and the assistant, not the lead
+	assert placement(chart, 1, "RC").span == 3  # still drawn over the rooms it oversees
+
+
+def test_a_band_with_no_gating_lane_covers_nothing():
+	chart = build(layout(band(rooms=2, lanes=(LEAD,))), [slot(employee="E1", role="RC")], MONDAY)
+	assert chart.covered_rooms(AM, "C1", 0) == 0
+
+
+def test_coverage_is_counted_per_day():
+	slots = [
+		slot(employee="E1", role="R1", day=MONDAY),
+		slot(employee="E2", role="R2", day=MONDAY),
+		slot(employee="E3", role="R1", day=TUESDAY),
+	]
+	chart = build(layout(band(rooms=2)), slots, MONDAY)
+	assert chart.covered_rooms(AM, "C1", 0) == 1
+	assert chart.covered_rooms(AM, "C1", 1) == 0  # Tuesday has no assistant
+
+
+def test_a_merged_slot_keeps_the_rooms_it_covers():
+	proposed = [slot(employee="E1", rooms=2)]
+	merged = merge([slot(employee="E1", rooms=2)], proposed)
+	assert [s.rooms for s in merged] == [2]
+
+
+def test_a_dropped_slot_sinks_below_the_proposal_and_covers_nothing():
+	"""What the run sent home does not staff a room, and must not sit above what does."""
+	existing = [slot(employee="E1", role="R1"), slot(employee="E2", role="R2")]
+	proposed = [slot(employee="E9", role="R1", kind=KIND_ADDED), slot(employee="E2", role="R2")]
+	chart = build(layout(band(rooms=2)), merge(existing, proposed), MONDAY)
+
+	assert placement(chart, 1, "R1").slot.employee == "E9"  # the proposal, alphabetically later
+	assert placement(chart, 2, "R1").slot.kind == KIND_DROPPED
+	assert chart.covered_rooms(AM, "C1", 0) == 1

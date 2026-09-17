@@ -39,6 +39,40 @@ def _role_discipline() -> dict[str, str]:
 	}
 
 
+def _role_of(employee: str, discipline: str) -> str | None:
+	"""The Scheduling Role a freshly added pattern for `employee` should record.
+
+	A move or a remove inherits the role of the pattern it touches; an add has no
+	pattern to inherit from, so it takes the binding role this person holds in the
+	discipline being edited — the one whose settled week the editor exists to describe.
+	Collateral roles are never picked: a duty is an explicit act, not a default. `None`
+	where the answer is not unambiguous, which leaves the record saying nothing rather
+	than saying something invented.
+	"""
+	from autoshift.optimizer import data_loader
+
+	role_discipline = _role_discipline()
+	held = {
+		role
+		for holder, role in data_loader.configured_binding_pairs()
+		if holder == employee and role_discipline.get(role) == discipline
+	}
+	collateral = (
+		{
+			row.name
+			for row in frappe.get_all(
+				"Scheduling Role",
+				filters={"name": ["in", list(held)], "assignment_mode": "Collateral"},
+				fields=["name"],
+			)
+		}
+		if held
+		else set()
+	)
+	candidates = sorted(held - collateral)
+	return candidates[0] if len(candidates) == 1 else None
+
+
 def _employees_of(discipline: str) -> list[str]:
 	"""Every employee holding a binding Scheduling Role in `discipline` — the rows the
 	Rota Editor's grid has to show. Not scoped to `assignments_binding` at the role level:
@@ -149,6 +183,8 @@ def _rotas_by_branch(employees: list[str]) -> list[Rota]:
 			cycle_weeks=r.cycle_weeks,
 			anchor=r.anchor,
 			unconfirmed=r.unconfirmed,
+			scheduling_role=r.scheduling_role,
+			collateral_roles=r.collateral_roles,
 		)
 		for r in rotas
 	]
@@ -301,6 +337,8 @@ def _effective_rotas(rotas: list[Rota], plan: edit.EditPlan) -> list[Rota]:
 			weekdays=new.weekdays,
 			cycle_weeks=new.cycle_weeks,
 			anchor=new.anchor,
+			scheduling_role=new.scheduling_role,
+			collateral_roles=new.collateral_roles,
 		)
 		for index, new in enumerate(plan.create)
 	]
@@ -502,6 +540,7 @@ def stage_change(discipline: str, change: str | dict, start: str, view_weeks: in
 		op=change["op"],
 		employee=change["employee"],
 		company=_company_of(change["employee"]),
+		scheduling_role=_role_of(change["employee"], discipline) if change["op"] == "add" else None,
 		to_shift_type=to_shift_type or None,
 		to_weekday=WEEKDAY_INDEX.get(change.get("to_weekday")),
 		to_branch=to_branch or None,
@@ -616,6 +655,12 @@ def apply_draft(discipline: str, start: str, view_weeks: int | str) -> dict:
 		assignment.shift_location = _shift_location_for(discipline, new.branch) if new.branch else None
 		assignment.enabled = 0
 		assignment.shift_status = "Inactive"
+		# The role the pattern is worked in, carried over from whatever this replaces
+		# (`edit.apply_changes`) so an edit to somebody's days never silently changes
+		# what they do on them. `materialize` copies it onto every Shift Assignment.
+		assignment.custom_scheduling_role = new.scheduling_role
+		for role in new.collateral_roles:
+			assignment.append("custom_collateral_roles", {"scheduling_role": role})
 		if new.anchor:
 			assignment.create_shifts_after = new.anchor
 		assignment.insert(ignore_permissions=True)

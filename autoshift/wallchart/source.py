@@ -7,9 +7,10 @@ Two sources, because the chart has to draw a week whether or not anything has
 been solved for it — the point of an always-on view is that it is up before the
 first run and still up after a failed one:
 
-    Shift Assignment    what is actually in Frappe HR. Records **no role**, so
-                        the role is inferred from what the employee holds and
-                        every inferred slot is flagged rather than hidden.
+    Shift Assignment    Frappe HR's own record. `custom_scheduling_role` names
+                        the role where it is set; where it is not, the role is
+                        inferred from what the employee holds and every inferred
+                        slot is flagged rather than hidden.
     Optimizer Run       the run's `solution_table`. Authoritative: every slot
                         names the Scheduling Role it was assigned in.
 
@@ -121,6 +122,37 @@ def _role_disciplines() -> dict[str, str | None]:
 	}
 
 
+def _role_max_rooms() -> dict[str, int]:
+	"""Scheduling Role -> rooms one holder covers, before any per-holder override."""
+	return {
+		row.name: max(int(row.max_rooms or 1), 1)
+		for row in frappe.get_all("Scheduling Role", fields=["name", "max_rooms"])
+	}
+
+
+def rooms_covered(
+	employee: str,
+	role: str | None,
+	day: datetime.date,
+	held: dict[str, list[dict]],
+	role_max_rooms: dict[str, int],
+) -> int:
+	"""How many rooms this person covers in this role — the chip's height.
+
+	`Employee Scheduling Role.max_rooms` where the holder has one, else the role's
+	own figure: the same resolution `data_loader` does into `DataPackage.max_rpe`,
+	so a chip is exactly as tall as the room-slots the optimizer counted it for.
+	"""
+	if not role:
+		return 1
+	for row in held.get(employee, []):
+		if row["scheduling_role"] == role and _in_window(row, day):
+			if row.get("max_rooms"):
+				return max(int(row["max_rooms"]), 1)
+			break
+	return role_max_rooms.get(role, 1)
+
+
 def _held_roles(names: set[str]) -> dict[str, list[dict]]:
 	"""Active Employee Scheduling Role rows per employee, validity window kept."""
 	if not names:
@@ -174,6 +206,29 @@ def infer_role(
 	return sorted(pool, key=lambda r: (role_order.get(r, _UNRANKED), r))[0], False
 
 
+def collateral_roles(assignments: list[str]) -> dict[str, list[str]]:
+	"""Shift Assignment -> the collateral roles worked on top of it.
+
+	A collateral duty rides on its host's record rather than having one of its
+	own, because HRMS refuses two Shift Assignments whose times overlap.
+	"""
+	if not assignments:
+		return {}
+	out: dict[str, list[str]] = defaultdict(list)
+	for row in frappe.get_all(
+		"Collateral Scheduling Role",
+		filters={
+			"parenttype": "Shift Assignment",
+			"parentfield": "custom_collateral_roles",
+			"parent": ["in", assignments],
+		},
+		fields=["parent", "scheduling_role"],
+	):
+		if row["scheduling_role"]:
+			out[row["parent"]].append(row["scheduling_role"])
+	return out
+
+
 def from_shift_assignments(monday: datetime.date, employees: list[str] | None = None) -> list[Slot]:
 	"""Submitted Shift Assignments overlapping the week starting `monday`.
 
@@ -192,7 +247,15 @@ def from_shift_assignments(monday: datetime.date, employees: list[str] | None = 
 		"Shift Assignment",
 		filters=filters,
 		or_filters=[["end_date", ">=", first], ["end_date", "is", "not set"]],
-		fields=["employee", "shift_type", "start_date", "end_date", "shift_location"],
+		fields=[
+			"name",
+			"employee",
+			"shift_type",
+			"start_date",
+			"end_date",
+			"shift_location",
+			"custom_scheduling_role",
+		],
 	)
 	if not rows:
 		return []
@@ -205,6 +268,8 @@ def from_shift_assignments(monday: datetime.date, employees: list[str] | None = 
 	role_disciplines = _role_disciplines()
 	role_order = layout.role_order()
 	held = _held_roles(names)
+	role_max_rooms = _role_max_rooms()
+	collateral = collateral_roles([row["name"] for row in rows])
 
 	slots: list[Slot] = []
 	for row in rows:
@@ -215,30 +280,44 @@ def from_shift_assignments(monday: datetime.date, employees: list[str] | None = 
 		for day in days:
 			if not (start <= day <= end):
 				continue
-			candidates = [
-				held_row["scheduling_role"]
-				for held_row in held.get(row["employee"], [])
-				if _in_window(held_row, day)
-			]
-			role, certain = infer_role(candidates, disciplines.get(location), role_disciplines, role_order)
-			slots.append(
-				Slot(
-					date=day,
-					shift_type=row["shift_type"],
-					employee=row["employee"],
-					employee_name=person.get("employee_name") or "",
-					label=short_label(
-						row["employee"],
-						person.get("employee_name") or "",
-						person.get(INITIALS_FIELD),
-					),
-					branch=branches.get(location),
-					scheduling_role=role,
-					kind=KIND_EXISTING,
-					role_certain=certain,
-					sort_value=_sort_value(role, person, chip_sort),
+			recorded = row.get("custom_scheduling_role")
+			if recorded:
+				role, certain = recorded, True
+			else:
+				candidates = [
+					held_row["scheduling_role"]
+					for held_row in held.get(row["employee"], [])
+					if _in_window(held_row, day)
+				]
+				role, certain = infer_role(
+					candidates, disciplines.get(location), role_disciplines, role_order
 				)
-			)
+			# The duties worked on top of this shift get a chip of their own, in
+			# their own lane: HRMS cannot hold them as records of their own (see
+			# `data_loader`), but a chart that hid them would say the lead was
+			# somewhere else.
+			for role_of_chip, is_certain in [(role, certain)] + [
+				(r, True) for r in collateral.get(row["name"], ())
+			]:
+				slots.append(
+					Slot(
+						date=day,
+						shift_type=row["shift_type"],
+						employee=row["employee"],
+						employee_name=person.get("employee_name") or "",
+						label=short_label(
+							row["employee"],
+							person.get("employee_name") or "",
+							person.get(INITIALS_FIELD),
+						),
+						branch=branches.get(location),
+						scheduling_role=role_of_chip,
+						rooms=rooms_covered(row["employee"], role_of_chip, day, held, role_max_rooms),
+						kind=KIND_EXISTING,
+						role_certain=is_certain,
+						sort_value=_sort_value(role_of_chip, person, chip_sort),
+					)
+				)
 	return slots
 
 
@@ -265,7 +344,10 @@ def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 	disciplines = _location_disciplines() if needs_inference else {}
 	role_disciplines = _role_disciplines() if needs_inference else {}
 	role_order = layout.role_order() if needs_inference else {}
-	held = _held_roles(names) if needs_inference else {}
+	# `held` is needed either way now: it carries the per-holder max-rooms override
+	# that decides how tall a chip is drawn.
+	held = _held_roles(names)
+	role_max_rooms = _role_max_rooms()
 
 	slots: list[Slot] = []
 	for row in rows:
@@ -299,6 +381,7 @@ def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 				# for runs written before that field existed.
 				branch=row["branch"] or branches.get(row["shift_location"] or ""),
 				scheduling_role=role,
+				rooms=rooms_covered(row["employee"], role, day, held, role_max_rooms),
 				kind=KIND_ADDED,
 				forced=bool(row["forced"]),
 				role_certain=certain,

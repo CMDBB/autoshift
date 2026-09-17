@@ -80,7 +80,9 @@ Three apps split the responsibility; keep them separate.
   built-in, keeps the Standard Ruleset's rows in sync with the registry, and backfills
   `ruleset` on pre-existing runs.
 - **Optimizer Run Slot** — child; one row per assigned shift (the `x` variables that came
-  back 1).
+  back 1), with `collateral` set on the rows that are a duty worked on top of one. Counting
+  rows therefore double-counts a collateral duty's half-day: count distinct
+  (employee, date, shift type) for **presence**, as the statistics panel does.
 - **Optimizer Run Coverage** — child; the `active_rooms` counterpart. One row per
   (discipline, branch, date, shift) with `staffed_rooms` vs `capacity`. Zero-staffed rows are
   kept on purpose. Pre-table runs fall back to `_derive_coverage_matrix`.
@@ -95,7 +97,15 @@ Three apps split the responsibility; keep them separate.
   how a shift in the role is worked: `Flexible` (a rota slot means "present", and any
   non-exclusive role the holder has may fill it), `Exclusive` (that role, nothing beside it,
   no swapping out of it) or `Collateral` (a duty on top of another shift at the same shift and
-  branch, or on its own). `display_order_key` (Int, default 0) orders wall-chart
+  branch, or on its own). `gates_rooms` (Check, default on, "Required To Staff A Room") says
+  whether room coverage waits on the role — the minimum in `room_coverage` is taken over
+  gating roles only, so a floater or a lead duty can be worked without holding every room in
+  the discipline shut. Orthogonal to the mode (save warns on a gating collateral role, which
+  means no room opens without one). `assignment_value` (Float, default 0) prices one shift in
+  the role in objective points, over and above the rooms it staffs — a small positive figure
+  on a standby role is what makes the optimizer place somebody it has no room for rather than
+  leave them unassigned; negative makes the role a last resort. Read only by
+  `role_value_objective`. `display_order_key` (Int, default 0) orders wall-chart
   lanes.
 - **Employee Scheduling Role** — the employee × role relation. A **standalone doctype, not a
   child table**, so `zawin2frappe` can import into it directly. Carries `role_fte` (the
@@ -134,19 +144,23 @@ module.
 1. `types.py` — `DataPackage` (the engine's only input shape), SHA256 `input_hash()` for
    caching, `planning_days()` (raises `NotImplementedError` for `"Unbounded"`). Assignment
    modes live here as `MODE_FLEXIBLE`/`MODE_EXCLUSIVE`/`MODE_COLLATERAL` plus the sparse
-   `role_mode` / `role_mode_overrides` dicts (both omitted from `input_hash` when empty) and
+   `role_mode` / `role_mode_overrides` dicts (omitted from `input_hash` when empty, as are
+   `role_gates_rooms` and `role_value`) and
    the helpers every rule reads them through: `mode()`, `working_roles()`,
    `collateral_roles()`, `exclusive_roles()`, `bound_employees()`, `forced_presence()`.
+   Room gating is its own sparse dict, `role_gates_rooms` (+ `gates_rooms()` /
+   `gating_roles()`), defaulting to "every role gates except a collateral duty" so packages
+   captured before the flag read as they did.
 2. `rules.py` — constraint groups *and* objective terms as named rules. `BUILTIN_RULES`
    registry populated by the `@builtin_rule` decorator; `STANDARD_RULES` is the
-   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 18 built-ins:
+   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 19 built-ins:
    `one_shift_per_day`, `warm_start`, `leave_blocklist`, `use_existing_assignments`,
    `bind_role_assignments`, `soft_bind_role_assignments`, `one_branch_per_shift`,
    `room_coverage`, `fte_ceiling`, `role_fte_ceiling`, `exclusive_role_purity`
    (constraints) and `room_utilization_objective`, `fte_soft_ceiling`,
    `role_fte_target_objective`, `shift_preference_objective`,
    `suitability_preference_objective`, `weigh_assignments_objective`,
-   `collateral_room_value_objective`
+   `collateral_room_value_objective`, `role_value_objective`
    (objectives). Four choice groups: `existing_assignments`, `role_binding`,
    `workload_ceiling` (`fte_ceiling` vs `fte_soft_ceiling`) and `shift_preference`
    (`shift_preference_objective` vs the **standard** `suitability_preference_objective`, which
@@ -168,7 +182,12 @@ module.
    unimplemented/unvalidated; sorted by name for hash stability); normalizes preferences via
    temperature-scaled softmax (no weight deviates >50% from uniform). Resolves binding pairs
    into `binding_pairs`, leave-vs-books collisions into `binding_conflicts`, and unplaceable
-   assignments into `unresolved_assignments` (but **throws** for a bound employee).
+   assignments into `unresolved_assignments` (but **throws** for a bound employee). An
+   existing assignment's role comes from `Shift Assignment.custom_scheduling_role` via
+   `types.resolve_assignment_role` (Frappe-free, unit-tested): the recorded role, else the
+   single role the employee holds in the location's discipline — **never a choice between
+   two**, which is what the field exists to stop. Its `custom_collateral_roles` rows become
+   extra `forced` combinations on the same slot, and go down with their host on a leave day.
 4. `model_builder.py` — builds the PuLP MILP. Vars `x[employee,role,shift,day,branch]` (built
    **sparse**, over the `(employee, role)` pairs each employee actually holds),
    `p[employee,shift,day,branch]` (**presence**: is this person in for that shift at all) and
@@ -249,6 +268,12 @@ are *disabled with a tooltip* rather than hidden; Solver Log needs only a run, s
   morning covered", which the per-employee roster grid structurally cannot.
   Layout is **derived** by `layout.derive()` from Discipline Branch Config + Scheduling Role +
   Shift Type; anything no band claims lands in an `Unplaced` band with the reason stated.
+  A chip is **as tall as the rooms it covers** (`Slot.rooms` = the holder's `max_rooms`,
+  drawn as `<td rowspan>`; the lines it swallows arrive as the `SPANNED` sentinel rather
+  than as cells), and a line past `covered` — the rows *every* gating lane reaches, the
+  chart's own reading of `room_coverage`'s minimum — is hatched, because a half-staffed room
+  is not an open room. `dropped` chips sink to the bottom of their lane and count toward
+  neither. The headline counts fully-staffed rooms for the same reason.
   With a run, cells are a diff against the books (`kept`/`added`/`dropped`, plus `changed` on
   a moved half-day) via `chart.merge`. A week whose bound practitioners have no Shift
   Assignments yet carries a banner offering to create them (`pending_bound` in the payload).
@@ -312,7 +337,10 @@ package is deleted.
 - `cycle.py` — Frappe-free (`Rota` + `occurrences`, `tests/test_rota.py`). Weekdays in
   `repeat_on_days`, one week in every `cycle_weeks`, counting from the week after
   `create_shifts_after`. Weeks are ISO (Monday-based).
-- `materialize.py` — `pending` / `materialize`. **`create_shifts_after` is never written**;
+- `materialize.py` — `pending` / `materialize`. Records carry the rota's own
+  `custom_scheduling_role` and `custom_collateral_roles`, which is why it builds the
+  `Shift Assignment` itself rather than calling HRMS's `create_shift_assignment`: the role
+  has to be set before submit. **`create_shifts_after` is never written**;
   idempotency comes from comparing against the books. `enabled`/`shift_status` are ignored;
   records are created `Active` and link back via `Shift Assignment.shift_schedule_assignment`.
   Coverage is keyed on `(employee, date)` or `(employee, date, shift_type)` per
@@ -338,6 +366,12 @@ package is deleted.
 - **Promote all** (per employee) stages a `promote` `Change`; `EditPlan.promote` lists that
   employee's silver assignments not already being replaced, and Apply clears the flag in
   place. Silver chips draw with a grey dotted border (`re-chip-unconfirmed`).
+- **The role rides along, it is never edited.** `Rota.scheduling_role` /
+  `.collateral_roles` come off the `Shift Schedule Assignment`, and `edit.apply_changes`
+  copies them onto the `NewAssignment` that replaces a pattern, so moving a half-day never
+  changes what is worked during it. An `add` has nothing to inherit, so its `Change` carries
+  a role the way it already carries a company (`editor._role_of`: the one binding,
+  non-collateral role the person holds in that discipline, else nothing).
 - `edit.Change` stages one edit at single-occurrence granularity (`add`/`move`/`remove`; `promote` is per employee),
   identified by weekday **and** `from_phase`/`to_phase`. `apply_changes(rotas, changes,
   view_start, view_weeks) -> EditPlan` folds a batch onto the current `Rota`s.

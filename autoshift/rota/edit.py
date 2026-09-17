@@ -104,6 +104,10 @@ class Change:
 	op: str
 	employee: str
 	company: str | None = None
+	#: The Scheduling Role an "add" creates its pattern in — there is no source `Rota` to
+	#: take one from, exactly as with `company`. Ignored on the other operations, which
+	#: keep whatever the pattern they touch is already worked in.
+	scheduling_role: str | None = None
 	to_shift_type: str | None = None
 	to_weekday: int | None = None
 	to_branch: str | None = None
@@ -127,6 +131,11 @@ class NewAssignment:
 	weekdays: frozenset[int]
 	cycle_weeks: int
 	anchor: datetime.date | None
+	#: The role the shifts this pattern generates are worked in, and any duties worked on
+	#: top of them. Taken from whatever the group replaces, so an edit to *when* somebody
+	#: works never quietly changes *what* they work; an "add" gets it from its `Change`.
+	scheduling_role: str | None = None
+	collateral_roles: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -183,13 +192,25 @@ class _Group:
 	"""One `(employee, shift_type, branch)` pattern being folded, as a per-view-week
 	`phases` map rather than a flat weekday set — see the module docstring for why."""
 
-	__slots__ = ("branch", "company", "employee", "original_phases", "phases", "shift_type", "sources")
+	__slots__ = (
+		"branch",
+		"collateral_roles",
+		"company",
+		"employee",
+		"original_phases",
+		"phases",
+		"scheduling_role",
+		"shift_type",
+		"sources",
+	)
 
 	def __init__(self, employee, shift_type, branch):
 		self.employee = employee
 		self.shift_type = shift_type
 		self.branch = branch
 		self.company: str | None = None
+		self.scheduling_role: str | None = None
+		self.collateral_roles: tuple[str, ...] = ()
 		self.phases: dict[int, set[int]] = {}
 		self.original_phases: dict[int, frozenset[int]] = {}
 		self.sources: set[str] = set()
@@ -243,6 +264,10 @@ def apply_changes(
 			for r in members:
 				group.sources.add(r.assignment)
 				group.company = group.company or r.company
+				# First member wins, and members of one group are one person's own
+				# pattern for one shift type at one branch, so they agree in practice.
+				group.scheduling_role = group.scheduling_role or r.scheduling_role
+				group.collateral_roles = group.collateral_roles or r.collateral_roles
 			for phase in range(view_weeks):
 				start, end = week_bounds(phase)
 				group.phases[phase] = {day.weekday() for m in members for day in occurrences(m, start, end)}
@@ -273,6 +298,11 @@ def apply_changes(
 		src_company = (
 			change.company if change.company is not None else (src_rota.company if src_rota else None)
 		)
+		src_role = (
+			change.scheduling_role
+			if change.scheduling_role is not None
+			else (src_rota.scheduling_role if src_rota else None)
+		)
 
 		if change.op in ("move", "remove"):
 			if src_shift_type is None:
@@ -288,10 +318,15 @@ def apply_changes(
 			dst = group_for((change.employee, shift_type, branch))
 			dst.phases[change.to_phase].add(change.to_weekday)
 			dst.company = dst.company or src_company
+			# A move into a group that has no pattern of its own yet takes the role it
+			# came from: dragging a half-day to another branch is not a change of role.
+			dst.scheduling_role = dst.scheduling_role or src_role
+			dst.collateral_roles = dst.collateral_roles or (src_rota.collateral_roles if src_rota else ())
 		elif change.op == "add":
 			dst = group_for((change.employee, change.to_shift_type, change.to_branch))
 			dst.phases[change.to_phase].add(change.to_weekday)
 			dst.company = dst.company or change.company
+			dst.scheduling_role = dst.scheduling_role or change.scheduling_role
 
 	deletes: list[str] = []
 	creates: list[NewAssignment] = []
@@ -327,6 +362,8 @@ def apply_changes(
 						weekdays=weekdays,
 						cycle_weeks=new_cycle,
 						anchor=_phase_anchor(view_start, phase) if new_cycle > 1 else None,
+						scheduling_role=group.scheduling_role,
+						collateral_roles=group.collateral_roles,
 					)
 				)
 

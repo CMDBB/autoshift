@@ -7,10 +7,12 @@ holds two roles in one discipline — the normal case now that a rota settles *p
 the role worked during it varies — so the loader no longer makes it, and the value is stored
 on the record instead.
 
-**A stopgap.** The right fix is for `zawin2frappe` to write the role at import time; this
-patch exists because its re-imports currently overwrite rows, and it goes when they stop.
-Only blank fields are filled, so a role a planner has since corrected is never touched, and
-re-running it is a no-op.
+**A stopgap for the records that predate the field.** `zawin2frappe` writes the role at
+import time now (`pipeline.roles.primary_roles`), and its sink no longer lets a blank
+overwrite a stored value, so nothing it imports from here on needs this. What it cannot do
+is fill in the years of assignments already on the books without re-importing them, which
+is what this patch is for. Only blank fields are filled, so a role a planner has since
+corrected is never touched, and re-running it is a no-op.
 
 Collateral roles are never inferred: a collateral duty is an explicit editorial act, and
 nothing in the old data records one.

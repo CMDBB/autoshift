@@ -67,14 +67,21 @@ order; the regression tests now build specs from the real document titles (`titl
 
 ## Presence, role modes and collateral work (2026-09-15)
 
-**Status (2026-09-16): schema and engine built, everything downstream still to come.**
-Landed: the mode fields, the role/collateral custom fields and their backfill patch,
-`DataPackage`'s modes and presence helpers, the `p` variables and their linking constraints,
-every rule reworked onto presence, the two new rules, and `conflict_scan` / `elastic_analysis`.
-Still on the old footing: `data_loader` (which still infers a role from the Shift Location's
-discipline and does not read modes), the rota package and its editor, the wall chart, the
-statistics panel, and zawin2frappe's side. Supersedes the `(employee, role)` keying of role
-binding described in the next section.
+**Status (2026-09-17): built end to end, import included.**
+Landed: the mode and room-gating fields, the role/collateral custom fields and their backfill
+patch, `DataPackage`'s modes and presence helpers, the `p` variables and their linking
+constraints, every rule reworked onto presence, the two new rules,
+`conflict_scan` / `elastic_analysis`, the loader (roles read off the record, modes, gating,
+collateral duties), the solved slots' `collateral` flag, and the statistics panel's counting.
+Also landed: rotas carry their role and collateral duties onto every Shift Assignment they
+materialise, the editor preserves them through a drag, and the wall chart draws a chip over
+the rooms it covers and hatches the lines no room is actually open on. zawin2frappe writes the role onto every
+Shift Assignment and rota it imports (a person's *primary* role — the agenda records where
+somebody stood, never which capability they were exercising), which leaves
+`patches.backfill_shift_assignment_roles` responsible only for the records that predate the
+field. Still unpriced and unmoded there: assignment modes, room gating and role values are
+autoshift configuration a planner sets, and nothing in ZaWin has an opinion about them. Supersedes the
+`(employee, role)` keying of role binding described in the next section.
 
 ### The observation
 
@@ -122,10 +129,30 @@ it:
 Custom Code rules summing `ctx.x` will count collateral duties — worth a note in the editor
 completions.
 
+### Gating rooms is a switch, not a consequence of the mode
+
+`room_coverage` is a minimum over a discipline's roles, so *every* role it counts is a role
+no room can open without. That is right for a practitioner and an assistant and wrong for a
+lead duty, and the first cut inferred the difference from the mode: collateral roles were
+skipped, everything else gated.
+
+`Scheduling Role.gates_rooms` makes it a decision instead, because the inference is wrong in
+both directions. A **floater** or an administrative role is an ordinary working role that
+opens no rooms; counted in the minimum it would hold every room in its discipline shut
+whenever nobody is floating. And a practice that may not run without a lead on site has a
+**gating collateral duty** — legal here, warned about on save, since it is the strong reading.
+
+The two questions are genuinely different: the mode says how a shift in the role is *worked*
+(can it be swapped, can something ride alongside it), gating says whether a room waits on it.
+`DataPackage.role_gates_rooms` is sparse and explicit, with `gates_rooms()` falling back to
+the old inference, so every package captured before the flag still reads correctly.
+`_role_supply_bounds` (the statistics panel's marker) skips non-gating roles for the same
+reason `room_coverage` does: a role no room waits on can never be the scarce one.
+
 Knock-on changes to the existing rules:
 
-- **`room_coverage` ignores collateral roles.** Its minimum over a discipline's roles would
-  otherwise cap a discipline at however many rooms its leads span.
+- **`room_coverage` counts gating roles only.** By default that excludes collateral duties,
+  which would otherwise cap a discipline at however many rooms its leads span.
 - **Collateral is valued through the rooms it oversees, never as rooms of its own.** A new
   objective: `v[k,s,d,b] ≤ active_rooms[k,s,d,b]`, `v ≤ Σ max_rooms · c` over the collateral
   roles in discipline `k` at `(s, d, b)`, reward `v`. Rooms open without a lead; a lead only
@@ -159,6 +186,46 @@ Knock-on changes to the existing rules:
   breaks an agreed role split would otherwise go unreported for the single-role holders it
   most often describes.
 
+### The wall chart shows coverage rather than heads
+
+Two changes, both following from the same arithmetic the solver uses:
+
+- **A chip is as tall as the rooms it covers.** A practitioner covering two rooms occupies
+  two lines of the band, which is how the paper sheet has always drawn it, and it makes a
+  lane's height the sum `room_coverage` puts on the left of its inequality rather than a
+  headcount that happens to look like one.
+- **Lines past the covered rooms are hatched.** Coverage is the minimum over the band's
+  *gating* lanes, so a line with a practitioner and no assistant is not an open room, and
+  the chart no longer implies it is. `dropped` chips sort to the bottom of their lane and
+  are left out of the count: what the run sends home does not staff anything, and leaving
+  it above the proposal would both overstate coverage and break the run of covered lines
+  the hatching starts after.
+
+The headline total switched to the same measure (rooms fully staffed, not cells occupied),
+because a headline that disagreed with the picture under it is worse than no headline.
+
+### Pricing a role, rather than paying a bonus for being scheduled
+
+Room coverage answers what a shift is worth only while a room waits on it. It has nothing to
+say about somebody the schedule has no room for, so the optimizer's honest answer for them is
+to schedule nothing — a standby or float role is worth zero and costs the usual per-assignment
+preference charge, so leaving them at home always wins.
+
+The obvious patch is a blanket reward per assignment, and it is the wrong one: it pays for
+*being scheduled* rather than for the work, so it also pays to over-staff a room, to spread
+a discipline thin, and to prefer any assignment to none everywhere at once. The thing being
+decided is local — is this person, in this role, worth having in — so the price belongs on
+the role.
+
+`Scheduling Role.assignment_value` is that price, in the same objective points as everything
+else (a staffed room pays 3; an assignment costs about 1 in preference terms). It defaults to
+**0**, which keeps the current behaviour exactly: a shift is worth what it staffs. Priced
+above roughly 1, a standby role starts winning against leaving somebody unassigned; priced
+negative, a role becomes a last resort the optimizer reaches for only when something else
+pays for it. `role_value_objective` charges it **per assignment, not per presence**: the
+question is what this role is worth, so a priced collateral duty earns its own value beside
+the shift it rides on — which is how a lead duty gets paid for at all.
+
 ### Storage
 
 HRMS refuses time-overlapping Shift Assignments for one employee even with
@@ -170,10 +237,10 @@ standalone collateral day is a record whose `custom_scheduling_role` is a collat
 One presence a day means the HR Settings flag stays off.
 
 This retires `data_loader`'s inference of a role from the Shift Location's discipline, which
-guessed by sort order once someone held two roles in a discipline — the normal case now.
-Existing records are backfilled by a patch using that inference **once**, as a stopgap while
-zawin2frappe's re-imports keep overwriting rows; the patch goes when zawin2frappe writes the
-role itself.
+guessed by sort order once someone held two roles in a discipline — the normal case now. The
+loader still infers where exactly one role is possible and refuses to guess between two.
+Records that predate the field are backfilled by a patch using that old inference **once**;
+everything imported since carries the role from zawin2frappe.
 
 ---
 

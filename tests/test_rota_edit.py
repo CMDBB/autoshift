@@ -25,7 +25,16 @@ ANCHOR = datetime.date(2026, 8, 30)  # a Sunday
 
 
 def rota(
-	name, weekdays, shift_type="AM", branch="B1", cycle=1, anchor=None, employee="E1", unconfirmed=False
+	name,
+	weekdays,
+	shift_type="AM",
+	branch="B1",
+	cycle=1,
+	anchor=None,
+	employee="E1",
+	unconfirmed=False,
+	role=None,
+	collateral=(),
 ) -> Rota:
 	return Rota(
 		assignment=name,
@@ -37,6 +46,8 @@ def rota(
 		cycle_weeks=cycle,
 		anchor=anchor,
 		unconfirmed=unconfirmed,
+		scheduling_role=role,
+		collateral_roles=tuple(collateral),
 	)
 
 
@@ -565,3 +576,62 @@ def test_phase_fractions_ignores_other_shift_types():
 	r = rota("SSA1", [MON], shift_type="PM")
 	fractions = phase_fractions([r], "AM", [MON], datetime.date(2026, 8, 31), cycle_weeks=1)
 	assert fractions[MON] == (0, None)
+
+
+# ── the role a pattern is worked in ──────────────────────────────────────────
+
+
+def test_moving_a_day_keeps_the_role_the_pattern_is_worked_in():
+	"""Editing *when* somebody works must never quietly change *what* they work."""
+	rotas = [rota("A1", [MON, TUE], role="R1", collateral=("RC",))]
+	plan = apply_changes(
+		rotas, [Change(op="move", employee="E1", from_assignment="A1", from_weekday=TUE, to_weekday=WED)]
+	)
+	assert [n.scheduling_role for n in plan.create] == ["R1"]
+	assert [n.collateral_roles for n in plan.create] == [("RC",)]
+
+
+def test_moving_to_another_branch_carries_the_role_with_it():
+	rotas = [rota("A1", [MON], role="R1")]
+	plan = apply_changes(
+		rotas,
+		[
+			Change(
+				op="move",
+				employee="E1",
+				from_assignment="A1",
+				from_weekday=MON,
+				to_weekday=MON,
+				to_branch="B2",
+			)
+		],
+	)
+	assert [(n.branch, n.scheduling_role) for n in plan.create] == [("B2", "R1")]
+
+
+def test_an_add_records_the_role_its_change_carries():
+	"""An add has no pattern to inherit from, the same reason it must carry a company."""
+	plan = apply_changes(
+		[],
+		[
+			Change(
+				op="add",
+				employee="E1",
+				company="C1",
+				scheduling_role="R1",
+				to_shift_type="AM",
+				to_branch="B1",
+				to_weekday=MON,
+			)
+		],
+	)
+	assert [n.scheduling_role for n in plan.create] == ["R1"]
+
+
+def test_a_pattern_with_no_role_recorded_stays_that_way():
+	"""Nothing is invented: a rota the import never gave a role to keeps saying nothing."""
+	plan = apply_changes(
+		[rota("A1", [MON, TUE])],
+		[Change(op="move", employee="E1", from_assignment="A1", from_weekday=TUE, to_weekday=WED)],
+	)
+	assert [n.scheduling_role for n in plan.create] == [None]

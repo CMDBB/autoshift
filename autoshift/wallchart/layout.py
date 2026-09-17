@@ -12,6 +12,8 @@ carries it:
       .rooms_num                  how many rows it has
       .shift_types                which of the stacked tables it appears in
     Scheduling Role               one lane per role of the band's discipline
+      .max_rooms                  how many rows a chip in that lane covers
+      .gates_rooms                whether a room waits on that lane being filled
     Shift Type                    one stacked table each, ordered by start time
 
 So there is no layout file and nothing to keep in sync: configure a discipline
@@ -144,7 +146,7 @@ def derive() -> Layout:
 	roles = frappe.get_all(
 		"Scheduling Role",
 		filters={"active": 1},
-		fields=[*ROLE_ORDER_FIELDS, "role_name", "discipline", "chip_sort_descending"],
+		fields=[*ROLE_ORDER_FIELDS, "role_name", "discipline", "chip_sort_descending", "gates_rooms"],
 	)
 	by_discipline: dict[str, list] = {}
 	for role in roles:
@@ -169,7 +171,12 @@ def derive() -> Layout:
 	bands = []
 	for config in sorted(configs, key=lambda c: (min_keys[c.name], c.branch or "", c.discipline or "")):
 		lanes = tuple(
-			Lane(role.name, role.role_name or role.name, bool(role.chip_sort_descending))
+			Lane(
+				role.name,
+				role.role_name or role.name,
+				bool(role.chip_sort_descending),
+				bool(role.gates_rooms),
+			)
 			for role in by_discipline.get(config.discipline, [])
 		)
 		bands.append(

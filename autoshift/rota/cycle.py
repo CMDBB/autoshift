@@ -85,6 +85,13 @@ class Rota:
 	#: `custom_unconfirmed`: an importer inferred this pattern and nobody has confirmed
 	#: it yet (silver standard). Never changes which days it covers.
 	unconfirmed: bool = False
+	#: `custom_scheduling_role`: the Scheduling Role the shifts this rota generates are
+	#: worked in. Carried, never interpreted — which days it covers is the same either
+	#: way — so that a materialised `Shift Assignment` can record its own role instead of
+	#: leaving the optimizer to infer one (see `optimizer.types.resolve_assignment_role`).
+	scheduling_role: str | None = None
+	#: `custom_collateral_roles`: duties worked on top of every shift it generates.
+	collateral_roles: tuple[str, ...] = ()
 
 	@property
 	def is_rota(self) -> bool:

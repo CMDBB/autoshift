@@ -12,8 +12,9 @@ and nothing more. The shape is nested to match the drawing order:
       "days":     [{date, weekday, holiday, working, in_window}, …7],
       "sections": [{shift_type, title,
                     bands: [{key, discipline, branch, numbered, rooms, height,
-                             lanes: [{key, label}],
-                             rows: [ [ [cell|null, …7], …lanes ], …height ] }]}],
+                             covered: [rooms open, …7],
+                             lanes: [{key, label, gates_rooms}],
+                             rows: [ [ [cell|null|SPANNED, …7], …lanes ], …height ] }]}],
       "leaves":   {"YYYY-MM-DD": [{employee, label, leave_type, speculative}]},
       "warnings": [str],
       "totals":   {staffed, capacity, kept, added, dropped},
@@ -26,9 +27,16 @@ and nothing more. The shape is nested to match the drawing order:
 so navigating to a week nobody has generated yet is the moment the chart offers
 to generate it, which costs no extra round trip.
 
-`rows[row][lane][day]` is a cell or null, because a lane holds at most one person
-per row by construction. Null is a room nobody is in, which is the thing the
-chart exists to show.
+`rows[row][lane][day]` is a cell, null, or `SPANNED`. A cell carries `span`: the
+rooms that person covers, drawn as `<td rowspan>`, so the lines it swallows are
+`SPANNED` and the renderer emits no cell for them at all. Null is a room nobody
+is in, which is the thing the chart exists to show.
+
+`covered` is how many of a band's rooms are genuinely open on each weekday — the
+lines every gating lane reaches. Rows past it are staffed by somebody but not by
+everybody the room needs, and the chart greys them: a half-staffed room is not an
+open room. It is the chart's own arithmetic, from the same minimum-over-roles the
+solver's `room_coverage` applies, so the picture and the numbers cannot drift.
 """
 
 from __future__ import annotations
@@ -54,8 +62,14 @@ def _resolve_week(week: str | None, run_doc=None) -> datetime.date:
 	return monday_of(frappe.utils.getdate(frappe.utils.today()))
 
 
-def _cell(slot) -> dict:
+#: Marks a line swallowed by the `rowspan` of a cell above it. Distinct from
+#: null, which is an empty room the chart must still draw.
+SPANNED = "spanned"
+
+
+def _cell(slot, span: int) -> dict:
 	return {
+		"span": span,
 		"employee": slot.employee,
 		"employee_name": slot.employee_name,
 		"label": slot.label,
@@ -68,9 +82,14 @@ def _cell(slot) -> dict:
 	}
 
 
-def _index(chart) -> dict[tuple, dict]:
-	"""(section, band, row, lane, day) -> cell. One pass instead of a scan per cell."""
-	return {(p.section, p.band, p.row, p.lane, p.day_index): _cell(p.slot) for p in chart.placements}
+def _index(chart) -> dict[tuple, dict | str]:
+	"""(section, band, row, lane, day) -> cell, or SPANNED. One pass, not a scan per cell."""
+	cells: dict[tuple, dict | str] = {}
+	for p in chart.placements:
+		cells[(p.section, p.band, p.row, p.lane, p.day_index)] = _cell(p.slot, p.span)
+		for offset in range(1, p.span):
+			cells[(p.section, p.band, p.row + offset, p.lane, p.day_index)] = SPANNED
+	return cells
 
 
 def _band_payload(chart, cells, band_key, shift_type, lanes, rooms) -> dict:
@@ -83,7 +102,8 @@ def _band_payload(chart, cells, band_key, shift_type, lanes, rooms) -> dict:
 		"key": band_key,
 		"rooms": rooms,
 		"height": height,
-		"lanes": [{"key": lane.key, "label": lane.label} for lane in lanes],
+		"covered": [chart.covered_rooms(shift_type, band_key, day) for day in range(7)],
+		"lanes": [{"key": lane.key, "label": lane.label, "gates_rooms": lane.gates_rooms} for lane in lanes],
 		"rows": rows,
 	}
 
@@ -231,27 +251,30 @@ def _warnings(chart, structure) -> list[str]:
 
 
 def _totals(chart, structure, days: list[dict]) -> dict:
-	"""Room-slots staffed against configured, for the week actually drawn.
+	"""Rooms open against rooms configured, for the week actually drawn.
 
-	Counted off the same placements the chart draws rather than off `Optimizer
+	Counted off the same coverage the chart greys by rather than off `Optimizer
 	Run Coverage`, because a headline that disagreed with the picture under it
-	would be worse than no headline. Capacity counts working days only: nothing
-	in the configuration claims a Sunday room, so counting one would make every
-	full week look two-sevenths empty.
+	would be worse than no headline. A half-staffed room counts for nothing here,
+	exactly as it counts for nothing in the solver's `active_rooms`. Capacity
+	counts working days only: nothing in the configuration claims a Sunday room,
+	so counting one would make every full week look two-sevenths empty.
 	"""
 	kinds = {KIND_KEPT: 0, KIND_ADDED: 0, KIND_DROPPED: 0}
 	working = {index for index, day in enumerate(days) if day["working"]}
-	occupied: set[tuple] = set()
 	for placement in chart.placements:
 		kinds[placement.slot.kind] = kinds.get(placement.slot.kind, 0) + 1
-		if placement.band == OVERFLOW or placement.slot.kind == KIND_DROPPED:
-			continue
-		if placement.day_index in working:
-			occupied.add((placement.section, placement.band, placement.row, placement.day_index))
+	staffed = sum(
+		chart.covered_rooms(section.shift_type, band.key, day)
+		for section in structure.sections
+		for band in structure.bands
+		if section.shift_type in band.shift_types
+		for day in working
+	)
 	capacity = sum(
 		band.rooms * len(working)
 		for section in structure.sections
 		for band in structure.bands
 		if section.shift_type in band.shift_types
 	)
-	return {"staffed": len(occupied), "capacity": capacity, **kinds}
+	return {"staffed": staffed, "capacity": capacity, **kinds}
