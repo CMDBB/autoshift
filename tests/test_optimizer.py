@@ -1465,17 +1465,75 @@ def test_collateral_roles_do_not_gate_room_coverage_by_default():
 	assert pulp.value(ar[("D1", "AM", MON, "B1")]) == 1
 
 
-def test_a_collateral_duty_is_worth_the_rooms_it_oversees_and_no_more():
-	"""`min(rooms staffed, max-rooms of the duty)`, so a lead over one room earns one."""
-	data = with_collateral(rooms={("D1", "B1"): 3}, target_shifts={"E1": 1})
+def scaled_by_staffing() -> tuple:
+	"""The standard set with the staffing-scaled collateral value in place of the standard
+	one — they are a choice group, so it is a swap, never an addition."""
+	return builtin_specs(
+		*((STANDARD_RULES - {"collateral_capacity_value_objective"}) | {"collateral_room_value_objective"})
+	)
+
+
+def collateral_values(prob, prefix: str) -> set[float]:
+	return {pulp.value(var) for var in prob.variables() if var.name.startswith(prefix)}
+
+
+def test_a_staffing_scaled_duty_is_worth_the_rooms_actually_open():
+	"""`min(rooms staffed, max-rooms of the duty)`, so a lead over one open room earns one."""
+	data = with_collateral(rooms={("D1", "B1"): 3}, target_shifts={"E1": 1}, rules=scaled_by_staffing())
 	prob, _x, _ar, _presence = solved(data)
-	values = {
-		var.name: pulp.value(var) for var in prob.variables() if var.name.startswith("collateral_value")
-	}
 
 	assert status(prob) == "Optimal"
 	# one employee staffs one room, though the duty spans three
-	assert set(values.values()) == {1.0}
+	assert collateral_values(prob, "collateral_value") == {1.0}
+
+
+def test_the_standard_duty_value_does_not_move_with_how_busy_the_branch_is():
+	"""Priced on the post, not the crowd: the same lead earns the same on a quiet half-day.
+
+	Which is the point of it — scaled by staffing, a lead is worth more where more rooms are
+	running, and the optimizer answers that by gathering people into the branches that have
+	one.
+	"""
+	data = with_collateral(rooms={("D1", "B1"): 3}, target_shifts={"E1": 1})
+	prob, _x, _ar, _presence = solved(data)
+
+	assert status(prob) == "Optimal"
+	# three rooms configured, one of them staffed, and the duty spans three
+	assert collateral_values(prob, "collateral_capacity_value") == {3.0}
+
+
+def test_the_standard_duty_value_is_capped_by_the_branch_room_count():
+	"""A duty spanning three rooms at a one-room branch supervises one room."""
+	data = with_collateral(rooms={("D1", "B1"): 1}, target_shifts={"E1": 1})
+	prob, _x, _ar, _presence = solved(data)
+
+	assert status(prob) == "Optimal"
+	assert collateral_values(prob, "collateral_capacity_value") == {1.0}
+
+
+def test_an_unworked_duty_is_worth_nothing_under_either_rule():
+	"""The cap is a ceiling on a value somebody still has to earn by working the duty."""
+	for rules in (None, scaled_by_staffing()):
+		data = with_collateral(
+			employees=["E1", "E2"],
+			employee_roles={"E1": ("R1",), "E2": ("RC",)},
+			target_shifts={"E1": 1, "E2": 1},
+			max_rpe={("E1", "R1"): 1, ("E2", "RC"): 3},
+			leave_blocked={("E2", MON)},  # nobody can lead today
+			**({"rules": rules} if rules else {}),
+		)
+		prob, x, _ar, _presence = solved(data)
+		assert status(prob) == "Optimal"
+		assert assigned(x, role="RC") == 0
+		assert all(value == pytest.approx(0) for value in collateral_values(prob, "collateral"))
+
+
+def test_the_two_collateral_value_rules_are_mutually_exclusive():
+	"""One question — what is a supervised post worth — with two answers, so: a choice group."""
+	with pytest.raises(ValueError, match="mutually exclusive"):
+		BuiltinRule.check_ruleset(
+			{"collateral_room_value_objective", "collateral_capacity_value_objective", "room_coverage"}
+		)
 
 
 def test_an_exclusive_role_admits_no_collateral_duty():

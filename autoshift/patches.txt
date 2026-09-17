@@ -19,3 +19,4 @@ autoshift.patches.add_role_suitability
 autoshift.patches.backfill_shift_assignment_roles
 autoshift.patches.add_presence_rules
 autoshift.patches.add_role_value_rule
+autoshift.patches.add_collateral_capacity_rule

@@ -157,6 +157,7 @@ GROUP_EXISTING_ASSIGNMENTS = "existing_assignments"
 GROUP_ROLE_BINDING = "role_binding"
 GROUP_WORKLOAD_CEILING = "workload_ceiling"
 GROUP_SHIFT_PREFERENCE = "shift_preference"
+GROUP_COLLATERAL_VALUE = "collateral_value"
 
 
 BUILTIN_RULES: dict[str, BuiltinRule] = {}  # empty -> filled by the builtin_rule decorator
@@ -575,15 +576,28 @@ def room_utilization_objective(ctx: RuleContext) -> None:
 	ctx.add_objective(pulp.lpSum(ctx.active_rooms.values()))
 
 
+def _collateral_holders(data: DataPackage) -> dict[str, list[tuple[str, str]]]:
+	"""Discipline -> the `(employee, collateral role)` pairs that can be worked in it."""
+	holders: dict[str, list[tuple[str, str]]] = {}
+	for e in data.employees:
+		for r in data.collateral_roles(e):
+			holders.setdefault(data.role_discipline.get(r, ""), []).append((e, r))
+	return holders
+
+
 @builtin_rule(
 	"Objective: Collateral duties",
-	"Value a collateral duty — a lead, say — by the rooms it oversees, never as a room of its "
-	"own. A collateral role scheduled in a discipline at some branch, shift and day earns the "
-	"rooms actually staffed there, up to the max-rooms figure its holders carry. Rooms still "
-	"open without it: nothing here makes a lead a condition of staffing a room, and where the "
-	"rooms are already covered without one the duty simply earns less than it costs.",
+	"Value a collateral duty — a lead, say — by the rooms <b>actually staffed</b> where it is "
+	"worked, never as a room of its own: it earns the rooms open in its discipline at that "
+	"branch, shift and day, up to the max-rooms figure its holders carry. Rooms still open "
+	"without it, and where they are covered anyway the duty earns less than it costs. "
+	"<b>Note what this rewards</b>: a lead is worth more where more rooms are running, so the "
+	"optimizer will gather people into the branches that have one. That is a real effect and "
+	"sometimes the wanted one — pick <b>by configured rooms</b> instead where a supervised "
+	"post is worth the same wherever it is staffed.",
 	kind=KIND_OBJECTIVE,
-	standard=True,
+	standard=False,
+	group=GROUP_COLLATERAL_VALUE,
 	requires={room_coverage: "{r} values the rooms {req} staffs, include {req}"},
 	# Loosely ~1 objective point per overseen room, against the 3 a staffed room itself pays
 	# under `room_utilization_objective`: worth doing where the rooms are open anyway,
@@ -600,10 +614,7 @@ def collateral_room_value_objective(ctx: RuleContext) -> None:
 	worth nothing extra without somebody overseeing them.
 	"""
 	data = ctx.data
-	holders: dict[str, list[tuple[str, str]]] = {}
-	for e in data.employees:
-		for r in data.collateral_roles(e):
-			holders.setdefault(data.role_discipline.get(r, ""), []).append((e, r))
+	holders = _collateral_holders(data)
 
 	values = []
 	for (k, s, d, b), rooms in ctx.active_rooms.items():
@@ -760,6 +771,57 @@ def suitability_preference_objective(ctx: RuleContext) -> None:
 			for (e, r, s, _d, _b), var in ctx.x.items()
 		)
 	)
+
+
+@builtin_rule(
+	"Objective: Collateral duties (by configured rooms)",
+	"Value a collateral duty — a lead, say — by the rooms its discipline has <b>configured</b> "
+	"at that branch, rather than by how many happen to be staffed that half-day. A supervised "
+	"post is then worth the same wherever it is worked, so pricing the duty does not quietly "
+	"become a reason to gather people into the branches that have somebody supervising. Still "
+	"capped by the branch's room count and by the max-rooms figure the duty's holders carry, "
+	"so a second lead at a two-room branch earns nothing further. On by default; pick "
+	"<b>Objective: Collateral duties</b> instead where supervising a busy half-day really is "
+	"worth more than supervising a quiet one.",
+	kind=KIND_OBJECTIVE,
+	standard=True,
+	group=GROUP_COLLATERAL_VALUE,
+	# Same scale as the rule it replaces: loosely one point per overseen room, against the 3
+	# a staffed room itself pays under `room_utilization_objective`.
+	default_weight=1.0,
+	topic=TOPIC_COVERAGE,
+)
+def collateral_capacity_value_objective(ctx: RuleContext) -> None:
+	"""`min(configured rooms, Σ max_rooms · c)`, linearized.
+
+	The capacity half is a constant, so it lives in the variable's own upper bound rather
+	than in a constraint — the same place `active_rooms` keeps its room cap. What is left is
+	one inequality per slot, and the objective pushing the value up squeezes it to exactly
+	the minimum.
+
+	Reads no `active_rooms` at all, which is the whole point: the value of the post does not
+	move with how well the practice managed to staff that half-day, so it cannot be earned by
+	concentrating people around it.
+	"""
+	data = ctx.data
+	holders = _collateral_holders(data)
+
+	values = []
+	for k, s, d, b in itertools.product(data.disciplines, data.shift_types, data.working_days, data.branches):
+		pairs = holders.get(k)
+		capacity = data.rooms.get((k, b), 0)
+		if not pairs or not capacity:
+			continue
+		value = ctx.prob.add_variable(
+			_vname("collateral_capacity_value", k, s, d, b), lowBound=0, upBound=capacity
+		)
+		ctx.prob += (
+			value <= pulp.lpSum(data.max_rpe.get((e, r), 1) * ctx.x[(e, r, s, d, b)] for e, r in pairs),
+			_cname("collateral_capacity", k, s, d, b),
+		)
+		values.append(value)
+
+	ctx.add_objective(pulp.lpSum(values))
 
 
 @builtin_rule(

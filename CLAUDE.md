@@ -153,16 +153,21 @@ module.
    captured before the flag read as they did.
 2. `rules.py` — constraint groups *and* objective terms as named rules. `BUILTIN_RULES`
    registry populated by the `@builtin_rule` decorator; `STANDARD_RULES` is the
-   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 19 built-ins:
+   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 20 built-ins:
    `one_shift_per_day`, `warm_start`, `leave_blocklist`, `use_existing_assignments`,
    `bind_role_assignments`, `soft_bind_role_assignments`, `one_branch_per_shift`,
    `room_coverage`, `fte_ceiling`, `role_fte_ceiling`, `exclusive_role_purity`
    (constraints) and `room_utilization_objective`, `fte_soft_ceiling`,
    `role_fte_target_objective`, `shift_preference_objective`,
    `suitability_preference_objective`, `weigh_assignments_objective`,
-   `collateral_room_value_objective`, `role_value_objective`
-   (objectives). Four choice groups: `existing_assignments`, `role_binding`,
-   `workload_ceiling` (`fte_ceiling` vs `fte_soft_ceiling`) and `shift_preference`
+   `collateral_room_value_objective`, `collateral_capacity_value_objective`,
+   `role_value_objective`
+   (objectives). Five choice groups: `existing_assignments`, `role_binding`,
+   `workload_ceiling` (`fte_ceiling` vs `fte_soft_ceiling`), `collateral_value`
+   (`collateral_room_value_objective` vs the **standard**
+   `collateral_capacity_value_objective`, which prices a supervised post by the rooms its
+   branch has configured rather than by the rooms staffed that half-day) and
+   `shift_preference`
    (`shift_preference_objective` vs the **standard** `suitability_preference_objective`, which
    charges `(-1 + pref) * suitability` per assignment and equals the former while every
    suitability is 1; `DataPackage.role_suitability` is sparse and left out of `input_hash`

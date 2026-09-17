@@ -153,10 +153,8 @@ Knock-on changes to the existing rules:
 
 - **`room_coverage` counts gating roles only.** By default that excludes collateral duties,
   which would otherwise cap a discipline at however many rooms its leads span.
-- **Collateral is valued through the rooms it oversees, never as rooms of its own.** A new
-  objective: `v[k,s,d,b] ≤ active_rooms[k,s,d,b]`, `v ≤ Σ max_rooms · c` over the collateral
-  roles in discipline `k` at `(s, d, b)`, reward `v`. Rooms open without a lead; a lead only
-  adds value where rooms are open.
+- **Collateral is valued through the rooms it oversees, never as rooms of its own.** Two
+  rules, a choice group — see "What a supervised post is worth" below.
 - **FTE rules count `p`**, still at one shift per weekday for 100% (actual-time accounting
   is backlog).
 - **Preference cost moves to `p`**; the suitability surcharge `(−1 + pref)(suitability − 1)`
@@ -185,6 +183,27 @@ Knock-on changes to the existing rules:
   could be** (`_pinned_role_counts`). Binding no longer pins a role, so a settled week that
   breaks an agreed role split would otherwise go unreported for the single-role holders it
   most often describes.
+
+### What a supervised post is worth (2026-09-17)
+
+The first pricing valued a collateral duty at `min(active_rooms, Σ max_rooms · c)` — the
+rooms *actually staffed* where it is worked. It is the intuitive reading and it has a tail:
+a lead is then worth more where more rooms are running, so the optimizer earns points by
+**gathering people into the branches that have one**. That is real supervision economics and
+somebody will want it, but it is not this practice's intent, and it is a strange thing to
+discover as a side effect of pricing a lead.
+
+`collateral_capacity_value_objective` is the same shape with `active_rooms` replaced by the
+branch's *configured* room count, which is a constant and therefore lives in the value
+variable's own upper bound rather than in a constraint (the `active_rooms` precedent). The
+post is worth the same wherever it is staffed, so pricing it cannot become a reason to move
+anybody. It is **standard**; the staffing-scaled rule stays, in a `collateral_value` choice
+group with it, for the sites where a busy half-day really is worth supervising more than a
+quiet one.
+
+Both remain capped by the duty's own max-rooms figure, and both are worth nothing until
+somebody actually works the duty: the cap is a ceiling on a value that still has to be
+earned.
 
 ### The wall chart shows coverage rather than heads
 
