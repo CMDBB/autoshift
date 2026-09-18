@@ -1653,6 +1653,29 @@ def test_two_roles_in_the_discipline_are_never_guessed_between():
 	assert (outcome, role) == (types_module.ROLE_AMBIGUOUS, None)
 
 
+def test_two_roles_resolve_to_the_one_that_is_binding():
+	"""A settled half-day is presence, not a choice of role — the books already settle it."""
+	outcome, role = types_module.resolve_assignment_role(
+		None, ["R1", "R2"], "D1", ["R1", "R2"], binding=["R2"]
+	)
+	assert (outcome, role) == (types_module.ROLE_RESOLVED, "R2")
+
+
+def test_two_binding_roles_are_still_never_guessed_between():
+	outcome, role = types_module.resolve_assignment_role(
+		None, ["R1", "R2"], "D1", ["R1", "R2"], binding=["R1", "R2"]
+	)
+	assert (outcome, role) == (types_module.ROLE_AMBIGUOUS, None)
+
+
+def test_a_binding_role_the_employee_does_not_hold_in_the_discipline_is_ignored():
+	"""`binding` may list roles held elsewhere; only candidates in this discipline count."""
+	outcome, role = types_module.resolve_assignment_role(
+		None, ["R1", "R2"], "D1", ["R1", "R2"], binding=["R3"]
+	)
+	assert (outcome, role) == (types_module.ROLE_AMBIGUOUS, None)
+
+
 def test_an_assignment_with_nothing_to_infer_from_says_so():
 	assert types_module.resolve_assignment_role(None, ["R1"], None, []) == (
 		types_module.ROLE_NO_DISCIPLINE,

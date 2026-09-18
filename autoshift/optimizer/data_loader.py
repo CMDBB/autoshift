@@ -365,6 +365,9 @@ def load(run_doc) -> DataPackage:
 		if _is_binding(row, role_binding):
 			binding_pairs.add(pair)
 	employee_roles = {e: tuple(sorted(rs)) for e, rs in employee_role_lists.items()}
+	binding_roles_by_employee: dict[str, set[str]] = {}
+	for employee, role in binding_pairs:
+		binding_roles_by_employee.setdefault(employee, set()).add(role)
 
 	# Employee Settings
 	emp_settings = {
@@ -544,13 +547,16 @@ def load(run_doc) -> DataPackage:
 	}
 	# A Shift Assignment records its Scheduling Role in `custom_scheduling_role`. Where it
 	# does not — a record entered by hand, or one older than the field and missed by the
-	# backfill patch — the role is recovered from its location's discipline, but *only* when
-	# the employee holds exactly one role there. Guessing between two is what the field
-	# exists to stop: a rota now settles presence, and which of somebody's roles a half-day
-	# was worked in is precisely the thing that cannot be inferred from where they stood.
-	# Collateral roles are never inferred: a duty is an explicit editorial act, and an
-	# assignment with no role on it is a shift somebody worked, not a lead duty. (Same rule
-	# as `patches.backfill_shift_assignment_roles`, which fills the field in from here.)
+	# backfill patch — the role is recovered from its location's discipline: the one role the
+	# employee holds there, or, holding several, the one of those that is binding for them
+	# (a settled half-day is presence, not a choice of role — see
+	# `types.resolve_assignment_role`). Guessing between two roles neither of which settles the
+	# question is what the field exists to stop: a rota now settles presence, and which of
+	# somebody's roles a half-day went to is precisely the thing that cannot be inferred from
+	# where they stood. Collateral roles are never inferred: a duty is an explicit editorial
+	# act, and an assignment with no role on it is a shift somebody worked, not a lead duty.
+	# (Same rule as `patches.backfill_shift_assignment_roles`, which fills the field in from
+	# here.)
 	roles_by_employee_discipline: dict[tuple[str, str], list[str]] = {}
 	for name, held in employee_roles.items():
 		for role in held:
@@ -602,7 +608,11 @@ def load(run_doc) -> DataPackage:
 		discipline = (locations.get(sa.shift_location) or frappe._dict()).get("custom_discipline")
 		candidates = roles_by_employee_discipline.get((sa.employee, discipline)) or []
 		outcome, role = resolve_assignment_role(
-			sa.custom_scheduling_role, employee_roles.get(sa.employee, ()), discipline, candidates
+			sa.custom_scheduling_role,
+			employee_roles.get(sa.employee, ()),
+			discipline,
+			candidates,
+			binding_roles_by_employee.get(sa.employee, ()),
 		)
 		match outcome:
 			case types.ROLE_RESOLVED:

@@ -357,13 +357,17 @@ def resolve_assignment_role(
 	held: Iterable[str],
 	discipline: str | None,
 	candidates: Iterable[str],
+	binding: Iterable[str] = (),
 ) -> tuple[str, str | None]:
 	"""
 	Which Scheduling Role an existing Shift Assignment was worked in.
 
 	The record's own `custom_scheduling_role` if it has one; failing that, the single role the
-	employee holds in the Shift Location's discipline. **Never a choice between two.** The
-	loader used to pick by sort order, which was tolerable while a person had one role in a
+	employee holds in the Shift Location's discipline. Several candidates are still resolved
+	when exactly one of them is `binding` — a settled week is presence, not a choice of role
+	(see `rules.soft_bind_role_assignments`), so the role a bound half-day was worked in is the
+	one the books already settle for them, not a guess. **Never a choice between two otherwise.**
+	The loader used to pick by sort order, which was tolerable while a person had one role in a
 	discipline and is wrong now: a rota settles when somebody is in, and which of their roles
 	the half-day went to is the part that cannot be read off where they stood.
 
@@ -379,6 +383,9 @@ def resolve_assignment_role(
 	if not candidates:
 		return (ROLE_NONE_IN_DISCIPLINE, None)
 	if len(candidates) > 1:
+		binding_candidates = [c for c in candidates if c in set(binding)]
+		if len(binding_candidates) == 1:
+			return (ROLE_RESOLVED, binding_candidates[0])
 		return (ROLE_AMBIGUOUS, None)
 	return (ROLE_RESOLVED, candidates[0])
 

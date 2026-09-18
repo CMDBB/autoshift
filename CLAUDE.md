@@ -190,8 +190,10 @@ module.
    assignments into `unresolved_assignments` (but **throws** for a bound employee). An
    existing assignment's role comes from `Shift Assignment.custom_scheduling_role` via
    `types.resolve_assignment_role` (Frappe-free, unit-tested): the recorded role, else the
-   single role the employee holds in the location's discipline — **never a choice between
-   two**, which is what the field exists to stop. Its `custom_collateral_roles` rows become
+   single role the employee holds in the location's discipline, or, holding several there,
+   whichever single one of those is `binding` for them (a settled half-day is presence, not a
+   choice of role) — **never a guess between two roles neither of which settles it**, which is
+   what the field exists to stop. Its `custom_collateral_roles` rows become
    extra `forced` combinations on the same slot, and go down with their host on a leave day.
 4. `model_builder.py` — builds the PuLP MILP. Vars `x[employee,role,shift,day,branch]` (built
    **sparse**, over the `(employee, role)` pairs each employee actually holds),
