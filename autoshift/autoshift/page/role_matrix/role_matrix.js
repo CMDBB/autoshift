@@ -122,11 +122,14 @@ autoshift.RoleMatrix = class RoleMatrix {
 	}
 
 	setup_fields() {
+		// MultiSelectList is the same control the list view uses for a multi-value standard
+		// filter (see erpnext's accounting-dimension report filters) — pills, type-to-filter,
+		// Select All / Clear All, for free.
 		this.discipline_field = this.page.add_field({
-			fieldname: "discipline",
-			label: __("Discipline"),
-			fieldtype: "Select",
-			options: [],
+			fieldname: "disciplines",
+			label: __("Disciplines"),
+			fieldtype: "MultiSelectList",
+			get_data: (txt) => this.filter_disciplines(txt),
 			change: () => this.refresh(),
 		});
 		this.show_all_field = this.page.add_field({
@@ -169,20 +172,28 @@ autoshift.RoleMatrix = class RoleMatrix {
 
 	load_disciplines() {
 		frappe.call({ method: "autoshift.role_matrix.list_disciplines" }).then(({ message }) => {
-			const disciplines = message || [];
-			this.discipline_field.df.options = [
-				{ label: __("All Disciplines"), value: "" },
-				...disciplines.map((d) => ({ label: d, value: d })),
-			];
-			this.discipline_field.refresh();
+			this.all_disciplines = message || [];
+			// Route in one specific discipline when we were sent here for it (e.g. the
+			// unconfirmed-rota banner); otherwise default to the first alphabetically rather
+			// than every discipline at once, which is a much bigger table to load.
 			const wanted = (frappe.route_options || {}).discipline;
 			frappe.route_options = null;
-			this.discipline_field.set_value(
-				disciplines.includes(wanted) ? wanted : disciplines[0] || ""
-			);
+			const preset = this.all_disciplines.includes(wanted)
+				? [wanted]
+				: this.all_disciplines.slice(0, 1);
+			this.discipline_field.set_value(preset);
 			this.loaded = true;
 			this.refresh();
 		});
+	}
+
+	// `get_data` for the MultiSelectList: already-selected values stay offered even once
+	// they no longer match `txt`, so unselecting them is still one click away.
+	filter_disciplines(txt) {
+		const needle = (txt || "").trim().toLowerCase();
+		return (this.all_disciplines || []).filter(
+			(d) => !needle || d.toLowerCase().includes(needle)
+		);
 	}
 
 	refresh() {
@@ -191,7 +202,7 @@ autoshift.RoleMatrix = class RoleMatrix {
 			.call({
 				method: "autoshift.role_matrix.get_matrix",
 				args: {
-					discipline: this.discipline_field.get_value() || "",
+					disciplines: JSON.stringify(this.discipline_field.get_value() || []),
 					show_all: this.show_all_field.get_value() ? 1 : 0,
 				},
 			})

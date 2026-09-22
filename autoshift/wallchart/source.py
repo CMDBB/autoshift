@@ -3,7 +3,7 @@
 
 """A week of scheduling data, read out of Frappe as `Slot` records.
 
-Two sources, because the chart has to draw a week whether or not anything has
+Three sources, because the chart has to draw a week whether or not anything has
 been solved for it — the point of an always-on view is that it is up before the
 first run and still up after a failed one:
 
@@ -11,6 +11,11 @@ first run and still up after a failed one:
                         the role where it is set; where it is not, the role is
                         inferred from what the employee holds and every inferred
                         slot is flagged rather than hidden.
+    Shift Schedule      a bound employee's rota, for the days no Shift Assignment
+                        records yet. Exactly what the optimizer reads as being on
+                        the books (`rota.materialize.settled_rows`), drawn as
+                        `virtual` chips so the week can be seen before anybody
+                        creates the records.
     Optimizer Run       the run's `solution_table`. Authoritative: every slot
                         names the Scheduling Role it was assigned in.
 
@@ -259,8 +264,60 @@ def from_shift_assignments(monday: datetime.date, employees: list[str] | None = 
 	)
 	if not rows:
 		return []
+	collateral = collateral_roles([row["name"] for row in rows])
+	return _book_slots(
+		[
+			{
+				"employee": row["employee"],
+				"shift_type": row["shift_type"],
+				"shift_location": row["shift_location"],
+				"role": row.get("custom_scheduling_role"),
+				"collateral": collateral.get(row["name"], ()),
+				"start": frappe.utils.getdate(row["start_date"]),
+				"end": frappe.utils.getdate(row["end_date"]) if row["end_date"] else None,
+			}
+			for row in rows
+		],
+		days,
+		virtual=False,
+	)
 
-	names = {row["employee"] for row in rows}
+
+def from_settled_rotas(monday: datetime.date, rows: list[dict]) -> list[Slot]:
+	"""Bound employees' rota days in the week that nothing on the books records yet.
+
+	`rows` are `rota.materialize.settled_rows` — exactly what the optimizer reads as
+	though it were on the books, so the chart shows the same week the solver sees.
+	Drawn as `virtual` chips: a planner sees what "Create them" would write before
+	anything is written.
+	"""
+	return _book_slots(
+		[
+			{
+				"employee": row["employee"],
+				"shift_type": row["shift_type"],
+				"shift_location": row["shift_location"],
+				"role": row.get("scheduling_role"),
+				"collateral": row.get("collateral_roles") or (),
+				"start": frappe.utils.getdate(row["date"]),
+				"end": None,
+			}
+			for row in rows
+		],
+		week_dates(monday),
+		virtual=True,
+	)
+
+
+def _book_slots(records: list[dict], days: list[datetime.date], virtual: bool) -> list[Slot]:
+	"""Slots for records on (or standing in for) the books, one per day each covers.
+
+	`end` None means a single day. The role is the record's own where it has one, else
+	inferred and flagged; collateral duties get chips of their own.
+	"""
+	if not records:
+		return []
+	names = {record["employee"] for record in records}
 	chip_sort = _chip_sort_config()
 	people = _employees(names, tuple({field for field, _ in chip_sort.values()}))
 	branches = _location_branches()
@@ -269,24 +326,22 @@ def from_shift_assignments(monday: datetime.date, employees: list[str] | None = 
 	role_order = layout.role_order()
 	held = _held_roles(names)
 	role_max_rooms = _role_max_rooms()
-	collateral = collateral_roles([row["name"] for row in rows])
 
 	slots: list[Slot] = []
-	for row in rows:
-		location = row["shift_location"] or ""
-		person = people.get(row["employee"], {})
-		start = frappe.utils.getdate(row["start_date"])
-		end = frappe.utils.getdate(row["end_date"]) if row["end_date"] else start
+	for record in records:
+		location = record["shift_location"] or ""
+		person = people.get(record["employee"], {})
+		start = record["start"]
+		end = record["end"] or start
 		for day in days:
 			if not (start <= day <= end):
 				continue
-			recorded = row.get("custom_scheduling_role")
-			if recorded:
-				role, certain = recorded, True
+			if record["role"]:
+				role, certain = record["role"], True
 			else:
 				candidates = [
 					held_row["scheduling_role"]
-					for held_row in held.get(row["employee"], [])
+					for held_row in held.get(record["employee"], [])
 					if _in_window(held_row, day)
 				]
 				role, certain = infer_role(
@@ -296,26 +351,25 @@ def from_shift_assignments(monday: datetime.date, employees: list[str] | None = 
 			# their own lane: HRMS cannot hold them as records of their own (see
 			# `data_loader`), but a chart that hid them would say the lead was
 			# somewhere else.
-			for role_of_chip, is_certain in [(role, certain)] + [
-				(r, True) for r in collateral.get(row["name"], ())
-			]:
+			for role_of_chip, is_certain in [(role, certain)] + [(r, True) for r in record["collateral"]]:
 				slots.append(
 					Slot(
 						date=day,
-						shift_type=row["shift_type"],
-						employee=row["employee"],
+						shift_type=record["shift_type"],
+						employee=record["employee"],
 						employee_name=person.get("employee_name") or "",
 						label=short_label(
-							row["employee"],
+							record["employee"],
 							person.get("employee_name") or "",
 							person.get(INITIALS_FIELD),
 						),
 						branch=branches.get(location),
 						scheduling_role=role_of_chip,
-						rooms=rooms_covered(row["employee"], role_of_chip, day, held, role_max_rooms),
+						rooms=rooms_covered(record["employee"], role_of_chip, day, held, role_max_rooms),
 						kind=KIND_EXISTING,
 						role_certain=is_certain,
 						sort_value=_sort_value(role_of_chip, person, chip_sort),
+						virtual=virtual,
 					)
 				)
 	return slots
@@ -326,7 +380,16 @@ def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 	rows = frappe.get_all(
 		"Optimizer Run Slot",
 		filters={"parent": run_name, "parenttype": "Optimizer Run"},
-		fields=["employee", "scheduling_role", "shift_type", "date", "shift_location", "branch", "forced"],
+		fields=[
+			"employee",
+			"scheduling_role",
+			"shift_type",
+			"date",
+			"shift_location",
+			"branch",
+			"forced",
+			"rooms",
+		],
 	)
 	if not rows:
 		return []
@@ -368,6 +431,10 @@ def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 				role_disciplines,
 				role_order,
 			)
+		ceiling = rooms_covered(row["employee"], role, day, held, role_max_rooms)
+		# Measured only under `room_load_objective`; 0 otherwise, and on every run solved
+		# before the field existed, where the ceiling is all there is to draw.
+		taken = int(row["rooms"] or 0)
 		slots.append(
 			Slot(
 				date=day,
@@ -381,7 +448,8 @@ def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 				# for runs written before that field existed.
 				branch=row["branch"] or branches.get(row["shift_location"] or ""),
 				scheduling_role=role,
-				rooms=rooms_covered(row["employee"], role, day, held, role_max_rooms),
+				rooms=taken or ceiling,
+				max_rooms=ceiling if taken else 0,
 				kind=KIND_ADDED,
 				forced=bool(row["forced"]),
 				role_certain=certain,

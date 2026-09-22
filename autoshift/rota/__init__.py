@@ -33,9 +33,11 @@ records, so an empty week freezes them to nothing rather than to their week.
 ## What this package does about it
 
 It expands a Shift Schedule over a date span itself (`cycle.occurrences`, a
-corrected re-implementation of `create_shifts`) and creates the missing
-`Shift Assignment` records on demand — when the wall chart lands on a week that
-has none, and before a run solves a horizon that has none.
+corrected re-implementation of `create_shifts`). The optimizer reads that
+expansion directly (`materialize.settled_rows`) — a solve never writes a record,
+because submitted Shift Assignments are real documents with notifications attached
+and a preview must not churn them. The missing records are created only on
+explicit request, from the wall chart's "Create them".
 
 **This is a workaround for someone else's bug and is signposted as one.** The
 upstream issue is not in active development, which is what makes it worth
@@ -49,9 +51,12 @@ Two consequences of that stance, both deliberate:
   that generator would run it wrongly. Generated assignments are always `Active`
   — they are shifts the person genuinely works — and link back via
   `Shift Assignment.shift_schedule_assignment`, so the provenance is on the record.
-- `create_shifts_after` is **never written**. It is the phase anchor as well as
-  the handover boundary, and moving it is the upstream bug. Idempotency comes
-  from checking what is already on the books instead, which needs no state.
+- `create_shifts_after` is **never moved forward**. It is the phase anchor as well
+  as the handover boundary, and moving it by less than a cycle is the upstream
+  bug. It is only ever set at least `cycle.ANCHOR_LEAD_WEEKS` in the past, pulled
+  back by whole cycles (`cycle.backdated_anchor`, the Rota Editor and the
+  `backdate_rota_anchors` patch), which keeps the phase. Idempotency comes from
+  checking what is already on the books instead, which needs no state.
 
 Nothing here is practice-specific: which roles are binding is
 `Scheduling Role.assignments_binding`, site data (see CLAUDE.md, "App boundary").

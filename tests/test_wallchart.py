@@ -267,6 +267,22 @@ def test_an_assignment_the_run_did_not_reproduce_is_dropped():
 	]
 
 
+def test_a_kept_slot_is_virtual_exactly_when_its_book_side_is():
+	"""Whether a half-day is recorded yet is a fact about the books, not the run: a run
+	reproducing an unrecorded rota day is still showing a day nobody has written down."""
+	proposed = slot(kind=KIND_ADDED)
+	assert [s.virtual for s in merge([slot(virtual=True)], [proposed])] == [True]
+	assert [s.virtual for s in merge([slot()], [proposed])] == [False]
+
+
+def test_a_dropped_rota_day_stays_virtual_and_an_added_one_is_not():
+	merged = merge([slot(virtual=True)], [slot(employee="E2", kind=KIND_ADDED)])
+	assert sorted((s.employee, s.kind, s.virtual) for s in merged) == [
+		("E1", KIND_DROPPED, True),
+		("E2", KIND_ADDED, False),
+	]
+
+
 def test_matching_ignores_the_role_so_an_inference_is_not_a_false_re_plan():
 	"""A Shift Assignment records no role, so `source` guesses one. Matching on
 	that guess would report a drop and an add every time it guessed differently
@@ -365,6 +381,17 @@ def test_the_next_person_in_a_lane_starts_below_the_chip_above():
 	assert placement(chart, 1, "R1").slot.employee == "E1"
 	assert placement(chart, 2, "R1") is None  # covered by the chip above it
 	assert placement(chart, 3, "R1").slot.employee == "E2"
+
+
+def test_a_kept_chip_is_as_tall_as_the_rooms_the_run_measured():
+	"""The books only know a holder's ceiling; a run under `room_load_objective` knows the
+	rooms they take, and a kept half-day is drawn at the run's figure, ceiling kept aside."""
+	existing = slot(rooms=3)
+	proposed = slot(kind=KIND_ADDED, rooms=2, max_rooms=3)
+	(kept,) = merge([existing], [proposed])
+	chart = build(layout(band(rooms=3)), [kept], MONDAY)
+	assert placement(chart, 1, "R1").span == 2
+	assert placement(chart, 1, "R1").slot.max_rooms == 3
 
 
 def test_a_band_grows_for_spans_as_well_as_for_heads():

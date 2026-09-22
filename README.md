@@ -190,6 +190,25 @@ A rota that repeats every N weeks is shown at whatever view width you pick
 is left off the grid rather than shown as a fragment, with a note saying why —
 widen the view to see (and edit) their full pattern.
 
+Every pattern records the **Scheduling Role** it is worked in. Hover a chip to
+see it; **right-click** a chip to change it, picking from the roles that person
+holds in this discipline. Adding a shift asks which role only when it cannot be
+worked out — someone with a single role there, or a single *binding* one, simply
+gets it. Patterns imported before the role was recorded have one filled in from
+the same reasoning, so an employee who only ever had one role needs no work at
+all; whatever is still unattributed acquires a role the first time you edit it.
+Because the role is part of what a pattern *is*, re-roling one half-day of a
+Mon–Wed pattern splits it into two schedules. That is intended: one Shift
+Schedule Assignment can only name one role.
+
+Someone who holds binding roles in **two disciplines** has one week, not two, so
+the other discipline's shifts are drawn here as well — faint, italic and
+read-only, labelled with the discipline that owns them. Open that discipline's
+view to change them. Where one of them lands on the same half-day as a shift in
+the discipline you are editing, both turn **red**: the person is booked twice.
+Shift Types this discipline's config doesn't cover appear as extra read-only
+rows at the bottom, marked with a `*`, rather than being left out of the picture.
+
 The Agreed FTE % is deliberately soft: the solver is *penalised* for deviating
 from it (see the "Agreed role FTE split" objective rule) but never forbidden,
 because these splits are normally an informal expectation rather than an

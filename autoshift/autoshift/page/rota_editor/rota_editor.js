@@ -24,6 +24,9 @@ frappe.pages["rota-editor"].on_page_show = function (wrapper) {
 function inject_rota_editor_styles() {
 	if (document.getElementById("rota-editor-styles")) return;
 	const css = `
+		/* The right-click role menu is positioned against this, so it must be the
+		   offset parent — see open_role_menu. */
+		.rota-editor { position: relative; }
 		.rota-editor .re-hint { margin-bottom: 0.75rem; }
 		.rota-editor .re-banner { margin-bottom: 0.75rem; }
 		.rota-editor .re-grid-wrap { overflow-x: auto; }
@@ -86,6 +89,36 @@ function inject_rota_editor_styles() {
 		.rota-editor .re-transcript-title { font-weight: 500; margin-bottom: 0.3rem; }
 		.rota-editor .re-today-col { background: var(--blue-50, #eff6ff); }
 		.rota-editor .re-today-col.re-row-hidden { background: var(--blue-50, #eff6ff); }
+		/* Another discipline's settled half-day: drawn so a clash is visible, never
+		   editable — see rota/editor.py, is_native. */
+		.rota-editor .re-chip-foreign {
+			background: transparent; border: 1px dashed var(--gray-400, #b0b0b0);
+			color: var(--text-muted); cursor: not-allowed; font-style: italic;
+			font-weight: normal; opacity: 0.55;
+		}
+		/* The same half-day booked twice. Declared after .re-chip-foreign so it wins. */
+		.rota-editor .re-chip-clash {
+			border: 1px solid var(--red-500, #e24c4c); color: var(--red-600, #c0392b); opacity: 0.9;
+		}
+		.rota-editor .re-cell-clash { box-shadow: inset 0 0 0 2px var(--red-300, #f0a9a2); }
+		.rota-editor .re-chip-role {
+			font-size: 0.6em; opacity: 0.8; margin-left: 2px; vertical-align: sub;
+		}
+		.rota-editor .re-row-foreign td { background: var(--disabled-bg, #f2f2f2); opacity: 0.85; }
+		.rota-editor .re-row-foreign .re-emp-col,
+		.rota-editor .re-row-foreign .re-shift-col { background: var(--disabled-bg, #f2f2f2); }
+		.rota-editor .re-menu {
+			position: absolute; z-index: 1000; background: var(--fg-color); min-width: 11rem;
+			border: 1px solid var(--border-color); border-radius: var(--border-radius-md);
+			box-shadow: var(--shadow-md, 0 2px 8px rgba(0, 0, 0, 0.15)); padding: 0.25rem 0;
+		}
+		.rota-editor .re-menu-title {
+			padding: 0.25rem 0.75rem; font-size: 0.85em; color: var(--text-muted);
+		}
+		.rota-editor .re-menu-item { padding: 0.25rem 0.75rem; cursor: pointer; white-space: nowrap; }
+		.rota-editor .re-menu-item:hover { background: var(--control-bg); }
+		.rota-editor .re-menu-item.re-menu-current { font-weight: 600; cursor: default; }
+		.rota-editor .re-menu-item.re-menu-current:hover { background: transparent; }
 	`;
 	const style = document.createElement("style");
 	style.id = "rota-editor-styles";
@@ -168,6 +201,8 @@ autoshift.RotaEditor = class RotaEditor {
 					"Drag a chip to move a shift within the same person's row — any day, shift type or branch in this discipline. Drop it outside the table (or on Remove) to delete it, or click an empty cell to add one."
 				)} ${__(
 			"A dotted grey border marks a pattern imported but not yet confirmed. Editing a pattern confirms it; Promote all confirms the rest of that person's patterns as they stand."
+		)} ${__(
+			"Right-click a chip to change the Scheduling Role it is worked in. Faint italic chips are another discipline's settled week — read-only here, and red where they land on the same half-day as one of this discipline's."
 		)}</div>
 				<div class="re-banner form-message yellow" hidden></div>
 				<div class="re-grid-wrap"><div class="re-grid"></div></div>
@@ -209,6 +244,17 @@ autoshift.RotaEditor = class RotaEditor {
 				if (to_shift_type === drag.shiftType && to_date === drag.date) return;
 				this.stage_move(drag, to_shift_type, to_date);
 			})
+			.on("contextmenu", ".re-chip[draggable='true']", (e) => {
+				// Right-click is the only way to re-role a half-day: a drag already means
+				// "move it", and the role is the other thing a chip records.
+				e.preventDefault();
+				this.open_role_menu($(e.currentTarget), e.pageX, e.pageY);
+			})
+			.on("click", ".re-menu-item[data-role]", (e) => {
+				const $item = $(e.currentTarget);
+				this.close_role_menu();
+				this.stage_retag($item.data("chip"), $item.attr("data-role"));
+			})
 			.on("click", ".re-promote", (e) => {
 				this.stage({ op: "promote", employee: $(e.currentTarget).attr("data-employee") });
 			})
@@ -249,7 +295,81 @@ autoshift.RotaEditor = class RotaEditor {
 				const drag = this.drag;
 				this.drag = null;
 				this.stage_remove(drag);
+			})
+			.on("mousedown.re-menu", (e) => {
+				if (!$(e.target).closest(".re-menu").length) this.close_role_menu();
+			})
+			.on("keydown.re-menu", (e) => {
+				if (e.key === "Escape") this.close_role_menu();
 			});
+	}
+
+	// ── changing the role a half-day is worked in ────────────────────────────
+
+	close_role_menu() {
+		if (this.$menu) {
+			this.$menu.remove();
+			this.$menu = null;
+		}
+	}
+
+	// The roles this person holds in *this* discipline (server-side `_role_candidates`),
+	// so the menu can only ever offer something the edit would be allowed to stage.
+	open_role_menu($chip, x, y) {
+		this.close_role_menu();
+		const employee = $chip.attr("data-employee");
+		const emp = (this.state.employees || []).find((e) => e.employee === employee);
+		const roles = (emp && emp.roles) || [];
+		const current = $chip.attr("data-role") || "";
+		if (roles.length < 2) {
+			frappe.show_alert({
+				message: roles.length
+					? __("{0} holds only one Scheduling Role in this discipline.", [employee])
+					: __("{0} holds no Scheduling Role in this discipline.", [employee]),
+				indicator: "orange",
+			});
+			return;
+		}
+		const chip = {
+			assignment: $chip.attr("data-assignment"),
+			employee,
+			date: $chip.attr("data-date"),
+		};
+		const labels = this.state.role_labels || {};
+		const items = roles
+			.map((role) => {
+				const badge = labels[role]
+					? ` <span class="text-muted">(${labels[role]})</span>`
+					: "";
+				return (
+					`<div class="re-menu-item${role === current ? " re-menu-current" : ""}" ` +
+					`${role === current ? "" : `data-role="${frappe.utils.escape_html(role)}"`}>` +
+					`${role === current ? "✓ " : ""}${frappe.utils.escape_html(
+						role
+					)}${badge}</div>`
+				);
+			})
+			.join("");
+		this.$menu = $(
+			`<div class="re-menu"><div class="re-menu-title">${__(
+				"Worked as"
+			)}</div>${items}</div>`
+		).appendTo(this.$body);
+		this.$menu.find(".re-menu-item[data-role]").data("chip", chip);
+		const offset = this.$body.offset();
+		this.$menu.css({ left: x - offset.left, top: y - offset.top });
+	}
+
+	stage_retag(chip, role) {
+		if (!chip) return;
+		this.stage({
+			op: "retag",
+			employee: chip.employee,
+			from_assignment: chip.assignment,
+			from_weekday: this.day_labels[chip.date],
+			from_phase: this.day_phases[chip.date],
+			scheduling_role: role,
+		});
 	}
 
 	// `?discipline=…&start=…` (a plain link) or `frappe.route_options` (set_route). Returns
@@ -388,9 +508,16 @@ autoshift.RotaEditor = class RotaEditor {
 		});
 	}
 
+	// A fresh pattern needs a branch and a role. The role is only *asked* for when the
+	// server could not settle it on its own (`editor._default_role`: one role held here,
+	// else the single binding one) — the same bargain as everywhere else in this app,
+	// resolve silently where the answer is forced and ask only where it genuinely is not.
 	stage_add(employee, shift_type, date) {
 		const options = (this.state.branches && this.state.branches[shift_type]) || [];
-		const commit = (branch) =>
+		const emp = (this.state.employees || []).find((e) => e.employee === employee) || {};
+		const roles = emp.roles || [];
+		const ask_role = !emp.default_role && roles.length > 1;
+		const commit = (branch, role) =>
 			this.stage({
 				op: "add",
 				employee,
@@ -398,16 +525,53 @@ autoshift.RotaEditor = class RotaEditor {
 				to_weekday: this.day_labels[date],
 				to_phase: this.day_phases[date],
 				to_branch: branch,
+				scheduling_role:
+					role || emp.default_role || (roles.length === 1 ? roles[0] : null),
 			});
-		if (options.length === 1) {
-			commit(options[0]);
-		} else if (options.length > 1) {
-			this.prompt_branch(options, null, commit);
-		} else {
+		if (!options.length) {
 			frappe.msgprint(
 				__("No branch is configured for {0} in this discipline.", [shift_type])
 			);
+			return;
 		}
+		if (options.length === 1 && !ask_role) {
+			commit(options[0]);
+			return;
+		}
+		this.prompt_new_shift(options, null, roles, ask_role, commit);
+	}
+
+	prompt_new_shift(branches, current_branch, roles, ask_role, callback) {
+		const fields = [];
+		if (branches.length > 1) {
+			fields.push({
+				fieldname: "branch",
+				fieldtype: "Select",
+				label: __("Branch"),
+				options: branches.join("\n"),
+				default: branches.includes(current_branch) ? current_branch : branches[0],
+				reqd: 1,
+			});
+		}
+		if (ask_role) {
+			fields.push({
+				fieldname: "scheduling_role",
+				fieldtype: "Select",
+				label: __("Worked as"),
+				options: roles.join("\n"),
+				default: roles[0],
+				reqd: 1,
+				description: __(
+					"This person holds several Scheduling Roles here, and none of them settles it on its own."
+				),
+			});
+		}
+		frappe.prompt(
+			fields,
+			(values) => callback(values.branch || branches[0], values.scheduling_role),
+			__("Add a shift"),
+			__("Continue")
+		);
 	}
 
 	// ── rendering ─────────────────────────────────────────────────────────────
@@ -431,12 +595,76 @@ autoshift.RotaEditor = class RotaEditor {
 		return shift_type.length > 5 ? shift_type.slice(0, 5) : shift_type;
 	}
 
+	// The full name of the role a cell is worked in, for a tooltip — or a note that
+	// nothing records one, which is itself worth seeing on an imported pattern.
+	role_title(cell) {
+		if (!cell || !cell.role) return " — " + __("no Scheduling Role recorded");
+		let title = " — " + __("as {0}", [cell.role]);
+		if (cell.collateral_roles && cell.collateral_roles.length) {
+			title += " + " + cell.collateral_roles.join(", ");
+		}
+		return title;
+	}
+
+	// A role badge only where it distinguishes anything: somebody who can only be working
+	// their one role in this discipline gains nothing from being told so on every chip.
+	role_badge(emp, cell) {
+		if (!cell || !cell.role) return "";
+		if (!emp || !emp.roles || emp.roles.length < 2) return "";
+		const label = (this.state.role_labels || {})[cell.role] || cell.role.slice(0, 3);
+		return `<sub class="re-chip-role">${frappe.utils.escape_html(label)}</sub>`;
+	}
+
+	// Another discipline's chip: faint, dashed, never draggable, red when it collides with
+	// one of this discipline's own half-days. See rota/editor.py, `_foreign_cells`.
+	foreign_chip(cell) {
+		const discipline = cell.discipline || "?";
+		const role = cell.role ? " — " + __("as {0}", [cell.role]) : "";
+		const branch = cell.branch ? " — " + cell.branch : "";
+		const clash = cell.clash
+			? " — " + __("clashes with a shift in this discipline on the same half-day")
+			: "";
+		const title = __("{0} — read-only here", [discipline]) + role + branch + clash;
+		return (
+			`<span class="re-chip re-chip-foreign${cell.clash ? " re-chip-clash" : ""}" ` +
+			`draggable="false" title="${frappe.utils.escape_html(title)}">` +
+			`${frappe.utils.escape_html(discipline.slice(0, 3))}</span>`
+		);
+	}
+
+	// This discipline's own chip, drawn without any drag affordance — either because the
+	// row's cadence does not tile into this view (a `{occupied, cycle_weeks}` fraction, see
+	// `editor._hidden_cells`) or because the section is a Shift Type this discipline's
+	// config does not cover, which has no legal drop target to move it to.
+	readonly_native_chip(emp, cell, section) {
+		const role = frappe.utils.escape_html(this.role_title(cell));
+		if (cell.occupied !== undefined && cell.occupied < cell.cycle_weeks) {
+			const title = __("Occurs {0} of every {1} weeks", [cell.occupied, cell.cycle_weeks]);
+			return `<span class="re-fraction" title="${title}${role}">${cell.occupied}/${cell.cycle_weeks}</span>`;
+		}
+		const branch = frappe.utils.escape_html(cell.branch || "");
+		const color = branch_color(cell.branch || "");
+		const why =
+			section && section.extra ? " — " + __("not configured in this discipline") : "";
+		const classes =
+			(cell.unconfirmed ? " re-chip-unconfirmed" : "") +
+			(cell.clash ? " re-chip-clash" : "");
+		return (
+			`<span class="re-chip${classes}" draggable="false" ` +
+			`style="--chip-bg: ${color.bg}; --chip-fg: ${color.fg}; --chip-border: ${color.border};" ` +
+			`title="${branch}${role}${frappe.utils.escape_html(why)}">` +
+			`${(cell.branch || "?").slice(0, 3)}${this.role_badge(emp, cell)}</span>`
+		);
+	}
+
 	// One `<tr>` per (employee, shift type) — an employee's AM and PM rows sit directly
 	// on top of each other, both under one rowspanned employee-name cell. `readOnly`
 	// employees (period-incompatible with this view — see `edit.rota_view_weeks`) get
 	// no drag/drop affordances at all: their cells carry a `{occupied, cycle_weeks,
 	// branch}` fraction summary instead of a concrete `{branch, assignment}` chip —
-	// see `editor._hidden_cells`.
+	// see `editor._hidden_cells`. A section marked `extra` is a Shift Type this
+	// discipline's config does not cover — usually another discipline's — and is
+	// read-only for everybody, since `branches_of` offers no drop target on one.
 	render_employee_rows(emp, sections, days, occupied_dates, readOnly, today) {
 		const cadence_note =
 			readOnly && emp.cycle_weeks
@@ -450,11 +678,18 @@ autoshift.RotaEditor = class RotaEditor {
 					emp.unconfirmed,
 			  ])}">${__("Promote all")}</button>`
 			: "";
+		const foreign_cells = emp.foreign_cells || {};
 		let rows = "";
 		sections.forEach((section, index) => {
 			const shift_type = frappe.utils.escape_html(section.name);
 			const shift_label = frappe.utils.escape_html(this.shift_type_label(section.name));
-			rows += `<tr class="${readOnly ? "re-row-hidden" : ""}">`;
+			const rowClass = [
+				readOnly ? "re-row-hidden" : "",
+				section.extra ? "re-row-foreign" : "",
+			]
+				.filter(Boolean)
+				.join(" ");
+			rows += `<tr class="${rowClass}">`;
 			if (index === 0) {
 				rows += `<td class="re-emp-col" rowspan="${
 					sections.length
@@ -464,35 +699,27 @@ autoshift.RotaEditor = class RotaEditor {
 					emp.employee_label
 				)}<br>${cadence_note}${promote}</td>`;
 			}
-			rows += `<td class="re-shift-col" title="${shift_type}">${shift_label}</td>`;
+			rows += `<td class="re-shift-col" title="${shift_type}${
+				section.extra ? " — " + __("not configured in this discipline; read-only") : ""
+			}">${shift_label}${section.extra ? " *" : ""}</td>`;
 			days.forEach((d) => {
-				const cell = emp.cells[`${section.name}|${d.date}`];
+				const key = `${section.name}|${d.date}`;
+				const cell = emp.cells[key];
+				const foreign = foreign_cells[key];
 				const todayClass = d.date === today ? " re-today-col" : "";
-				if (readOnly) {
-					rows += `<td class="re-cell re-cell-readonly${todayClass}">`;
-					if (cell) {
-						const silver = cell.unconfirmed ? " re-chip-unconfirmed" : "";
-						if (cell.occupied >= cell.cycle_weeks) {
-							const branch = frappe.utils.escape_html(cell.branch || "");
-							const color = branch_color(cell.branch || "");
-							rows +=
-								`<span class="re-chip${silver}" draggable="false" ` +
-								`style="--chip-bg: ${color.bg}; --chip-fg: ${color.fg}; --chip-border: ${color.border};" ` +
-								`title="${branch}">${(cell.branch || "?").slice(0, 3)}</span>`;
-						} else {
-							rows += `<span class="re-fraction" title="${__(
-								"Occurs {0} of every {1} weeks",
-								[cell.occupied, cell.cycle_weeks]
-							)}">${cell.occupied}/${cell.cycle_weeks}</span>`;
-						}
-					}
+				const clashClass =
+					(cell && cell.clash) || (foreign && foreign.clash) ? " re-cell-clash" : "";
+				if (readOnly || section.extra) {
+					rows += `<td class="re-cell re-cell-readonly${todayClass}${clashClass}">`;
+					if (cell) rows += this.readonly_native_chip(emp, cell, section);
+					if (foreign) rows += this.foreign_chip(foreign);
 					rows += "</td>";
 					return;
 				}
 				const is_occupied_different_shift =
-					occupied_dates[emp.employee].has(d.date) && !cell;
+					occupied_dates[emp.employee].has(d.date) && !cell && !foreign;
 				const cell_class = is_occupied_different_shift ? " re-cell-occupied" : "";
-				rows += `<td class="re-cell${cell_class}${todayClass}" data-employee="${emp.employee}" data-shift-type="${shift_type}" data-date="${d.date}">`;
+				rows += `<td class="re-cell${cell_class}${todayClass}${clashClass}" data-employee="${emp.employee}" data-shift-type="${shift_type}" data-date="${d.date}">`;
 				if (cell) {
 					// "pending" (unapplied yet — see rota/editor.py._effective_rotas) is
 					// purely a visual cue now: the chip stays draggable, and further edits
@@ -511,21 +738,37 @@ autoshift.RotaEditor = class RotaEditor {
 							: "";
 					const pending_title = pending ? " — " + __("pending") : "";
 					const silver_title = cell.unconfirmed ? " — " + __("unconfirmed") : "";
+					const clash_title = cell.clash
+						? " — " + __("clashes with another discipline on this half-day")
+						: "";
 					const chip_class =
 						(pending ? " re-chip-pending" : "") +
-						(cell.unconfirmed ? " re-chip-unconfirmed" : "");
+						(cell.unconfirmed ? " re-chip-unconfirmed" : "") +
+						(cell.clash ? " re-chip-clash" : "");
+					const title = `${branch}${cadence_title}${this.role_title(
+						cell
+					)}${pending_title}${silver_title}${clash_title} — ${__(
+						"right-click to change the role"
+					)}`;
 					rows +=
 						`<span class="re-chip${chip_class}" ` +
 						`draggable="true" ` +
 						`data-assignment="${frappe.utils.escape_html(cell.assignment)}" ` +
 						`data-employee="${emp.employee}" data-shift-type="${shift_type}" data-date="${d.date}" ` +
-						`data-branch="${branch}" ${style} title="${branch}${cadence_title}${pending_title}${silver_title}">` +
-						`${(cell.branch || "?").slice(0, 3)}${cadence}</span>`;
-				} else {
+						`data-branch="${branch}" data-role="${frappe.utils.escape_html(
+							cell.role || ""
+						)}" ` +
+						`${style} title="${frappe.utils.escape_html(title)}">` +
+						`${(cell.branch || "?").slice(0, 3)}${cadence}${this.role_badge(
+							emp,
+							cell
+						)}</span>`;
+				} else if (!foreign) {
 					rows +=
 						`<span class="re-cell-empty" data-employee="${emp.employee}" ` +
 						`data-shift-type="${shift_type}" data-date="${d.date}"></span>`;
 				}
+				if (foreign) rows += this.foreign_chip(foreign);
 				rows += "</td>";
 			});
 			rows += "</tr>";
@@ -533,9 +776,23 @@ autoshift.RotaEditor = class RotaEditor {
 		return rows;
 	}
 
+	// The discipline's own Shift Types, then any this discipline's config does not cover
+	// that a shown employee is nonetheless booked on — appended rather than dropped, so a
+	// half-day is never invisible just because the shift is unfamiliar here. There is no
+	// legal drop target on one, so those sections are read-only for everybody.
+	sections_of(state) {
+		return (state.shift_types || [])
+			.map((section) => Object.assign({}, section, { extra: false }))
+			.concat(
+				(state.extra_shift_types || []).map((section) =>
+					Object.assign({}, section, { extra: true })
+				)
+			);
+	}
+
 	render_grid() {
 		const state = this.state;
-		const sections = state.shift_types || [];
+		const sections = this.sections_of(state);
 		const days = state.days || [];
 		const employees = state.employees || [];
 		const hidden = state.hidden_employees || [];
@@ -571,15 +828,17 @@ autoshift.RotaEditor = class RotaEditor {
 		});
 		head += "</tr>";
 
-		// Build a map of occupied dates per employee (dates that have a chip, regardless of shift type)
+		// Dates that already carry a chip for this employee, whatever the shift type and
+		// whichever discipline books it — a day they are in elsewhere is just as much a
+		// reason to shade the other half-day as one of this discipline's own.
 		const occupied_dates = {};
 		employees.forEach((emp) => {
 			occupied_dates[emp.employee] = new Set();
+			const foreign = emp.foreign_cells || {};
 			sections.forEach((section) => {
 				days.forEach((d) => {
-					if (emp.cells[`${section.name}|${d.date}`]) {
-						occupied_dates[emp.employee].add(d.date);
-					}
+					const key = `${section.name}|${d.date}`;
+					if (emp.cells[key] || foreign[key]) occupied_dates[emp.employee].add(d.date);
 				});
 			});
 		});

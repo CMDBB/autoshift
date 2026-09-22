@@ -1,14 +1,20 @@
 # Copyright (c) 2026, CMDBB and contributors
 # For license information, please see license.txt
 
-"""Turning a `Shift Schedule` into the `Shift Assignment` records it implies.
+"""Reading a `Shift Schedule` as the `Shift Assignment` records it implies, and
+writing them on request.
 
 The DB half of this package; see `autoshift.rota` for why any of it exists and
 `autoshift.rota.cycle` for the expansion rule itself. Everything here is scoped
 to employees whose schedule is **binding** — a Scheduling Role marked
 `assignments_binding`, minus anyone whose `Employee Scheduling Role` overrides it
-off. Nobody else's Shift Schedule is materialised: the optimizer is supposed to
-decide their week, and standing up records ahead of it would prejudge that.
+off. Nobody else's Shift Schedule is read: the optimizer is supposed to decide
+their week.
+
+Reading is :func:`settled_rows`, and it is what the optimizer consumes — a solve never
+writes a record, because submitted Shift Assignments are real documents with
+notifications attached, and churning them ahead of every preview is not acceptable.
+Writing is :func:`materialize`, reached only from the wall chart's explicit "Create them".
 
 Idempotency is by comparison, not by bookkeeping: a day a submitted
 `Shift Assignment` already covers is left alone (see `_covered` for what "covers"
@@ -41,12 +47,139 @@ def binding_employees() -> set[str]:
 	return {employee for employee, _role in data_loader.configured_binding_pairs()}
 
 
-def load_rotas(employees: set[str] | None = None) -> list[Rota]:
+def _in_window(row, first: datetime.date | None, last: datetime.date | None) -> bool:
+	"""Is this `Employee Scheduling Role` row valid anywhere in `[first, last]`?
+
+	The same predicate `optimizer.data_loader` applies to its own role rows: "(valid_from
+	unset or <= window end) and (valid_to unset or >= window start)". No window at all
+	accepts every active row.
+	"""
+	if first is None or last is None:
+		return True
+	if row.valid_from and frappe.utils.getdate(row.valid_from) > last:
+		return False
+	return not (row.valid_to and frappe.utils.getdate(row.valid_to) < first)
+
+
+class RoleContext:
+	"""Everything needed to say which Scheduling Role a rota is worked in, read once.
+
+	`load_rotas` asks the same question of a `Shift Schedule Assignment` that
+	`optimizer.data_loader` asks of a `Shift Assignment`, and answers it with the same
+	function (`types.resolve_assignment_role`), so a rota and the record materialised from
+	it can never disagree about the role. Built per call rather than cached: it is four
+	small configuration tables, and a stale answer here would be written onto documents.
+
+	`first`/`last` scope the `Employee Scheduling Role` rows to the ones valid over that
+	span, exactly as `data_loader` scopes its own `employee_roles`. :func:`settled_rows`
+	passes its horizon, so a solve never inherits a role its own package says the person
+	does not hold. Left out — as the Rota Editor leaves it out — every active row counts,
+	which is the right reading for a pattern that has been worked for years.
+	"""
+
+	__slots__ = ("binding", "held", "location_discipline", "role_discipline", "working")
+
+	def __init__(
+		self,
+		employees: set[str] | None = None,
+		first: datetime.date | None = None,
+		last: datetime.date | None = None,
+	):
+		from autoshift.optimizer import data_loader
+		from autoshift.optimizer.types import MODE_COLLATERAL
+
+		roles = {
+			row.name: row
+			for row in frappe.get_all(
+				"Scheduling Role",
+				filters={"active": 1},
+				fields=["name", "discipline", "assignment_mode"],
+			)
+		}
+		self.role_discipline: dict[str, str] = {
+			name: row.discipline for name, row in roles.items() if row.discipline
+		}
+		binding_pairs = data_loader.configured_binding_pairs()
+		self.binding: dict[str, set[str]] = {}
+		for employee, role in binding_pairs:
+			self.binding.setdefault(employee, set()).add(role)
+
+		filters: dict = {"active": 1}
+		if employees is not None:
+			filters["employee"] = ["in", sorted(employees)] if employees else ["in", [""]]
+		self.held: dict[str, set[str]] = {}
+		self.working: dict[str, set[str]] = {}
+		for row in frappe.get_all(
+			"Employee Scheduling Role",
+			filters=filters,
+			fields=["employee", "scheduling_role", "assignment_mode_override", "valid_from", "valid_to"],
+		):
+			role = roles.get(row.scheduling_role)
+			if not role:
+				continue
+			if not _in_window(row, first, last):
+				continue
+			self.held.setdefault(row.employee, set()).add(row.scheduling_role)
+			mode = row.assignment_mode_override or role.assignment_mode
+			if mode != MODE_COLLATERAL:
+				# A collateral duty is never inferred — it is an explicit editorial act,
+				# and a pattern that names no role is a shift somebody worked, not a duty.
+				self.working.setdefault(row.employee, set()).add(row.scheduling_role)
+
+		self.location_discipline: dict[str, str] = {
+			row.name: row.custom_discipline
+			for row in frappe.get_all(
+				"Shift Location", fields=["name", "custom_discipline"], limit_page_length=0
+			)
+			if row.custom_discipline
+		}
+
+	def resolve(self, employee: str, recorded: str | None, shift_location: str | None) -> str | None:
+		"""The role this pattern is worked in, or None where it cannot be said.
+
+		Unlike the optimizer's copy, an unresolvable rota is not an error here: the Rota
+		Editor's whole job is to let a planner look at one and settle it, so it draws as
+		unattributed rather than refusing to draw.
+		"""
+		from autoshift.optimizer import types
+
+		discipline = self.location_discipline.get(shift_location) if shift_location else None
+		held = self.held.get(employee, set())
+		working = self.working.get(employee, set())
+		candidates = sorted(role for role in working if self.role_discipline.get(role) == discipline)
+		outcome, role = types.resolve_assignment_role(
+			recorded,
+			held,
+			discipline,
+			candidates,
+			self.binding.get(employee, set()),
+			working,
+		)
+		return role if outcome == types.ROLE_RESOLVED else None
+
+	def discipline_of(self, role: str | None, shift_location: str | None) -> str | None:
+		"""Which discipline a pattern belongs to — see `Rota.discipline`."""
+		if role and role in self.role_discipline:
+			return self.role_discipline[role]
+		return self.location_discipline.get(shift_location) if shift_location else None
+
+
+def load_rotas(employees: set[str] | None = None, roles: "RoleContext | None" = None) -> list[Rota]:
 	"""Every Shift Schedule Assignment for `employees`, joined to its schedule.
 
 	`enabled` and `shift_status` are deliberately not filtered on — see the
 	package docstring. A schedule that never got submitted is skipped, because an
 	unsubmitted rule is one nobody has agreed to yet.
+
+	A row whose `custom_scheduling_role` is blank — every pattern imported before the
+	field existed — has one **resolved** here rather than left empty, by the same ladder
+	the optimizer applies to a Shift Assignment (:class:`RoleContext`). The record on disk
+	is not written; this is a reading, so a site that has not run the backfill patch still
+	sees its rotas attributed, and a value a planner later corrects always wins. The role
+	is then what gives the pattern its `discipline`, which is what lets the Rota Editor
+	refuse to let one discipline's view edit another's settled week.
+
+	Pass `roles` to share one `RoleContext` across several calls; omitted, one is built.
 	"""
 	filters: dict = {}
 	if employees is not None:
@@ -93,6 +226,8 @@ def load_rotas(employees: set[str] | None = None) -> list[Rota]:
 			days_by_schedule.setdefault(row.parent, set()).add(index)
 
 	collateral = collateral_roles([row.name for row in rows])
+	if roles is None:
+		roles = RoleContext({row.employee for row in rows})
 	rotas = []
 	for row in rows:
 		schedule = schedules.get(row.shift_schedule)
@@ -107,6 +242,7 @@ def load_rotas(employees: set[str] | None = None) -> list[Rota]:
 				message=f"Shift Schedule {schedule.name} has frequency {schedule.frequency!r}; skipped.",
 			)
 			continue
+		role = roles.resolve(row.employee, row.custom_scheduling_role, row.shift_location)
 		rotas.append(
 			Rota(
 				assignment=row.name,
@@ -118,8 +254,9 @@ def load_rotas(employees: set[str] | None = None) -> list[Rota]:
 				cycle_weeks=cycle,
 				anchor=_getdate(row.create_shifts_after),
 				unconfirmed=bool(row.custom_unconfirmed),
-				scheduling_role=row.custom_scheduling_role,
+				scheduling_role=role,
 				collateral_roles=tuple(collateral.get(row.name, ())),
+				discipline=roles.discipline_of(role, row.shift_location),
 			)
 		)
 	# Deterministic, because under the one-a-day rule two of an employee's own
@@ -201,28 +338,22 @@ def _covered(employees: set[str], first: datetime.date, last: datetime.date) -> 
 	return covered
 
 
-def pending(first, last) -> dict:
-	"""What a bound employee's Shift Schedule says they work but nothing records.
+def settled_rows(first: datetime.date, last: datetime.date, employees: set[str]) -> list[dict]:
+	"""What `employees`' Shift Schedules say they work over the span but nothing records.
 
-	Cheap enough to call on every wall-chart week change; reads configuration and
-	two indexed tables, builds no DataPackage and solves nothing.
+	One row per day, carrying everything a `Shift Assignment` would: the rota's shift type,
+	location, Scheduling Role and collateral duties. The optimizer reads these directly as
+	though they were on the books (`data_loader.load`), and :func:`materialize` is the one
+	place they are ever written as records.
 	"""
-	first, last = frappe.utils.getdate(first), frappe.utils.getdate(last)
-	employees = binding_employees()
-	empty = {
-		"first_day": first.isoformat(),
-		"last_day": last.isoformat(),
-		"count": 0,
-		"employees": 0,
-		"employee_names": [],
-		"rows": [],
-	}
 	if not employees:
-		return empty
-
-	rotas = load_rotas(employees)
+		return []
+	# Scoped to the horizon, like `data_loader`'s own `employee_roles`: a role somebody
+	# held two years ago is not one this run can attribute a shift to, and resolving one
+	# here would only make the loader refuse the row it just produced.
+	rotas = load_rotas(employees, RoleContext(employees, first, last))
 	if not rotas:
-		return empty
+		return []
 
 	covered = _covered(employees, first, last)
 	per_day = one_shift_per_day()
@@ -249,17 +380,36 @@ def pending(first, last) -> dict:
 				}
 			)
 	rows.sort(key=lambda r: (r["date"], r["employee"], r["shift_type"]))
+	return rows
 
-	names: dict[str, str] = {}
-	if rows:
-		names = {
-			person.name: person.employee_name
-			for person in frappe.get_all(
-				"Employee",
-				filters={"name": ["in", sorted({r["employee"] for r in rows})]},
-				fields=["name", "employee_name"],
-			)
-		}
+
+def pending(first, last) -> dict:
+	"""What a bound employee's Shift Schedule says they work but nothing records.
+
+	Cheap enough to call on every wall-chart week change; reads configuration and
+	two indexed tables, builds no DataPackage and solves nothing.
+	"""
+	first, last = frappe.utils.getdate(first), frappe.utils.getdate(last)
+	empty = {
+		"first_day": first.isoformat(),
+		"last_day": last.isoformat(),
+		"count": 0,
+		"employees": 0,
+		"employee_names": [],
+		"rows": [],
+	}
+	rows = settled_rows(first, last, binding_employees())
+	if not rows:
+		return empty
+
+	names = {
+		person.name: person.employee_name
+		for person in frappe.get_all(
+			"Employee",
+			filters={"name": ["in", sorted({r["employee"] for r in rows})]},
+			fields=["name", "employee_name"],
+		)
+	}
 	for row in rows:
 		row["employee_name"] = names.get(row["employee"]) or row["employee"]
 

@@ -68,6 +68,43 @@ TOPIC_DESCRIPTIONS: dict[str, str] = {
 }
 
 
+# ── Objective breakdown: where a rule's share of the objective was earned ─────
+#
+# An objective rule contributes its value in many small pieces — a room staffed here,
+# a preference charged there — and "this rule scored 412" is rarely the number a planner
+# wants. `path()` labels each piece with the place in the schedule it came from, so the
+# run's breakdown can be drilled into down to the individual half-day and the rooms it
+# staffs. It is reporting only and never reaches the model.
+
+# One (level name, label) step of a breakdown path, coarse first: the levels are the
+# columns of the tree a reader expands, so `Discipline -> Branch -> Day -> Shift` reads
+# down the page while `Shift -> Discipline` does not.
+PATH = tuple[tuple[str, str], ...]
+
+# Level names shared across rules. Two rules that decompose by employee must spell the
+# level the same way, or the reporting layer (which relabels employee ids with their
+# names, say) cannot recognize it.
+LEVEL_EMPLOYEE = "Employee"
+LEVEL_ROLE = "Role"
+LEVEL_DISCIPLINE = "Discipline"
+LEVEL_BRANCH = "Branch"
+LEVEL_DAY = "Day"
+LEVEL_SHIFT = "Shift"
+
+
+def path(**levels: object) -> PATH:
+	"""Build a breakdown path for :meth:`RuleContext.add_objective`.
+
+	Keyword order is the tree's nesting order, coarse level first::
+
+	    ctx.add_objective(rooms, path(Discipline=k, Branch=b, Day=d, Shift=s))
+
+	An underscore in a level name reads as a space (``Shift_type`` -> ``"Shift type"``),
+	and every label is stringified, so dates and docnames can be passed as they are.
+	"""
+	return tuple((level.replace("_", " "), str(value)) for level, value in levels.items())
+
+
 @dataclass
 class RuleContext:
 	"""Everything a rule may act on: the problem, its variables, and the input data."""
@@ -82,23 +119,43 @@ class RuleContext:
 	# count somebody's workload or freeze their week work on presence, not on `x`: which
 	# role a settled half-day is worked in is exactly what the optimizer may still decide.
 	presence: dict[tuple, pulp.LpVariable] = field(default_factory=dict)
+	# x[employee, role, shift, day, branch] -> that assignment's room tranches beyond its
+	# first, filled by `room_load_objective` for every gating assignment (an empty list for a
+	# one-room holder). An assignment's rooms taken are `x + Σ tranches`; the solver persists
+	# them so the wall chart draws a chip as tall as the rooms it takes, not the most it could.
+	# Empty when that rule is not selected: then nothing says who takes which room.
+	room_load: dict[tuple, list[pulp.LpVariable]] = field(default_factory=dict)
 
 	# objective terms accumulated by the applied rules; model_builder sums these
 	# into the problem's (maximized) objective after all rules have run
 	objective_terms: list = field(default_factory=list)
-	# the same terms keyed by the contributing rule's document name, so a solved
-	# problem can report each rule's share of the objective (see solver.run_solve)
-	objective_contributions: dict[str, list] = field(default_factory=dict)
+	# the same terms, keyed by the contributing rule's document name and then by the
+	# `path()` the rule filed each one under, so a solved problem can report not only
+	# each rule's share of the objective but where inside the schedule that share was
+	# earned (see `objective_tree` and solver.run_solve). A rule that passes no path
+	# files everything under the empty path: one undecomposed total.
+	objective_contributions: dict[str, dict[PATH, list]] = field(default_factory=dict)
 	# ruleset row weight / document name of the rule currently being applied
 	# (both set by apply_rules)
 	_current_weight: float = 1.0
 	_current_rule: str = ""
 
-	def add_objective(self, term) -> None:
-		"""Contribute a term to the maximized objective, scaled by the rule's ruleset weight."""
+	def add_objective(self, term, path: PATH = ()) -> None:
+		"""Contribute a term to the maximized objective, scaled by the rule's ruleset weight.
+
+		``path`` is where this term sits in the run's objective breakdown, built by
+		:func:`path` — ``path(Discipline=k, Branch=b, Day=d, Shift=s)``. It is reporting
+		only: the model is the same whether a rule contributes one summed term or the
+		same value split over a thousand labelled ones, and a rule that wants no
+		breakdown just leaves it out. Terms filed under the same path are added
+		together, so a rule may file two different sums (a per-presence value and a
+		per-assignment surcharge, say) under one label without inventing a level to
+		tell them apart.
+		"""
 		weighted = self._current_weight * term
 		self.objective_terms.append(weighted)
-		self.objective_contributions.setdefault(self._current_rule or "(unattributed)", []).append(weighted)
+		rule = self.objective_contributions.setdefault(self._current_rule or "(unattributed)", {})
+		rule.setdefault(path, []).append(weighted)
 
 
 @dataclass(frozen=True)
@@ -433,6 +490,20 @@ def one_branch_per_shift(ctx: RuleContext) -> None:
 		)
 
 
+def _gating_holders(data: DataPackage) -> dict[str, dict[str, list[str]]]:
+	"""Discipline -> gating role -> the employees holding it.
+
+	Only gating roles. `room_coverage` takes the *minimum* over a discipline's roles, so a
+	non-gating role counted there would hold every room in the discipline shut whenever
+	nobody is working it — which is exactly what a lead duty must not do.
+	"""
+	holders: dict[str, dict[str, list[str]]] = {}
+	for e in data.employees:
+		for r in data.gating_roles(e):
+			holders.setdefault(data.role_discipline.get(r, ""), {}).setdefault(r, []).append(e)
+	return holders
+
+
 @builtin_rule(
 	"Room coverage per discipline",
 	"The rooms staffed in a discipline for a given shift, day and branch equal the room-slots "
@@ -448,17 +519,7 @@ def one_branch_per_shift(ctx: RuleContext) -> None:
 def room_coverage(ctx: RuleContext) -> None:
 	"""Note that the branch room cap is modeled by the variable bound."""
 	data = ctx.data
-	ROLE = str
-	EMPLOYEE = str
-	DISCIPLINE = str
-	k_r_es: dict[DISCIPLINE, dict[ROLE, list[EMPLOYEE]]] = {}
-	for e in data.employees:
-		# Only gating roles. The constraint takes the *minimum* over a discipline's roles, so
-		# a non-gating role counted here would hold every room in the discipline shut whenever
-		# nobody is working it — which is exactly what a lead duty must not do.
-		for r in data.gating_roles(e):
-			k = data.role_discipline.get(r, "")
-			k_r_es.setdefault(k, {}).setdefault(r, []).append(e)
+	k_r_es = _gating_holders(data)
 
 	for k, s, d, b in ctx.active_rooms:
 		# lpSum([])=0 (no need for a condition)
@@ -573,7 +634,83 @@ def exclusive_role_purity(ctx: RuleContext) -> None:
 	topic=TOPIC_COVERAGE,
 )
 def room_utilization_objective(ctx: RuleContext) -> None:
-	ctx.add_objective(pulp.lpSum(ctx.active_rooms.values()))
+	# One term per slot rather than one sum, so the run's breakdown can be opened down to
+	# the rooms a single half-day at a single branch staffed. The model sees the same sum.
+	for (k, s, d, b), rooms in ctx.active_rooms.items():
+		ctx.add_objective(rooms, path(Discipline=k, Branch=b, Day=d, Shift=s))
+
+
+@builtin_rule(
+	"Objective: Spread room load",
+	"Where somebody can staff several rooms at once, make each further room they take on cost "
+	"more than the one before: the first room is free, their last allowed room costs the full "
+	"weight, and the rooms in between are priced on a straight line. Two people at two rooms "
+	"each then beat one at three and one at one, and three at two beat two at three with the "
+	"third sent home. That last case is why this is on by default: under <b>Bind settled "
+	"schedules</b> a settled half-day is kept only where it pays for itself, and without this "
+	"rule a colleague who can absorb the rooms makes it pay nothing. <b>Note what this "
+	"costs</b>: it also pulls in somebody who is <i>not</i> bound to relieve a colleague's "
+	"load, whenever the relief is worth more than their shift preference charge, and at the "
+	"default weight it only goes so far: four settled holders at six rooms still come back "
+	"2+2+2+0. Raise the weight to spread harder, lower it to spread less. Inert for roles "
+	"whose holders staff one room.",
+	kind=KIND_OBJECTIVE,
+	standard=True,
+	requires={room_coverage: "{r} prices the rooms {req} staffs, include {req}"},
+	# The last allowed room costs the weight. Spreading 3+3+0 to 2+2+2 saves 2*w on the two
+	# third rooms and pays w/2 for a second room plus the ~0.5-1 presence charge the
+	# preference objective bills — so w = 1 spreads a settled holder's half-day back in.
+	# Against the 3 a staffed room pays, a room nobody else can take still opens: its
+	# costliest tranche is w per gating role.
+	default_weight=1.0,
+	topic=TOPIC_COVERAGE,
+)
+def room_load_objective(ctx: RuleContext) -> None:
+	"""A convex cost on the rooms each holder staffs, linearized by tranches.
+
+	`room_coverage` credits a holder with their whole max-rooms figure the moment they are
+	assigned, so it has no notion of how many rooms they actually take: 3+3+0 and 2+2+2 are
+	the same six rooms to it, and the first is one presence cheaper. This rule splits a
+	holder's capacity into one-room tranches — the first is `x` itself, rooms 2..m are
+	continuous `t_j ∈ [0, 1]` with `Σ t_j ≤ (m - 1)·x` — and re-states coverage over the
+	tranches, which binds tighter than `room_coverage`'s `m·x` whenever the tranches are
+	not full.
+
+	No binaries and no SOS2, because the cost is convex: tranche j costs `(j-1)/(m-1)`, so a
+	cheaper tranche always fills first and nothing has to force the order. Given the
+	assignments, what remains is one coverage row of ones over bounded tranches — totally
+	unimodular — so the rooms each holder takes come back whole. Who takes the odd room in a
+	tie is arbitrary.
+	"""
+	data = ctx.data
+	k_r_es = _gating_holders(data)
+	for k, s, d, b in ctx.active_rooms:
+		for r, es in k_r_es.get(k, {}).items():
+			load = []
+			for e in es:
+				x = ctx.x[(e, r, s, d, b)]
+				load.append(x)
+				m = data.max_rpe.get((e, r), 1)
+				ctx.room_load[(e, r, s, d, b)] = []
+				if m <= 1:
+					continue
+				tranches = [
+					ctx.prob.add_variable(_vname("room_load", e, r, s, d, b, j), lowBound=0, upBound=1)
+					for j in range(2, m + 1)
+				]
+				ctx.prob += (pulp.lpSum(tranches) <= (m - 1) * x, _cname("room_load", e, r, s, d, b))
+				load.extend(tranches)
+				ctx.room_load[(e, r, s, d, b)] = tranches
+				# Filed per holder and half-day: the breakdown then reads as who was charged
+				# for a further room, when — the question this rule's weight is tuned against.
+				ctx.add_objective(
+					-pulp.lpSum((j - 1) / (m - 1) * t for j, t in enumerate(tranches, start=2)),
+					path(Employee=e, Day=d, Shift=s),
+				)
+			ctx.prob += (
+				pulp.lpSum(load) >= ctx.active_rooms[(k, s, d, b)],
+				_cname("room_load_cover", k, s, d, b, r),
+			)
 
 
 def _collateral_holders(data: DataPackage) -> dict[str, list[tuple[str, str]]]:
@@ -616,7 +753,6 @@ def collateral_room_value_objective(ctx: RuleContext) -> None:
 	data = ctx.data
 	holders = _collateral_holders(data)
 
-	values = []
 	for (k, s, d, b), rooms in ctx.active_rooms.items():
 		pairs = holders.get(k)
 		if not pairs:
@@ -627,9 +763,7 @@ def collateral_room_value_objective(ctx: RuleContext) -> None:
 			value <= pulp.lpSum(data.max_rpe.get((e, r), 1) * ctx.x[(e, r, s, d, b)] for e, r in pairs),
 			_cname("collateral_span", k, s, d, b),
 		)
-		values.append(value)
-
-	ctx.add_objective(pulp.lpSum(values))
+		ctx.add_objective(value, path(Discipline=k, Branch=b, Day=d, Shift=s))
 
 
 @builtin_rule(
@@ -663,7 +797,6 @@ def fte_soft_ceiling(ctx: RuleContext) -> None:
 	`fte_ceiling` leaves them.
 	"""
 	data = ctx.data
-	penalties = []
 	for e in data.employees:
 		target = data.target_shifts.get(e, 0)
 		if target <= 0:
@@ -676,9 +809,9 @@ def fte_soft_ceiling(ctx: RuleContext) -> None:
 		)
 		over = ctx.prob.add_variable(_vname("fte_over", e), lowBound=0)
 		ctx.prob += (over >= assigned - target, _cname("fte_over", e))
-		penalties.append(over)
-
-	ctx.add_objective(-pulp.lpSum(penalties))
+		# The penalty is one number per person by construction — there is no finer level
+		# to file it under, and that is the level the courtesy is owed at anyway.
+		ctx.add_objective(-over, path(Employee=e))
 
 
 @builtin_rule(
@@ -700,7 +833,6 @@ def role_fte_target_objective(ctx: RuleContext) -> None:
 	absolute deviation. No binaries and no big-M needed.
 	"""
 	data = ctx.data
-	penalties = []
 	for (e, r), target in data.role_target_shifts.items():
 		assigned = pulp.lpSum(
 			ctx.x[(e, r, s, d, b)] for s in data.shift_types for d in data.working_days for b in data.branches
@@ -708,9 +840,7 @@ def role_fte_target_objective(ctx: RuleContext) -> None:
 		over = ctx.prob.add_variable(_vname("role_dev_over", e, r), lowBound=0)
 		under = ctx.prob.add_variable(_vname("role_dev_under", e, r), lowBound=0)
 		ctx.prob += (assigned - target == over - under, _cname("role_dev", e, r))
-		penalties.append(over + under)
-
-	ctx.add_objective(-pulp.lpSum(penalties))
+		ctx.add_objective(-(over + under), path(Employee=e, Role=r))
 
 
 @builtin_rule(
@@ -726,12 +856,11 @@ def role_fte_target_objective(ctx: RuleContext) -> None:
 )
 def shift_preference_objective(ctx: RuleContext) -> None:
 	data = ctx.data
-	ctx.add_objective(
-		pulp.lpSum(
-			(-1 + data.shift_preferences.get(e, {}).get(s, 0.0)) * var
-			for (e, s, _d, _b), var in ctx.presence.items()
+	for (e, s, d, _b), var in ctx.presence.items():
+		ctx.add_objective(
+			(-1 + data.shift_preferences.get(e, {}).get(s, 0.0)) * var,
+			path(Employee=e, Day=d, Shift=s),
 		)
-	)
 
 
 @builtin_rule(
@@ -764,13 +893,13 @@ def suitability_preference_objective(ctx: RuleContext) -> None:
 	"""
 	data = ctx.data
 	pref = data.shift_preferences
-	ctx.add_objective(
-		pulp.lpSum((-1 + pref.get(e, {}).get(s, 0.0)) * var for (e, s, _d, _b), var in ctx.presence.items())
-		+ pulp.lpSum(
-			(-1 + pref.get(e, {}).get(s, 0.0)) * (data.suitability(e, r) - 1) * var
-			for (e, r, s, _d, _b), var in ctx.x.items()
-		)
-	)
+	# Both halves are filed under the same (employee, day, shift) label: they are one
+	# charge for working that half-day, and splitting them in the report would only
+	# expose the linearization.
+	for (e, s, d, _b), var in ctx.presence.items():
+		ctx.add_objective((-1 + pref.get(e, {}).get(s, 0.0)) * var, path(Employee=e, Day=d, Shift=s))
+	for (e, r, s, d, _b), var in ctx.x.items():
+		ctx.add_objective((1 - data.suitability(e, r)) * var, path(Employee=e, Day=d, Shift=s))
 
 
 @builtin_rule(
@@ -806,7 +935,6 @@ def collateral_capacity_value_objective(ctx: RuleContext) -> None:
 	data = ctx.data
 	holders = _collateral_holders(data)
 
-	values = []
 	for k, s, d, b in itertools.product(data.disciplines, data.shift_types, data.working_days, data.branches):
 		pairs = holders.get(k)
 		capacity = data.rooms.get((k, b), 0)
@@ -819,9 +947,7 @@ def collateral_capacity_value_objective(ctx: RuleContext) -> None:
 			value <= pulp.lpSum(data.max_rpe.get((e, r), 1) * ctx.x[(e, r, s, d, b)] for e, r in pairs),
 			_cname("collateral_capacity", k, s, d, b),
 		)
-		values.append(value)
-
-	ctx.add_objective(pulp.lpSum(values))
+		ctx.add_objective(value, path(Discipline=k, Branch=b, Day=d, Shift=s))
 
 
 @builtin_rule(
@@ -850,12 +976,10 @@ def role_value_objective(ctx: RuleContext) -> None:
 	collateral duty beside it earns both, which is the point of pricing the duty.
 	"""
 	data = ctx.data
-	# Always contributes, even when every role is at 0 — an objective rule that sometimes
-	# records no term at all would leave a hole in the run's per-rule objective breakdown,
-	# whose shares are asserted to add back up to the objective.
-	ctx.add_objective(
-		pulp.lpSum(data.value_of(r) * var for (_e, r, _s, _d, _b), var in ctx.x.items() if data.value_of(r))
-	)
+	for (e, r, s, d, _b), var in ctx.x.items():
+		value = data.value_of(r)
+		if value:
+			ctx.add_objective(value * var, path(Role=r, Employee=e, Day=d, Shift=s))
 
 
 @builtin_rule(
@@ -872,9 +996,11 @@ def role_value_objective(ctx: RuleContext) -> None:
 def weigh_assignments_objective(ctx: RuleContext) -> None:
 	data = ctx.data
 	epsilon = 2**-10
-	ctx.add_objective(
-		pulp.lpSum((0 if comb in data.forced else -epsilon) * var for comb, var in ctx.x.items())
-	)
+	for comb, var in ctx.x.items():
+		if comb in data.forced:
+			continue
+		e, _r, s, d, _b = comb
+		ctx.add_objective(-epsilon * var, path(Employee=e, Day=d, Shift=s))
 
 
 def rules_in_group(group: str) -> set[str]:
@@ -895,11 +1021,19 @@ def compile_custom_rule(rule_name: str, code: str) -> Callable[[RuleContext], No
 
 	The source runs with ``pulp`` and ``itertools`` pre-imported and must define
 	``apply(ctx)``; it may add constraints to ``ctx.prob`` and/or contribute
-	objective terms via ``ctx.add_objective(expr)``. Only developer-validated code
+	objective terms via ``ctx.add_objective(expr)`` — optionally labelled with
+	``path(...)``, also pre-imported, so the rule's share of the objective can be
+	drilled into on the run's statistics panel. Only developer-validated code
 	reaches this point (enforced by the data loader), so it executes with normal
 	Python semantics — an Optimization Rule document is as trusted as app code.
 	"""
-	namespace: dict = {"pulp": pulp, "itertools": itertools, "cname": _cname, "vname": _vname}
+	namespace: dict = {
+		"pulp": pulp,
+		"itertools": itertools,
+		"cname": _cname,
+		"vname": _vname,
+		"path": path,
+	}
 	try:
 		# source: ../autoshift/doctype/optimization_rule/optimization_rule.json
 		# developer must ensure that no unauthorized user can add/edit/validate rules
@@ -997,6 +1131,12 @@ def apply_rules(ctx: RuleContext) -> str:
 	for name, builtin_key, code, weight in specs:
 		ctx._current_weight = weight
 		ctx._current_rule = name
+		if builtin_key in BUILTIN_RULES and BUILTIN_RULES[builtin_key].kind == KIND_OBJECTIVE:
+			# Every objective rule that ran gets a (possibly empty) entry, so a rule that
+			# happens to contribute nothing this run — nobody staffs a second room, no role
+			# is priced — is reported as the 0 it scored rather than vanishing from the
+			# breakdown. Rules used to contribute a constant-0 term by hand to achieve this.
+			ctx.objective_contributions.setdefault(name, {})
 		try:
 			if builtin_key:
 				rule = BUILTIN_RULES.get(builtin_key)
@@ -1016,3 +1156,133 @@ def apply_rules(ctx: RuleContext) -> str:
 			ctx._current_weight = 1.0
 			ctx._current_rule = ""
 	return logs.getvalue()
+
+
+# ── Reporting the objective ───────────────────────────────────────────────────
+
+# Schema version of the JSON a run persists in `objective_breakdown`. 1 was the flat
+# `{rule: value}` map this tree replaced; `optimizer_run.get_run_statistics` still reads
+# those, since a solved run is never re-solved.
+BREAKDOWN_VERSION = 2
+
+# A leaf whose solved value is smaller than this is dropped from the breakdown: a rule
+# files a term per candidate slot, and the ones the solver left at 0 are the majority.
+OBJECTIVE_EPSILON = 1e-9
+# Children shown under one node before the tail is folded into a single "… and N more"
+# row. Breadth past this is a list, not a breakdown.
+MAX_CHILDREN = 40
+# Nodes one rule's subtree may hold. A rule decomposed to (employee, day, shift) over a
+# four-week horizon is thousands of leaves, which is a payload nobody reads; when a rule
+# overruns, its *deepest* level is dropped and the leaves re-folded, repeatedly, until it
+# fits. Depth goes first because the coarse levels are the ones that answer "where did
+# this rule's score come from" — and the dropped levels are named on the node, so the
+# reader is told what they are not seeing.
+MAX_NODES_PER_RULE = 2000
+
+
+def objective_shares(ctx: RuleContext) -> dict[str, float]:
+	"""Each rule's share of the solved objective, keyed by rule document name.
+
+	Only meaningful after ``prob.solve()`` — an unsolved variable evaluates to ``None``,
+	which is reported here as 0.0.
+	"""
+	return {
+		rule: sum(pulp.value(pulp.lpSum(terms)) or 0.0 for terms in by_path.values())
+		for rule, by_path in ctx.objective_contributions.items()
+	}
+
+
+def objective_tree(
+	ctx: RuleContext,
+	*,
+	max_children: int = MAX_CHILDREN,
+	max_nodes: int = MAX_NODES_PER_RULE,
+) -> list[dict]:
+	"""The solved objective as a drill-down tree, one subtree per contributing rule.
+
+	Each rule node is ``{"rule", "value", "levels", "trimmed", "children"}`` and each
+	inner node ``{"label", "value", "children"}``; ``children`` is absent on a leaf, and a
+	node carries no level of its own — a node's level is ``levels[depth - 1]`` of the rule
+	it sits under, and repeating it on every one of a few thousand nodes only inflates
+	what the run stores. Siblings are ordered by the size of their contribution, whatever
+	its sign — the question a breakdown answers is "what moved the objective", and a cost
+	that moved it by -40 outranks a reward that moved it by 2. ``levels`` names the path
+	levels the subtree actually has and ``trimmed`` the deeper ones dropped to fit
+	``max_nodes``.
+
+	Rule values are the *unpruned* totals, so they still add up to the solved objective
+	even where a subtree drops near-zero leaves.
+	"""
+	nodes = [
+		_rule_node(rule, by_path, max_children, max_nodes)
+		for rule, by_path in ctx.objective_contributions.items()
+	]
+	nodes.sort(key=lambda n: (-abs(n["value"]), n["rule"]))
+	return nodes
+
+
+def _rule_node(rule: str, by_path: dict[PATH, list], max_children: int, max_nodes: int) -> dict:
+	leaves = {p: (pulp.value(pulp.lpSum(terms)) or 0.0) for p, terms in by_path.items()}
+	node: dict = {"rule": rule, "value": round(sum(leaves.values()), 4)}
+
+	kept = {p: v for p, v in leaves.items() if abs(v) > OBJECTIVE_EPSILON}
+	# level names by depth, taken from the paths themselves: a rule files one shape of
+	# path, so the first one seen at a given depth names that level for all of them.
+	levels: list[str] = []
+	for p in kept:
+		for depth, (level, _label) in enumerate(p):
+			if depth == len(levels):
+				levels.append(level)
+	depth = len(levels)
+	while depth and _prefix_count(kept, depth) > max_nodes:
+		depth -= 1
+	if depth < len(levels):
+		node["trimmed"] = levels[depth:]
+		folded: dict[PATH, float] = {}
+		for p, v in kept.items():
+			folded[p[:depth]] = folded.get(p[:depth], 0.0) + v
+		kept = folded
+	node["levels"] = levels[:depth]
+
+	children = _breakdown_children(kept, max_children)
+	if children:
+		node["children"] = children
+	return node
+
+
+def _prefix_count(leaves: dict[PATH, float], depth: int) -> int:
+	"""How many nodes a tree over these leaves holds if cut off at ``depth``."""
+	return len({p[:i] for p in leaves for i in range(1, min(len(p), depth) + 1)})
+
+
+def _breakdown_children(leaves: dict[PATH, float], max_children: int) -> list[dict]:
+	groups: dict[tuple[str, str], dict[PATH, float]] = {}
+	own = 0.0
+	for p, value in leaves.items():
+		if not p:
+			own += value  # a term this rule filed shallower than its siblings
+			continue
+		groups.setdefault(p[0], {})[p[1:]] = value
+
+	children = []
+	for (_level, label), sub in groups.items():
+		child: dict = {"label": label, "value": round(sum(sub.values()), 4)}
+		grandchildren = _breakdown_children(sub, max_children)
+		if grandchildren:
+			child["children"] = grandchildren
+		children.append(child)
+	children.sort(key=lambda c: (-abs(c["value"]), c["label"]))
+
+	if len(children) > max_children:
+		rest = children[max_children:]
+		children = children[:max_children]
+		children.append(
+			{
+				"label": f"… and {len(rest)} more",
+				"value": round(sum(c["value"] for c in rest), 4),
+				"rest": len(rest),
+			}
+		)
+	if children and abs(own) > OBJECTIVE_EPSILON:
+		children.append({"label": "(unbroken)", "value": round(own, 4)})
+	return children

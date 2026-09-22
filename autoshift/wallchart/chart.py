@@ -68,11 +68,15 @@ class Slot:
 	label: str
 	branch: str | None
 	scheduling_role: str | None
-	#: Rooms this person covers in this half-day — `Scheduling Role.max_rooms`, or
-	#: the holder's own override. The chip is drawn that many rows tall, because a
-	#: practitioner covering two rooms occupies two of the band's lines and the
-	#: paper sheet has always drawn them that way.
+	#: Rooms this person covers in this half-day. The chip is drawn that many rows
+	#: tall, because a practitioner covering two rooms occupies two of the band's
+	#: lines and the paper sheet has always drawn them that way. From a run whose
+	#: ruleset measured it (`room_load_objective`), the rooms actually taken;
+	#: otherwise `Scheduling Role.max_rooms`, or the holder's own override.
 	rooms: int = 1
+	#: The holder's max-rooms figure, where `rooms` is the measured load and may be
+	#: less; 0 where `rooms` already is that figure. Only ever read for the tooltip.
+	max_rooms: int = 0
 	kind: str = KIND_EXISTING
 	#: The run pinned this rather than choosing it (warm start / role binding).
 	forced: bool = False
@@ -87,6 +91,10 @@ class Slot:
 	#: exist, or the employee has no value for it. Drives row order within a
 	#: lane's day in place of the alphabetical default; see `_order_lane`.
 	sort_value: object | None = None
+	#: Not a record: a bound employee's rota day that no Shift Assignment covers yet,
+	#: standing in for the one it would materialise as. The optimizer reads it as on
+	#: the books, so it compares like one; the chart only draws it differently.
+	virtual: bool = False
 
 	@property
 	def match_key(self) -> tuple[str, datetime.date, str]:
@@ -255,14 +263,18 @@ def merge(existing: list[Slot], proposed: list[Slot]) -> list[Slot]:
 		if match is None:
 			merged.append(_recast(slot, KIND_ADDED))
 			continue
-		merged.append(_recast(slot, KIND_KEPT, changed=_describe_move(slot, match)))
+		merged.append(_recast(slot, KIND_KEPT, changed=_describe_move(slot, match), virtual=match.virtual))
 	# Whatever is left was on the books and did not survive the solve.
 	merged.extend(_recast(slot, KIND_DROPPED) for slot in by_key.values())
 	return merged
 
 
-def _recast(slot: Slot, kind: str, changed: str | None = None) -> Slot:
-	"""`slot` with a comparison verdict attached. Frozen dataclass, so a copy."""
+def _recast(slot: Slot, kind: str, changed: str | None = None, virtual: bool | None = None) -> Slot:
+	"""`slot` with a comparison verdict attached. Frozen dataclass, so a copy.
+
+	`virtual` defaults to the slot's own; a `kept` slot takes its book side's, since
+	whether the half-day is recorded yet is a fact about the books, not the run.
+	"""
 	return Slot(
 		date=slot.date,
 		shift_type=slot.shift_type,
@@ -272,11 +284,13 @@ def _recast(slot: Slot, kind: str, changed: str | None = None) -> Slot:
 		branch=slot.branch,
 		scheduling_role=slot.scheduling_role,
 		rooms=slot.rooms,
+		max_rooms=slot.max_rooms,
 		kind=kind,
 		forced=slot.forced,
 		role_certain=slot.role_certain,
 		changed=changed,
 		sort_value=slot.sort_value,
+		virtual=slot.virtual if virtual is None else virtual,
 	)
 
 
@@ -410,7 +424,9 @@ def _fill(
 	lane reaches on a day are therefore its slots' rooms added up, which is the
 	same sum `room_coverage` puts on the left of its inequality — so the coverage
 	`_coverage` reads back out of this is the chart's own arithmetic, not a second
-	opinion about it.
+	opinion about it. Where the run measured each holder's load
+	(`room_load_objective`) that sum is the rooms actually open, not merely an
+	upper bound on them.
 	"""
 	used = 0
 	#: (day index, lane key) -> rows this lane covers that day

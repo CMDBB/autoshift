@@ -13,6 +13,7 @@ import frappe
 import numpy as np
 from frappe.utils import getdate as _getdate
 
+from ..rota import materialize
 from . import types
 from .rules import BUILTIN_RULES
 from .types import MODE_COLLATERAL, MODE_FLEXIBLE, DataPackage, resolve_assignment_role
@@ -535,6 +536,33 @@ def load(run_doc) -> DataPackage:
 	working_day_set = set(working_days)
 	existing = [sa for sa in existing if getdate(sa.start_date) in working_day_set]
 
+	# A bound employee's settled week is read straight off their Shift Schedule, never
+	# written to the books first: submitted Shift Assignments are real documents with
+	# notifications attached, and creating them ahead of every solve would churn exactly
+	# the records a planner has not approved yet. Each day the rota puts somebody on that
+	# the books do not already cover stands in for the Shift Assignment it would become
+	# (`rota.materialize.settled_rows`), so a horizon solves — and hashes — the same whether
+	# or not anybody has created those records.
+	settled = (
+		materialize.settled_rows(working_days[0], working_days[-1], binding_employees & set(employees))
+		if working_days
+		else []
+	)
+	existing.extend(
+		frappe._dict(
+			name=None,
+			rota=row["assignment"],
+			employee=row["employee"],
+			shift_type=row["shift_type"],
+			start_date=getdate(row["date"]),
+			shift_location=row["shift_location"],
+			custom_scheduling_role=row["scheduling_role"],
+			collateral_roles=row["collateral_roles"],
+		)
+		for row in settled
+		if getdate(row["date"]) in working_day_set
+	)
+
 	# Source of truth for branch and discipline: Shift Assignment -> Shift Location ->
 	# Shift Location.custom_branch / .custom_discipline.
 	locations = {
@@ -547,7 +575,8 @@ def load(run_doc) -> DataPackage:
 	}
 	# A Shift Assignment records its Scheduling Role in `custom_scheduling_role`. Where it
 	# does not — a record entered by hand, or one older than the field and missed by the
-	# backfill patch — the role is recovered from its location's discipline: the one role the
+	# backfill patch — the role is recovered: the single non-collateral role they hold at all,
+	# else from its location's discipline, the one role the
 	# employee holds there, or, holding several, the one of those that is binding for them
 	# (a settled half-day is presence, not a choice of role — see
 	# `types.resolve_assignment_role`). Guessing between two roles neither of which settles the
@@ -558,16 +587,23 @@ def load(run_doc) -> DataPackage:
 	# (Same rule as `patches.backfill_shift_assignment_roles`, which fills the field in from
 	# here.)
 	roles_by_employee_discipline: dict[tuple[str, str], list[str]] = {}
+	# The same roles, not split by discipline: somebody holding exactly one of them worked
+	# it, whatever discipline their Shift Location is filed under (`resolve_assignment_role`
+	# rung 2). Collateral duties are excluded from both, for the same reason.
+	working_roles_by_employee: dict[str, list[str]] = {}
 	for name, held in employee_roles.items():
 		for role in held:
 			mode = role_mode_overrides.get((name, role)) or role_mode.get(role, MODE_FLEXIBLE)
 			if mode == MODE_COLLATERAL:
 				continue
 			roles_by_employee_discipline.setdefault((name, role_discipline[role]), []).append(role)
+			working_roles_by_employee.setdefault(name, []).append(role)
 
 	# Collateral duties ride on their host's record rather than having one of their own:
 	# HRMS refuses two Shift Assignments whose times overlap. A duty worked *alone* is an
-	# ordinary record whose own Scheduling Role is the collateral one.
+	# ordinary record whose own Scheduling Role is the collateral one. A rota day already
+	# carries its rota's duties.
+	recorded = [sa.name for sa in existing if sa.name]
 	collateral_by_assignment: dict[str, list[str]] = {}
 	for row in (
 		frappe.get_all(
@@ -575,14 +611,17 @@ def load(run_doc) -> DataPackage:
 			filters={
 				"parenttype": "Shift Assignment",
 				"parentfield": "custom_collateral_roles",
-				"parent": ["in", [sa.name for sa in existing]],
+				"parent": ["in", recorded],
 			},
 			fields=["parent", "scheduling_role"],
 		)
-		if existing
+		if recorded
 		else []
 	):
 		collateral_by_assignment.setdefault(row.parent, []).append(row.scheduling_role)
+	for sa in existing:
+		if sa.name:
+			sa.collateral_roles = collateral_by_assignment.get(sa.name, [])
 
 	def _unresolvable(sa, reason: str) -> None:
 		"""An existing assignment this run cannot place.
@@ -594,7 +633,12 @@ def load(run_doc) -> DataPackage:
 		single mis-filed location used to be able to abort the whole run. Recorded, and
 		reported by the run-statistics panel.
 		"""
-		message = frappe._("Shift Assignment {0}: {1}").format(sa.name, reason)
+		if sa.name:
+			message = frappe._("Shift Assignment {0}: {1}").format(sa.name, reason)
+		else:
+			message = frappe._("Shift Schedule Assignment {0} on {1}: {2}").format(
+				sa.rota, frappe.utils.formatdate(sa.start_date), reason
+			)
 		if sa.employee in binding_employees:
 			frappe.throw(message)
 		unresolved_assignments.append((sa.employee, getdate(sa.start_date), reason))
@@ -613,6 +657,7 @@ def load(run_doc) -> DataPackage:
 			discipline,
 			candidates,
 			binding_roles_by_employee.get(sa.employee, ()),
+			working_roles_by_employee.get(sa.employee, ()),
 		)
 		match outcome:
 			case types.ROLE_RESOLVED:
@@ -655,7 +700,7 @@ def load(run_doc) -> DataPackage:
 			continue
 		day = getdate(sa.start_date)
 		combs = [(sa.employee, role, sa.shift_type, day, str(branch))]
-		for collateral in collateral_by_assignment.get(sa.name, ()):
+		for collateral in sa.collateral_roles:
 			if collateral in employee_roles.get(sa.employee, ()):
 				combs.append((sa.employee, collateral, sa.shift_type, day, str(branch)))
 			else:

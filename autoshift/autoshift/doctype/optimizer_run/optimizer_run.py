@@ -6,7 +6,7 @@ import json
 import frappe.utils.caching
 from frappe.model.document import Document
 
-from autoshift.optimizer import data_loader, types
+from autoshift.optimizer import data_loader, rules, types
 from autoshift.utils import background_workers_alive as _background_workers_alive
 
 # Time given to the synchronous attempt before falling back to a background job.
@@ -127,20 +127,6 @@ class OptimizerRun(Document):
 		return days[0], days[-1]
 
 	@frappe.whitelist()
-	def check_pending_bound_shifts(self):
-		"""Settled schedules this horizon needs that no Shift Assignment records yet.
-
-		HRMS cannot generate them for a rota longer than a week (see ``autoshift.rota``),
-		so the run has to, or ``bind_role_assignments`` would freeze those people to an
-		empty week. Cheap config query — safe to call before solving.
-		"""
-		from autoshift.rota import materialize as rota
-
-		first, last = self.planning_window()
-		found = rota.pending(first, last)
-		return {key: value for key, value in found.items() if key != "rows"}
-
-	@frappe.whitelist()
 	def check_unconfirmed_rotas(self):
 		"""Imported, unconfirmed rotas this horizon binds people to, per discipline.
 
@@ -152,18 +138,6 @@ class OptimizerRun(Document):
 
 		first, last = self.planning_window()
 		return editor.unconfirmed_rotas(first, last)
-
-	@frappe.whitelist()
-	def materialize_bound_shifts(self):
-		"""Create the Shift Assignments :meth:`check_pending_bound_shifts` reports missing."""
-		from autoshift.rota import materialize as rota
-
-		first, last = self.planning_window()
-		result = rota.materialize(first, last)
-		# The package is built from those very records, so a cached one is now stale.
-		if result["created"] and frappe.cache:
-			frappe.cache.delete_value(datapackage_cache_key(self.name))
-		return result
 
 	@frappe.whitelist()
 	def solve(self):
@@ -432,7 +406,7 @@ class OptimizerRun(Document):
 		      "binding_conflicts": [{employee, scheduling_role, shift_type, date, branch}],
 		      "unresolved_assignments": [{employee, date, reason}],
 		      "warnings": [{severity, message}],
-		      "objective_breakdown": {rule_name: value} | None,
+		      "objective_breakdown": [{rule, value, levels, trimmed, children}] | None,
 		    }
 
 		Coverage comes from the persisted ``coverage_table`` (the solver's actual
@@ -611,12 +585,7 @@ class OptimizerRun(Document):
 				}
 			)
 
-		breakdown = None
-		if self.get("objective_breakdown"):
-			try:
-				breakdown = json.loads(self.get("objective_breakdown"))
-			except ValueError:
-				breakdown = None
+		breakdown = _objective_breakdown(self.get("objective_breakdown"), employee_names)
 
 		return {
 			"totals": {
@@ -668,6 +637,49 @@ class OptimizerRun(Document):
 		from autoshift.optimizer.committer import commit
 
 		commit(str(self.name))
+
+
+def _objective_breakdown(raw: str | None, employee_names: dict[str, str]) -> list[dict] | None:
+	"""The run's persisted objective breakdown as the drill-down tree the panel renders.
+
+	Runs solved before the tree existed carry a flat ``{rule: value}`` map (breakdown
+	version 1); they read back as rule nodes with no children, since a solved run is
+	immutable and there is nothing left to re-derive the detail from.
+
+	Employee levels are relabelled here rather than in the engine: `optimizer/rules.py`
+	is Frappe-free and only ever sees docnames.
+	"""
+	if not raw:
+		return None
+	try:
+		payload = json.loads(raw)
+	except ValueError:
+		return None
+	if isinstance(payload, dict) and isinstance(payload.get("rules"), list):
+		nodes = payload["rules"]
+	elif isinstance(payload, dict):  # version 1: the flat per-rule map
+		nodes = [
+			{"rule": rule, "value": value}
+			for rule, value in sorted(payload.items(), key=lambda kv: -abs(kv[1] or 0))
+		]
+	else:
+		return None
+	for node in nodes:
+		_relabel(node.get("children") or [], node.get("levels") or [], {rules.LEVEL_EMPLOYEE: employee_names})
+	return nodes
+
+
+def _relabel(nodes: list[dict], levels: list[str], by_level: dict[str, dict[str, str]]) -> None:
+	"""Swap docname labels for human names, in place, wherever a level has a map.
+
+	A node carries no level of its own — the rule it sits under names one per depth —
+	so this walks the levels alongside the tree.
+	"""
+	labels = by_level.get(levels[0]) if levels else None
+	for node in nodes:
+		if labels:
+			node["label"] = labels.get(node["label"], node["label"])
+		_relabel(node.get("children") or [], levels[1:], by_level)
 
 
 def _derive_coverage_matrix(data, slots) -> list[dict]:

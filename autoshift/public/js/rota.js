@@ -1,9 +1,9 @@
 // Copyright (c) 2026, CMDBB and contributors
 // For license information, please see license.txt
 
-// Creating the Shift Assignments a settled week implies, from the browser's side.
-// Shared by the Optimizer Run form, Optimizer Studio and the wall chart, all three of
-// which have to say the same thing about the same records.
+// Settled weeks, from the browser's side: the pre-solve warning about unconfirmed rotas
+// (Optimizer Run form, Optimizer Studio) and the wall chart's explicit "Create them".
+// A solve never creates records — it reads the rotas directly.
 //
 // The server half is `autoshift/rota/` — see its docstring for why HRMS is not doing
 // this itself, and why everything here is a workaround with a shelf life.
@@ -13,21 +13,6 @@
 // reached through the namespace below.
 
 frappe.provide("autoshift.rota");
-
-/**
- * The paragraph a pre-solve confirm carries when a settled week has no records yet.
- *
- * Phrased as a statement rather than a question: creating them is not optional, because
- * binding freezes those people against exactly these records and a horizon without them
- * would freeze them to an empty week.
- */
-autoshift.rota.pending_note = function (pending) {
-	if (!pending || !pending.count) return "";
-	return `<p>${__(
-		"{0} settled shift(s) for {1} practitioner(s) fall in this horizon per their Shift Schedule but have no Shift Assignment yet. They will be created before solving.",
-		[pending.count, pending.employees]
-	)}</p>`;
-};
 
 /**
  * The paragraph a pre-solve confirm carries when the horizon binds people to rotas the
@@ -78,8 +63,7 @@ autoshift.rota.report_failures = function (made) {
 /**
  * Run `call` (a thunk returning frappe's `{message}` promise) and report any refusals.
  *
- * A thunk rather than a method name because the three surfaces address this differently:
- * a document method, a studio helper, and a span-addressed whitelisted call. Named
+ * A thunk rather than a method name so the caller owns how it addresses the server. Named
  * `create` rather than `materialize` so it does not read like the server module of that
  * name, which is what those thunks actually call.
  */

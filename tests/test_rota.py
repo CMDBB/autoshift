@@ -16,7 +16,15 @@ import datetime
 
 import pytest
 
-from autoshift.rota.cycle import FREQUENCY_WEEKS, WEEKDAY_INDEX, Rota, monday_of, occurrences
+from autoshift.rota.cycle import (
+	FREQUENCY_WEEKS,
+	WEEKDAY_INDEX,
+	Rota,
+	anchor_cutoff,
+	backdated_anchor,
+	monday_of,
+	occurrences,
+)
 
 MON, TUE, WED, THU, FRI, SAT, SUN = range(7)
 
@@ -164,3 +172,35 @@ def test_frequency_and_weekday_tables_match_hrms():
 def test_is_rota_marks_what_hrms_cannot_run():
 	assert not rota([MON]).is_rota
 	assert rota([MON], cycle=2).is_rota
+
+
+# ── backdating an anchor ─────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("cycle", [1, 2, 3, 4])
+def test_backdating_keeps_the_phase(cycle):
+	"""Moved back by whole cycles, a rota fires on exactly the same days after its
+	old boundary — it only gains the weeks before it."""
+	late = ANCHOR + datetime.timedelta(weeks=5)
+	cutoff = ANCHOR - datetime.timedelta(days=3)
+	early = backdated_anchor(late, cycle, cutoff)
+	assert early <= cutoff
+	assert (late - early).days % (7 * cycle) == 0
+	assert early > cutoff - datetime.timedelta(weeks=cycle), "moved back no further than needed"
+
+	first, last = ANCHOR - datetime.timedelta(weeks=8), ANCHOR + datetime.timedelta(weeks=16)
+	before = occurrences(rota([TUE, THU], cycle=cycle, anchor=late), first, last)
+	after = occurrences(rota([TUE, THU], cycle=cycle, anchor=early), first, last)
+	assert [day for day in after if day > late] == before
+	assert min(after) < min(before)
+
+
+def test_an_anchor_already_early_enough_is_left_alone():
+	assert backdated_anchor(ANCHOR, 4, ANCHOR) == ANCHOR
+	assert backdated_anchor(ANCHOR, 4, ANCHOR + datetime.timedelta(days=30)) == ANCHOR
+	assert backdated_anchor(None, 4, ANCHOR) is None
+
+
+def test_the_cutoff_leaves_four_weeks_before_today():
+	today = WEEK_3 + datetime.timedelta(days=2)
+	assert anchor_cutoff(today) == today - datetime.timedelta(weeks=4)

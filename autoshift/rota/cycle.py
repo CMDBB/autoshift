@@ -15,9 +15,12 @@ The rule, stated once:
 
 `create_shifts_after` is both the **handover boundary** — everything up to and
 including it belongs to whoever wrote the records already on the books, and
-nothing is generated on or before it — and the **phase anchor** for a rota,
-which is why nothing in this app ever writes to it. HRMS's generator moves it
-forward as it goes, and that is precisely the bug.
+nothing is generated on or before it — and the **phase anchor** for a rota.
+HRMS's generator moves it forward as it goes, by less than a cycle, and that is
+precisely the bug. This app only ever moves it *back*, and only by whole cycles
+(:func:`backdated_anchor`), which leaves the phase untouched: a rota whose
+boundary sits in the future is otherwise simply absent from the weeks before it,
+which the optimizer and the wall chart both read.
 
 One deliberate divergence: weeks here are ISO weeks (Monday-based), where
 `create_shifts` chops arbitrary seven-day blocks off whatever date it was handed.
@@ -92,6 +95,14 @@ class Rota:
 	scheduling_role: str | None = None
 	#: `custom_collateral_roles`: duties worked on top of every shift it generates.
 	collateral_roles: tuple[str, ...] = ()
+	#: Which discipline this pattern belongs to: `Scheduling Role.discipline` of
+	#: :attr:`scheduling_role`, falling back to the Shift Location's own
+	#: `custom_discipline` where no role could be resolved. Carried, never interpreted
+	#: here — it exists so the Rota Editor can tell one discipline's settled week from
+	#: another's without re-reading the DB, and refuse to let a view of one edit the
+	#: other. `None` means genuinely unattributed, which is the only case a view is
+	#: allowed to claim for itself.
+	discipline: str | None = None
 
 	@property
 	def is_rota(self) -> bool:
@@ -137,3 +148,30 @@ def occurrences(rota: Rota, first: datetime.date, last: datetime.date) -> list[d
 				days.append(day)
 		day += datetime.timedelta(days=1)
 	return days
+
+
+#: How far before today a rota's anchor must lie, so a pattern always covers the
+#: weeks immediately around now — the ones the wall chart and a solve look at first.
+ANCHOR_LEAD_WEEKS = 4
+
+
+def backdated_anchor(
+	anchor: datetime.date | None, cycle_weeks: int, not_after: datetime.date
+) -> datetime.date | None:
+	"""`anchor` moved back by whole cycles until it lies on or before `not_after`.
+
+	A whole number of cycles keeps the phase exactly: the Monday `first_covered_week`
+	counts from moves by a multiple of `cycle_weeks` weeks, so every later week lands
+	on the same phase it did. Only the handover boundary moves, and only earlier.
+	An anchor already early enough, or none at all, is returned unchanged.
+	"""
+	if anchor is None or anchor <= not_after:
+		return anchor
+	step = max(int(cycle_weeks or 1), 1) * 7
+	cycles = -(-(anchor - not_after).days // step)  # ceiling division
+	return anchor - datetime.timedelta(days=cycles * step)
+
+
+def anchor_cutoff(today: datetime.date) -> datetime.date:
+	"""The latest anchor :func:`backdated_anchor` lets stand, as of `today`."""
+	return today - datetime.timedelta(weeks=ANCHOR_LEAD_WEEKS)

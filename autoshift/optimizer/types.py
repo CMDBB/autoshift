@@ -67,9 +67,12 @@ class DataPackage:
 	# leave blocklist: (employee, date) pairs that must be unassigned
 	leave_blocked: set[tuple[str, datetime.date]]
 
-	# forced assignments: (employee, role, shift_type, date, branch) fixed to 1. A Shift
-	# Assignment records no role, so the loader resolves one from its Shift Location's
-	# discipline — see data_loader._resolve_forced_role.
+	# the books: (employee, role, shift_type, date, branch) combinations already settled —
+	# every submitted Shift Assignment in the horizon, plus each day a bound employee's
+	# Shift Schedule puts them on that no record covers yet (read straight off the rota,
+	# never materialised first; see `rota.materialize.settled_rows`). Which rules pin,
+	# weigh or ignore them is a ruleset choice. The role is the record's own, else
+	# resolved by `resolve_assignment_role`.
 	forced: set[tuple[str, str, str, datetime.date, str]]
 
 	# per-employee shift preference weights: employee -> {shift_type -> weight}
@@ -358,26 +361,49 @@ def resolve_assignment_role(
 	discipline: str | None,
 	candidates: Iterable[str],
 	binding: Iterable[str] = (),
+	working: Iterable[str] | None = None,
 ) -> tuple[str, str | None]:
 	"""
-	Which Scheduling Role an existing Shift Assignment was worked in.
+	Which Scheduling Role an existing Shift Assignment — or a rota — was worked in.
 
-	The record's own `custom_scheduling_role` if it has one; failing that, the single role the
-	employee holds in the Shift Location's discipline. Several candidates are still resolved
-	when exactly one of them is `binding` — a settled week is presence, not a choice of role
-	(see `rules.soft_bind_role_assignments`), so the role a bound half-day was worked in is the
-	one the books already settle for them, not a guess. **Never a choice between two otherwise.**
-	The loader used to pick by sort order, which was tolerable while a person had one role in a
-	discipline and is wrong now: a rota settles when somebody is in, and which of their roles
-	the half-day went to is the part that cannot be read off where they stood.
+	The ladder, in order:
+
+	1. the record's own `custom_scheduling_role`, if it has one;
+	2. the single non-collateral role the employee holds *anywhere* (`working`), if that
+	   is the only one there is — somebody with one role has no second answer, and the
+	   Shift Location need not name a discipline for that to be true;
+	3. the single role they hold in the Shift Location's discipline (`candidates`);
+	4. holding several there, the one of those that is `binding` for them, if exactly one
+	   is — a settled week is presence, not a choice of role (see
+	   `rules.soft_bind_role_assignments`), so the role a bound half-day was worked in is
+	   the one the books already settle for them, not a guess.
+
+	**Never a choice between two otherwise.** The loader used to pick by sort order, which
+	was tolerable while a person had one role in a discipline and is wrong now: a rota
+	settles when somebody is in, and which of their roles the half-day went to is the part
+	that cannot be read off where they stood.
+
+	`working` is opt-in (`None` skips rung 2 entirely) because it is the one rung that can
+	out-vote the location: a person holding exactly one role, in discipline D, whose record
+	sits at a location filed under discipline E resolves to their role in D rather than
+	failing as `ROLE_NONE_IN_DISCIPLINE`. That is the intended reading — a single-role
+	employee worked their one role, and a location filed under the wrong discipline is a
+	data-entry slip, not a second role — but callers that would rather hear about the slip
+	can leave it out.
 
 	Split out of `data_loader` because it is the one piece of that module worth testing on
-	its own. Returns `(outcome, role)`, with the role set only on `ROLE_RESOLVED`; the caller
-	turns the other outcomes into messages, since only it knows the record they are about.
+	its own, and shared with `rota.materialize.load_rotas`, which asks the same question of
+	a `Shift Schedule Assignment`. Returns `(outcome, role)`, with the role set only on
+	`ROLE_RESOLVED`; the caller turns the other outcomes into messages, since only it knows
+	the record they are about.
 	"""
 	candidates = list(candidates)
 	if recorded:
 		return (ROLE_RESOLVED, recorded) if recorded in set(held) else (ROLE_NOT_HELD, None)
+	if working is not None:
+		only = set(working)
+		if len(only) == 1:
+			return (ROLE_RESOLVED, only.pop())
 	if not discipline:
 		return (ROLE_NO_DISCIPLINE, None)
 	if not candidates:

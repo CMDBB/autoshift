@@ -25,10 +25,16 @@ from autoshift.optimizer.rules import (
 	KIND_CONSTRAINT,
 	KIND_MIXED,
 	KIND_OBJECTIVE,
+	LEVEL_DAY,
+	LEVEL_DISCIPLINE,
+	LEVEL_EMPLOYEE,
 	STANDARD_RULES,
 	BuiltinRule,
 	leave_blocklist,
+	objective_shares,
+	objective_tree,
 	order_specs,
+	path,
 )
 from autoshift.optimizer.types import (
 	MODE_COLLATERAL,
@@ -735,6 +741,97 @@ def test_soft_binding_is_inert_without_binding_pairs():
 	assert assigned(with_rule) == assigned(without)
 
 
+def _three_bound_holders(*extra_rules: str) -> DataPackage:
+	"""Three bound holders of a 3-room role, all booked Monday AM, at a 6-room branch.
+
+	Two shift types, so a presence costs something under the preference objective — with
+	one, every presence is free and nobody is ever worth dropping.
+	"""
+	staff = ["E1", "E2", "E3"]
+	return pkg(
+		employees=staff,
+		shift_types=["AM", "PM"],
+		employee_roles={e: ("R1",) for e in staff},
+		max_rpe={(e, "R1"): 3 for e in staff},
+		target_shifts={e: 1 for e in staff},
+		rooms={("D1", "B1"): 6},
+		forced={(e, "R1", "AM", MON, "B1") for e in staff},
+		binding_pairs=frozenset((e, "R1") for e in staff),
+		rules=builtin_specs(
+			"warm_start",
+			"soft_bind_role_assignments",
+			"one_shift_per_day",
+			"room_coverage",
+			"suitability_preference_objective",
+			*extra_rules,
+		)
+		+ builtin_specs("room_utilization_objective", weight=3.0),
+	)
+
+
+def _rooms_taken(ctx, employee: str) -> float:
+	"""The Monday AM rooms an employee takes: their assignment plus its filled load tranches,
+	read exactly as `solver.run_solve` persists them."""
+	comb = (employee, "R1", "AM", MON, "B1")
+	return (pulp.value(ctx.x[comb]) or 0) + sum(pulp.value(t) or 0 for t in ctx.room_load[comb])
+
+
+def test_without_load_spreading_soft_binding_sends_a_settled_holder_home():
+	"""The bug the load rule exists for: two holders absorb all six rooms, so the third's
+	settled half-day pays nothing and soft binding drops it (3+3+0)."""
+	prob, x, ar = solve(_three_bound_holders())
+	assert status(prob) == "Optimal"
+	assert pulp.value(ar[("D1", "AM", MON, "B1")]) == 6
+	assert assigned(x, shift="AM") == 2
+
+
+def test_room_load_spreads_rooms_and_keeps_every_settled_holder():
+	"""With the convex load cost the same six rooms come back 2+2+2, whole numbers each."""
+	prob, x, ar, _, ctx = build(_three_bound_holders("room_load_objective"))
+	prob.solve(pulp.COIN_CMD(msg=False))
+	assert status(prob) == "Optimal"
+	assert pulp.value(ar[("D1", "AM", MON, "B1")]) == 6
+	assert assigned(x, shift="AM") == 3
+	assert [_rooms_taken(ctx, e) for e in ("E1", "E2", "E3")] == [2, 2, 2]
+
+
+def test_room_load_records_one_room_holders_with_no_tranches():
+	"""A one-room holder gets no load variables; the solver still reads 1 room off `x`."""
+	_prob, _x, _ar, _, ctx = build(
+		pkg(
+			rules=builtin_specs("warm_start", "room_coverage", "room_load_objective"),
+		)
+	)
+	assert ctx.room_load == {("E1", "R1", "AM", MON, "B1"): []}
+	assert not [v for v in _prob.variables() if v.name.startswith("room_load")]
+
+
+def test_room_load_still_lets_a_lone_holder_take_their_full_load():
+	"""Nobody to spread to: the last room costs 1 against the 3 it pays, so it still opens."""
+	prob, _x, ar = solve(
+		pkg(
+			shift_types=["AM", "PM"],
+			max_rpe={("E1", "R1"): 3},
+			rooms={("D1", "B1"): 3},
+			rules=builtin_specs(
+				"warm_start",
+				"one_shift_per_day",
+				"room_coverage",
+				"suitability_preference_objective",
+				"room_load_objective",
+			)
+			+ builtin_specs("room_utilization_objective", weight=3.0),
+		)
+	)
+	assert status(prob) == "Optimal"
+	assert sum(pulp.value(v) for v in ar.values()) == 3
+
+
+def test_room_load_requires_room_coverage():
+	with pytest.raises(ValueError, match="room_coverage"):
+		BuiltinRule.check_ruleset({"room_load_objective"})
+
+
 def test_custom_code_without_apply_raises():
 	with pytest.raises(ValueError, match="apply"):
 		build(pkg(rules=(("Broken Rule", "", "x = 1\n", 1.0),)))
@@ -807,6 +904,123 @@ def test_objective_weight_scales_term():
 	assert pulp.value(prob2.objective) == pytest.approx(pulp.value(prob1.objective) + 1.0)
 
 
+def test_path_levels_match_the_constants_the_reporting_layer_matches_on():
+	"""`path(Employee=...)` and LEVEL_EMPLOYEE have to be the same string: the run
+	statistics relabel employee ids by looking the level name up."""
+	assert path(Employee="E1") == ((LEVEL_EMPLOYEE, "E1"),)
+	assert path(Discipline="D1", Day=MON) == ((LEVEL_DISCIPLINE, "D1"), (LEVEL_DAY, str(MON)))
+	assert path(Shift_type="AM") == (("Shift type", "AM"),)
+
+
+def test_objective_tree_breaks_a_rule_down_to_its_half_days():
+	"""Room utilization files one term per (discipline, branch, day, shift), so its
+	subtree opens from the discipline down to the rooms a single half-day staffed."""
+	data = pkg(
+		employees=["E1", "E2"],
+		working_days=days_from(2),
+		employee_roles={"E1": ("R1",), "E2": ("R1",)},
+		target_shifts={"E1": 2, "E2": 2},
+		max_rpe={("E1", "R1"): 1, ("E2", "R1"): 1},
+		rooms={("D1", "B1"): 2},
+	)
+	specs = builtin_specs("warm_start", "room_coverage", "room_utilization_objective")
+	prob, _x, _ar, _logs, ctx = build(dataclasses.replace(data, rules=specs))
+	prob.solve(pulp.COIN_CMD(msg=False))
+
+	tree = objective_tree(ctx)
+	(node,) = [n for n in tree if n["rule"] == "room_utilization_objective"]
+	assert node["levels"] == [LEVEL_DISCIPLINE, "Branch", LEVEL_DAY, "Shift"]
+	assert node["value"] == pytest.approx(4.0)  # two rooms, two days
+
+	# A node carries no level of its own: its level is `levels[depth - 1]` of its rule.
+	(disc,) = node["children"]
+	assert disc["label"] == "D1"
+	assert "level" not in disc
+	(branch,) = disc["children"]
+	days = branch["children"]
+	assert [d["label"] for d in days] == [str(d) for d in data.working_days]
+	assert all(day["children"][0]["value"] == pytest.approx(2.0) for day in days)
+
+
+def test_objective_tree_values_roll_up_and_match_the_flat_shares():
+	"""Every node is the sum of its children, and a rule node is its flat share — the
+	invariant the statistics panel's drill-down rests on."""
+	specs = builtin_specs(*STANDARD_RULES)
+	prob, _x, _ar, _logs, ctx = build(pkg(rules=specs))
+	prob.solve(pulp.COIN_CMD(msg=False))
+
+	shares = objective_shares(ctx)
+	tree = objective_tree(ctx)
+	assert {n["rule"] for n in tree} == set(shares)
+
+	def check(node):
+		children = node.get("children") or []
+		if children:
+			assert node["value"] == pytest.approx(sum(c["value"] for c in children), abs=1e-3)
+		for child in children:
+			check(child)
+
+	for node in tree:
+		assert node["value"] == pytest.approx(shares[node["rule"]], abs=1e-3)
+		check(node)
+	assert sum(n["value"] for n in tree) == pytest.approx(pulp.value(prob.objective), abs=1e-3)
+
+
+def test_objective_tree_folds_wide_and_deep_subtrees():
+	"""Breadth past `max_children` collapses into one '… and N more' row carrying the
+	rest of the value, and a subtree over its node budget loses its deepest levels
+	rather than its coarse ones."""
+	days = days_from(4)
+	employees = [f"E{i}" for i in range(1, 7)]
+	data = pkg(
+		employees=employees,
+		working_days=days,
+		shift_types=["AM", "PM"],
+		employee_roles={e: ("R1",) for e in employees},
+		target_shifts={e: 8 for e in employees},
+		max_rpe={(e, "R1"): 1 for e in employees},
+		rooms={("D1", "B1"): 6},
+		rules=builtin_specs(
+			"warm_start",
+			"room_coverage",
+			"room_utilization_objective",
+			"suitability_preference_objective",
+		),
+	)
+	prob, _x, _ar, _logs, ctx = build(data)
+	prob.solve(pulp.COIN_CMD(msg=False))
+
+	(node,) = [n for n in objective_tree(ctx) if n["rule"] == "suitability_preference_objective"]
+	assert node["levels"] == [LEVEL_EMPLOYEE, LEVEL_DAY, "Shift"]
+	assert not node.get("trimmed")
+
+	narrow = objective_tree(ctx, max_children=2)
+	(node,) = [n for n in narrow if n["rule"] == "suitability_preference_objective"]
+	assert len(node["children"]) == 3  # two employees, then the fold
+	assert node["children"][-1]["label"].startswith("…")
+	assert node["value"] == pytest.approx(sum(c["value"] for c in node["children"]), abs=1e-3)
+
+	shallow = objective_tree(ctx, max_nodes=10)
+	(node,) = [n for n in shallow if n["rule"] == "suitability_preference_objective"]
+	assert node["levels"] == [LEVEL_EMPLOYEE]
+	assert node["trimmed"] == [LEVEL_DAY, "Shift"]
+	assert all("children" not in c for c in node["children"])
+	assert node["value"] == pytest.approx(sum(c["value"] for c in node["children"]), abs=1e-3)
+
+
+def test_objective_rule_that_contributes_nothing_still_reports_a_zero():
+	"""A priced-role objective on a site where no role is priced scores 0 — and says so,
+	rather than dropping out of the breakdown."""
+	specs = builtin_specs("warm_start", "room_coverage", "role_value_objective")
+	prob, _x, _ar, _logs, ctx = build(pkg(rules=specs))
+	prob.solve(pulp.COIN_CMD(msg=False))
+
+	assert ctx.objective_contributions["role_value_objective"] == {}
+	(node,) = [n for n in objective_tree(ctx) if n["rule"] == "role_value_objective"]
+	assert node["value"] == 0.0
+	assert "children" not in node
+
+
 def test_objective_contributions_attribute_and_sum_to_the_objective():
 	"""Each objective rule's terms are recorded under its rule document name, and the
 	recorded shares add back up to the solved objective — the invariant the run's
@@ -819,9 +1033,7 @@ def test_objective_contributions_attribute_and_sum_to_the_objective():
 	assert set(ctx.objective_contributions) == objective_rules
 	assert "" not in ctx.objective_contributions  # every term is attributed to a rule
 
-	shares = {
-		rule: pulp.value(pulp.lpSum(terms)) or 0.0 for rule, terms in ctx.objective_contributions.items()
-	}
+	shares = objective_shares(ctx)
 	assert sum(shares.values()) == pytest.approx(pulp.value(prob.objective))
 
 
@@ -951,6 +1163,10 @@ def test_per_pair_max_rpe_is_used():
 		target_shifts={"E1": 1},
 		max_rpe={("E1", "R1"): 3, ("E1", "R2"): 1},
 		rooms={("D1", "B1"): 3, ("D2", "B1"): 3},
+		# at the seeded weights: under the legacy all-1.0 selection a staffed room pays 1,
+		# exactly what `room_load_objective` charges for a holder's last room, and the third
+		# room would be a coin toss
+		rules=tuple((k, k, "", BUILTIN_RULES[k].default_weight) for k in sorted(STANDARD_RULES)),
 	)
 	_prob, x, ar = solve(data)
 
@@ -1683,6 +1899,50 @@ def test_an_assignment_with_nothing_to_infer_from_says_so():
 	)
 	assert types_module.resolve_assignment_role(None, ["R1"], "D2", []) == (
 		types_module.ROLE_NONE_IN_DISCIPLINE,
+		None,
+	)
+
+
+def test_somebody_holding_one_role_needs_no_discipline_to_infer_it():
+	"""Rung 2: one non-collateral role held is not a choice between anything."""
+	assert types_module.resolve_assignment_role(None, ["R1"], None, [], working=["R1"]) == (
+		types_module.ROLE_RESOLVED,
+		"R1",
+	)
+
+
+def test_one_role_held_outvotes_a_location_filed_under_another_discipline():
+	"""The location says D2, where they hold nothing; they hold exactly one role, in D1.
+
+	That is a mis-filed Shift Location, not a second role — see `resolve_assignment_role`.
+	Without `working` the same call is still an error, which is why the rung is opt-in.
+	"""
+	assert types_module.resolve_assignment_role(None, ["R1"], "D2", [], working=["R1"]) == (
+		types_module.ROLE_RESOLVED,
+		"R1",
+	)
+	assert types_module.resolve_assignment_role(None, ["R1"], "D2", []) == (
+		types_module.ROLE_NONE_IN_DISCIPLINE,
+		None,
+	)
+
+
+def test_the_recorded_role_still_wins_over_the_only_role_held():
+	"""Rung 1 is above rung 2: a record that names a role it holds is never second-guessed,
+	and one naming a role the employee does not hold is still reported rather than replaced."""
+	assert types_module.resolve_assignment_role("R2", ["R1", "R2"], None, [], working=["R1", "R2"]) == (
+		types_module.ROLE_RESOLVED,
+		"R2",
+	)
+	assert types_module.resolve_assignment_role("R9", ["R1"], None, [], working=["R1"]) == (
+		types_module.ROLE_NOT_HELD,
+		None,
+	)
+
+
+def test_two_roles_held_and_no_discipline_is_still_unanswerable():
+	assert types_module.resolve_assignment_role(None, ["R1", "R2"], None, [], working=["R1", "R2"]) == (
+		types_module.ROLE_NO_DISCIPLINE,
 		None,
 	)
 

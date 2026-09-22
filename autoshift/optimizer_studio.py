@@ -103,34 +103,12 @@ def _planning_window(mode: str, date: str):
 
 
 @frappe.whitelist()
-def check_pending_bound_shifts(mode: str, date: str) -> dict:
-	"""Settled schedules this horizon needs that no Shift Assignment records yet.
-
-	Studio's counterpart to ``OptimizerRun.check_pending_bound_shifts``: the run does not
-	exist yet, so the horizon comes from the toolbar's mode and date.
-	"""
-	from autoshift.rota import materialize as rota
-
-	first, last = _planning_window(mode, date)
-	return {key: value for key, value in rota.pending(first, last).items() if key != "rows"}
-
-
-@frappe.whitelist()
 def check_unconfirmed_rotas(mode: str, date: str) -> dict:
 	"""Studio's counterpart to ``OptimizerRun.check_unconfirmed_rotas``."""
 	from autoshift.rota import editor
 
 	first, last = _planning_window(mode, date)
 	return editor.unconfirmed_rotas(first, last)
-
-
-@frappe.whitelist()
-def materialize_bound_shifts(mode: str, date: str) -> dict:
-	"""Create the Shift Assignments :func:`check_pending_bound_shifts` reports missing."""
-	from autoshift.rota import materialize as rota
-
-	first, last = _planning_window(mode, date)
-	return rota.materialize(first, last)
 
 
 @frappe.whitelist()

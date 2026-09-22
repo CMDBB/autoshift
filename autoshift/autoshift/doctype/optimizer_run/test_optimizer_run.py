@@ -2,6 +2,7 @@
 # See license.txt
 
 import datetime
+import json
 from typing import Any
 
 import frappe
@@ -121,6 +122,47 @@ class IntegrationTestOptimizerRun(IntegrationTestCase):
 		assert {"Alice", "Bob", "Caoimhe"} & {e.name for e in schedule["employees"]} == set()
 
 	# --- utilities tests ---
+
+	def test_objective_breakdown_reads_both_stored_shapes(self):
+		"""The statistics panel is fed the drill-down tree, and a run solved before that
+		tree existed (a flat `{rule: value}` map) still reads back as rule rows rather
+		than as nothing. Employee labels are docnames in the engine, names in the panel."""
+		from autoshift.autoshift.doctype.optimizer_run.optimizer_run import _objective_breakdown
+
+		names = {"HR-EMP-1": "Alice"}
+		legacy = _objective_breakdown(json.dumps({"Objective: A": -2.0, "Objective: B": 5.0}), names)
+		self.assertEqual([n["rule"] for n in legacy], ["Objective: B", "Objective: A"])
+		self.assertTrue(all("children" not in n for n in legacy))
+
+		tree = _objective_breakdown(
+			json.dumps(
+				{
+					"version": 2,
+					"rules": [
+						{
+							"rule": "Objective: A",
+							"value": 3.0,
+							"levels": ["Employee", "Day"],
+							"children": [
+								{
+									"label": "HR-EMP-1",
+									"value": 3.0,
+									"children": [{"label": "2026-06-22", "value": 3.0}],
+								}
+							],
+						}
+					],
+				}
+			),
+			names,
+		)
+		employee = tree[0]["children"][0]
+		self.assertEqual(employee["label"], "Alice")
+		# only the Employee level is relabelled; a day that happens to share an id is not
+		self.assertEqual(employee["children"][0]["label"], "2026-06-22")
+
+		self.assertIsNone(_objective_breakdown("", names))
+		self.assertIsNone(_objective_breakdown("not json", names))
 
 	def test_fulltime_shifts_counts_weekdays_only(self):
 		"""One shift per weekday, none at the weekend — the attainable maximum, since

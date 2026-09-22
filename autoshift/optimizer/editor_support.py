@@ -43,6 +43,7 @@ ITERTOOLS_MEMBERS = ("product", "chain", "combinations", "permutations")
 RULE_UTILS = (
 	"cname",  # _cname in rules.py
 	"vname",  # _vname in rules.py — names auxiliary variables a rule introduces
+	"path",  # labels an objective term's place in the run's objective breakdown
 )
 
 # ranking in the completion popup: domain API above library members

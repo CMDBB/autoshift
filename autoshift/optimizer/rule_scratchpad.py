@@ -36,11 +36,7 @@ def _custom_rule_scratchpad(ctx: RuleContext) -> None:
 		wh_ceiling = 45 if any(data.role_discipline[r] in al1a for r in held) else 50
 		for i, week in enumerate(weeks):
 			weekly_total = pulp.lpSum(
-				ctx.x[(e, r, s, d, b)]
-				for r in held
-				for s in data.shift_types
-				for d in week
-				for b in data.branches
+				ctx.presence[(e, s, d, b)] for s in data.shift_types for d in week for b in data.branches
 			)
 			ctx.prob += (8 * weekly_total <= wh_ceiling, cname("week_max", e, i))
 

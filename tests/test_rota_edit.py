@@ -635,3 +635,227 @@ def test_a_pattern_with_no_role_recorded_stays_that_way():
 		[Change(op="move", employee="E1", from_assignment="A1", from_weekday=TUE, to_weekday=WED)],
 	)
 	assert [n.scheduling_role for n in plan.create] == [None]
+
+
+def test_two_roles_at_one_shift_and_branch_are_two_patterns_not_one():
+	"""The role is part of a pattern's identity (`group_key`).
+
+	`Shift Schedule Assignment.custom_scheduling_role` is single-valued, so folding two
+	differently-roled half-days into one document would silently re-role one of them.
+	Editing the R1 pattern must therefore leave the R2 one completely alone.
+	"""
+	rotas = [rota("A1", [MON, TUE], role="R1"), rota("A2", [WED], role="R2")]
+	plan = apply_changes(
+		rotas, [Change(op="move", employee="E1", from_assignment="A1", from_weekday=TUE, to_weekday=THU)]
+	)
+	assert plan.delete == ("A1",)
+	assert [(sorted(n.weekdays), n.scheduling_role) for n in plan.create] == [([MON, THU], "R1")]
+
+
+def test_two_collateral_duty_sets_at_one_shift_and_branch_stay_apart():
+	"""Same argument as the role: the duties ride on the document, so they are identity."""
+	rotas = [rota("A1", [MON], role="R1", collateral=("RC",)), rota("A2", [TUE], role="R1")]
+	plan = apply_changes(
+		rotas, [Change(op="move", employee="E1", from_assignment="A2", from_weekday=TUE, to_weekday=WED)]
+	)
+	assert plan.delete == ("A2",)
+	assert [(sorted(n.weekdays), n.collateral_roles) for n in plan.create] == [([WED], ())]
+
+
+def test_moving_onto_a_day_another_role_already_works_does_not_merge_them():
+	"""Two half-days at one shift type and branch, in two roles — the site may allow it
+	(`allow_multiple_shift_assignments`), and it is certainly not one pattern."""
+	rotas = [rota("A1", [MON], role="R1"), rota("A2", [TUE], role="R2")]
+	plan = apply_changes(
+		rotas, [Change(op="move", employee="E1", from_assignment="A1", from_weekday=MON, to_weekday=TUE)]
+	)
+	assert plan.delete == ("A1",)
+	assert [(sorted(n.weekdays), n.scheduling_role) for n in plan.create] == [([TUE], "R1")]
+
+
+def test_a_chained_edit_on_a_pending_chip_keeps_the_role_it_came_from():
+	"""A still-pending chip has no Shift Schedule Assignment to look the role up on, so
+	the caller supplies the source identity — see `Change.from_scheduling_role`."""
+	plan = apply_changes(
+		[rota("A1", [MON], role="R1", collateral=("RC",))],
+		[
+			Change(
+				op="move",
+				employee="E1",
+				company="C1",
+				from_assignment=None,
+				from_shift_type="AM",
+				from_branch="B1",
+				from_scheduling_role="R1",
+				from_collateral_roles=("RC",),
+				from_weekday=MON,
+				to_weekday=TUE,
+			)
+		],
+	)
+	assert [(sorted(n.weekdays), n.scheduling_role, n.collateral_roles) for n in plan.create] == [
+		([TUE], "R1", ("RC",))
+	]
+
+
+# ── retag: changing what a half-day is worked as ─────────────────────────────
+
+
+def test_retag_moves_one_occurrence_into_another_role():
+	"""The day stays put; only the role changes — so the pattern splits in two."""
+	rotas = [rota("A1", [MON, TUE], role="R1")]
+	plan = apply_changes(
+		rotas,
+		[
+			Change(
+				op="retag",
+				employee="E1",
+				from_assignment="A1",
+				from_weekday=TUE,
+				scheduling_role="R2",
+			)
+		],
+	)
+	assert plan.delete == ("A1",)
+	assert sorted((sorted(n.weekdays), n.scheduling_role) for n in plan.create) == [
+		([MON], "R1"),
+		([TUE], "R2"),
+	]
+
+
+def test_retagging_a_single_day_pattern_replaces_it_wholesale():
+	rotas = [rota("A1", [WED], role="R1")]
+	plan = apply_changes(
+		rotas,
+		[
+			Change(
+				op="retag",
+				employee="E1",
+				from_assignment="A1",
+				from_weekday=WED,
+				scheduling_role="R2",
+			)
+		],
+	)
+	assert plan.delete == ("A1",)
+	assert [(sorted(n.weekdays), n.scheduling_role, n.branch) for n in plan.create] == [([WED], "R2", "B1")]
+
+
+def test_retagging_into_a_role_that_already_has_a_pattern_merges_into_it():
+	rotas = [rota("A1", [MON, TUE], role="R1"), rota("A2", [THU], role="R2")]
+	plan = apply_changes(
+		rotas,
+		[
+			Change(
+				op="retag",
+				employee="E1",
+				from_assignment="A1",
+				from_weekday=TUE,
+				scheduling_role="R2",
+			)
+		],
+	)
+	assert plan.delete == ("A1", "A2")
+	assert sorted((sorted(n.weekdays), n.scheduling_role) for n in plan.create) == [
+		([MON], "R1"),
+		([TUE, THU], "R2"),
+	]
+
+
+def test_retag_keeps_the_collateral_duties_riding_on_the_half_day():
+	rotas = [rota("A1", [MON], role="R1", collateral=("RC",))]
+	plan = apply_changes(
+		rotas,
+		[
+			Change(
+				op="retag",
+				employee="E1",
+				from_assignment="A1",
+				from_weekday=MON,
+				scheduling_role="R2",
+			)
+		],
+	)
+	assert [(n.scheduling_role, n.collateral_roles) for n in plan.create] == [("R2", ("RC",))]
+
+
+def test_retag_that_nets_back_to_the_original_role_leaves_the_assignment_alone():
+	rotas = [rota("A1", [MON], role="R1")]
+	plan = apply_changes(
+		rotas,
+		[
+			Change(op="retag", employee="E1", from_assignment="A1", from_weekday=MON, scheduling_role="R2"),
+			Change(
+				op="retag",
+				employee="E1",
+				from_assignment=None,
+				from_shift_type="AM",
+				from_branch="B1",
+				from_scheduling_role="R2",
+				from_weekday=MON,
+				scheduling_role="R1",
+			),
+		],
+	)
+	assert plan == plan.__class__()
+
+
+def test_describe_retag_names_both_roles():
+	rotas = [rota("A1", [MON, TUE], role="R1")]
+	line = describe_change(
+		Change(op="retag", employee="E1", from_assignment="A1", from_weekday=TUE, scheduling_role="R2"),
+		rotas,
+	)
+	assert line == "E1: AM Tuesday now worked as R2 (was R1)"
+
+
+def test_describe_retag_of_an_unattributed_pattern_says_so():
+	rotas = [rota("A1", [MON])]
+	line = describe_change(
+		Change(op="retag", employee="E1", from_assignment="A1", from_weekday=MON, scheduling_role="R1"),
+		rotas,
+	)
+	assert line == "E1: AM Monday now worked as R1 (was no role)"
+
+
+def test_a_retag_in_a_wider_view_names_the_touched_week():
+	rotas = [rota("A1", [MON], role="R1")]
+	line = describe_change(
+		Change(
+			op="retag",
+			employee="E1",
+			from_assignment="A1",
+			from_weekday=MON,
+			from_phase=1,
+			scheduling_role="R2",
+		),
+		rotas,
+		view_weeks=2,
+	)
+	assert line == "E1: AM Monday (week 2) now worked as R2 (was R1)"
+
+
+def test_a_retag_in_a_wider_view_promotes_the_cadence_like_any_other_edit():
+	"""Re-roling one week's Monday and not the other's is exactly how a weekly pattern
+	becomes fortnightly — periodicity is still derived, see the module docstring."""
+	view_start = monday_of(datetime.date(2026, 9, 7))
+	rotas = [rota("A1", [MON], role="R1")]
+	plan = apply_changes(
+		rotas,
+		[
+			Change(
+				op="retag",
+				employee="E1",
+				from_assignment="A1",
+				from_weekday=MON,
+				from_phase=1,
+				scheduling_role="R2",
+			)
+		],
+		view_start=view_start,
+		view_weeks=2,
+	)
+	assert sorted((sorted(n.weekdays), n.scheduling_role, n.cycle_weeks) for n in plan.create) == [
+		([MON], "R1", 2),
+		([MON], "R2", 2),
+	]

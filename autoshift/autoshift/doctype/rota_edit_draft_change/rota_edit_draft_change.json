@@ -11,6 +11,8 @@
   "from_assignment",
   "from_shift_type",
   "from_branch",
+  "from_scheduling_role",
+  "from_collateral_roles",
   "from_weekday",
   "from_phase",
   "column_break_1",
@@ -18,6 +20,7 @@
   "to_weekday",
   "to_phase",
   "to_branch",
+  "scheduling_role",
   "description"
  ],
  "fields": [
@@ -27,7 +30,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Operation",
-   "options": "Add\nMove\nRemove\nPromote",
+   "options": "Add\nMove\nRemove\nRetag\nPromote",
    "reqd": 1
   },
   {
@@ -48,7 +51,7 @@
    "options": "Shift Schedule Assignment"
   },
   {
-   "depends_on": "eval:[\"Move\", \"Remove\"].includes(doc.op)",
+   "depends_on": "eval:[\"Move\", \"Remove\", \"Retag\"].includes(doc.op)",
    "description": "Identifies the touched pattern when from_assignment is blank — the occurrence is itself a not-yet-applied edit with no real Shift Schedule Assignment yet. See rota/edit.py, Change.",
    "fieldname": "from_shift_type",
    "fieldtype": "Link",
@@ -57,7 +60,7 @@
    "options": "Shift Type"
   },
   {
-   "depends_on": "eval:[\"Move\", \"Remove\"].includes(doc.op)",
+   "depends_on": "eval:[\"Move\", \"Remove\", \"Retag\"].includes(doc.op)",
    "fieldname": "from_branch",
    "fieldtype": "Link",
    "hidden": 1,
@@ -119,6 +122,34 @@
    "fieldtype": "Small Text",
    "in_list_view": 1,
    "label": "Description",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:[\"Move\", \"Remove\", \"Retag\"].includes(doc.op)",
+   "description": "The touched pattern's own Scheduling Role — part of its identity, since a role splits one (employee, shift type, branch) into several patterns. See rota/edit.py, group_key.",
+   "fieldname": "from_scheduling_role",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "From Scheduling Role",
+   "options": "Scheduling Role",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:[\"Move\", \"Remove\", \"Retag\"].includes(doc.op)",
+   "description": "The touched pattern's collateral duties, comma-separated — the rest of its identity. See rota/editor.py, COLLATERAL_SEPARATOR.",
+   "fieldname": "from_collateral_roles",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "From Collateral Roles",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:[\"Add\", \"Retag\"].includes(doc.op)",
+   "description": "The Scheduling Role this edit puts the occurrence in: the role an Add creates its pattern in, and the role a Retag moves it to.",
+   "fieldname": "scheduling_role",
+   "fieldtype": "Link",
+   "label": "Scheduling Role",
+   "options": "Scheduling Role",
    "read_only": 1
   }
  ],

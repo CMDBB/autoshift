@@ -23,9 +23,9 @@ and nothing more. The shape is nested to match the drawing order:
     }
 
 `pending_bound` is what a settled schedule says this week holds but no
-`Shift Assignment` records — see `autoshift.rota`. It rides along on every week
-so navigating to a week nobody has generated yet is the moment the chart offers
-to generate it, which costs no extra round trip.
+`Shift Assignment` records — see `autoshift.rota`. Those days are drawn anyway, as
+`virtual` cells, because the optimizer reads them as on the books; the summary
+backs an on-demand "Create them" for a planner who wants them recorded.
 
 `rows[row][lane][day]` is a cell, null, or `SPANNED`. A cell carries `span`: the
 rooms that person covers, drawn as `<td rowspan>`, so the lines it swallows are
@@ -79,6 +79,9 @@ def _cell(slot, span: int) -> dict:
 		"forced": slot.forced,
 		"uncertain": not slot.role_certain,
 		"changed": slot.changed,
+		"virtual": slot.virtual,
+		# only where the run measured a load below the holder's ceiling
+		"max_rooms": slot.max_rooms if slot.max_rooms > slot.rooms else 0,
 	}
 
 
@@ -141,7 +144,14 @@ def get_week_chart(week: str | None = None, run: str | None = None, mode: str = 
 
 	monday = _resolve_week(week, run_doc)
 	week_days = week_dates(monday)
-	existing = source.from_shift_assignments(monday)
+	speculated = (
+		{r.leave_application for r in (run_doc.get("leaves_speculations") or [])} if run_doc else set()
+	)
+	week_leaves = source.leaves(monday, speculated)
+	pending = _pending_bound(week_days[0], week_days[-1])
+	existing = source.from_shift_assignments(monday) + source.from_settled_rotas(
+		monday, _off_leave(pending.pop("rows"), week_leaves)
+	)
 	proposed = source.from_optimizer_run(run, monday) if run_doc else []
 
 	structure = layout_mod.derive()
@@ -191,20 +201,16 @@ def get_week_chart(week: str | None = None, run: str | None = None, mode: str = 
 			)
 		sections.append({"shift_type": section.shift_type, "title": section.title, "bands": bands})
 
-	speculated = (
-		{r.leave_application for r in (run_doc.get("leaves_speculations") or [])} if run_doc else set()
-	)
-
 	return {
 		"week": monday.isoformat(),
 		"prev_week": (monday - datetime.timedelta(days=7)).isoformat(),
 		"next_week": (monday + datetime.timedelta(days=7)).isoformat(),
 		"days": days,
 		"sections": sections,
-		"leaves": source.leaves(monday, speculated),
+		"leaves": week_leaves,
 		"warnings": _warnings(chart, structure),
 		"totals": _totals(chart, structure, days),
-		"pending_bound": _pending_bound(week_days[0], week_days[-1]),
+		"pending_bound": pending,
 		"run": (
 			{
 				"name": run_doc.name,
@@ -226,12 +232,19 @@ def get_week_chart(week: str | None = None, run: str | None = None, mode: str = 
 def _pending_bound(first, last) -> dict:
 	"""Settled schedules this week needs that nothing on the books records.
 
-	Summary only — the chart offers to create them, it does not list them. See
-	`autoshift.rota` for why HRMS is not doing this itself.
+	The rows are drawn as virtual chips (and popped off before the payload leaves);
+	the summary backs the on-demand "Create them". See `autoshift.rota` for why HRMS
+	is not doing this itself.
 	"""
 	from autoshift.rota import materialize as rota
 
-	return {key: value for key, value in rota.pending(first, last).items() if key != "rows"}
+	return rota.pending(first, last)
+
+
+def _off_leave(rows: list[dict], week_leaves: dict[str, list[dict]]) -> list[dict]:
+	"""Drop rota days the employee is on leave for — leave wins, as it does in the loader."""
+	away = {(entry["employee"], day) for day, entries in week_leaves.items() for entry in entries}
+	return [row for row in rows if (row["employee"], row["date"]) not in away]
 
 
 def _warnings(chart, structure) -> list[str]:

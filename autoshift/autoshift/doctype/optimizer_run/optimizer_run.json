@@ -120,7 +120,7 @@
    "read_only": 1
   },
   {
-   "description": "Each rule's share of the solved objective value, as JSON. Constraint rules contribute nothing and are absent.",
+   "description": "Each rule's share of the solved objective value, and where in the schedule that share was earned, as a JSON drill-down tree (see optimizer/rules.py: objective_tree). Constraint rules contribute nothing and are absent.",
    "fieldname": "objective_breakdown",
    "fieldtype": "Code",
    "label": "Objective Breakdown",

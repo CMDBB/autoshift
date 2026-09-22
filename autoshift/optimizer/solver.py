@@ -17,6 +17,7 @@ import pulp
 from autoshift.optimizer.types import DataPackage
 
 from . import diagnostics, model_builder
+from .rules import BREAKDOWN_VERSION, objective_tree
 
 # Statuses whose result can be safely reused for an identical input hash.
 CACHEABLE_STATUSES = ("Solved", "Failed", "Approved", "Committed")
@@ -124,6 +125,12 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 							"branch": b,
 							"collateral": 1 if data.is_collateral(e, r) else 0,
 							"forced": 1 if comb in data.forced else 0,
+							# 0 = not measured: without `room_load_objective` a holder is
+							# credited their whole max-rooms figure and nothing says how
+							# many of those rooms they actually take
+							"rooms": 1 + round(sum(pulp.value(t) or 0 for t in ctx.room_load[comb]))
+							if comb in ctx.room_load
+							else 0,
 						},
 					)
 
@@ -148,16 +155,16 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 				)
 
 			# Per-rule share of the solved objective (weighted, so shares sum to the
-			# objective value up to rounding). Constraint rules contribute nothing and
-			# are absent.
+			# objective value up to rounding), each rule broken down by where in the
+			# schedule it earned that share — see `rules.objective_tree`. Constraint
+			# rules contribute nothing and are absent.
 			run.set(
 				"objective_breakdown",
+				# Compact: a four-week run over a few dozen people is thousands of nodes,
+				# and this is a payload the statistics panel reads, not prose.
 				json.dumps(
-					{
-						rule: pulp.value(pulp.lpSum(terms)) or 0.0
-						for rule, terms in ctx.objective_contributions.items()
-					},
-					indent=1,
+					{"version": BREAKDOWN_VERSION, "rules": objective_tree(ctx)},
+					separators=(",", ":"),
 				),
 			)
 

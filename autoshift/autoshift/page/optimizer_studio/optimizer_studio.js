@@ -580,8 +580,8 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 		}
 
 		// Two things a planner must be told before a solve, not after: a settled schedule
-		// no rule enforces is silently re-planned, and one that has no Shift Assignment
-		// records yet freezes its holder to an empty week unless this creates them first.
+		// no rule enforces is silently re-planned, and one the import inferred and nobody
+		// confirmed is frozen as the old agenda reads it.
 		frappe.require("/assets/autoshift/js/rota.js", () => {
 			Promise.all([
 				frappe.call({
@@ -589,18 +589,12 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 					args: { rows: JSON.stringify(rows) },
 				}),
 				frappe.call({
-					method: "autoshift.optimizer_studio.check_pending_bound_shifts",
-					args: { mode, date },
-				}),
-				frappe.call({
 					method: "autoshift.optimizer_studio.check_unconfirmed_rotas",
 					args: { mode, date },
 				}),
-			]).then(([{ message: binding }, { message: pending }, { message: unconfirmed }]) => {
-				const go = () => this.materialize_then_preview(mode, date, rows, pending);
-				let notes =
-					autoshift.rota.pending_note(pending) +
-					autoshift.rota.unconfirmed_note(unconfirmed);
+			]).then(([{ message: binding }, { message: unconfirmed }]) => {
+				const go = () => this.run_preview(mode, date, rows);
+				let notes = autoshift.rota.unconfirmed_note(unconfirmed);
 				if (binding && binding.gap) {
 					notes += `<p class="text-warning">${__(
 						"{0} employee(s) hold a Scheduling Role whose assignments are binding ({1}), but no <b>Bind settled schedules</b> rule is selected. Their settled schedules will be ignored and re-planned from scratch.",
@@ -611,22 +605,6 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 				frappe.confirm(notes + `<p>${__("Preview anyway?")}</p>`, go);
 			});
 		});
-	}
-
-	// HRMS cannot generate a rota longer than a week (see autoshift/rota), so this is
-	// where a bound practitioner's week becomes records the model can actually read.
-	materialize_then_preview(mode, date, rows, pending) {
-		if (!pending || !pending.count) return this.run_preview(mode, date, rows);
-		autoshift.rota
-			.create(() =>
-				frappe.call({
-					method: "autoshift.optimizer_studio.materialize_bound_shifts",
-					args: { mode, date },
-					freeze: true,
-					freeze_message: __("Creating Shift Assignments…"),
-				})
-			)
-			.then(() => this.run_preview(mode, date, rows));
 	}
 
 	run_preview(mode, date, rows) {

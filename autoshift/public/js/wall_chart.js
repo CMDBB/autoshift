@@ -105,6 +105,7 @@ autoshift.wall_chart.inject_styles = function () {
 			text-decoration: line-through;
 		}
 		.autoshift-wall-chart .awc-uncertain { border-style: dashed; }
+		.autoshift-wall-chart .awc-virtual { border-style: dotted; font-style: italic; }
 		.autoshift-wall-chart .awc-who.awc-traced {
 			outline: 2px solid var(--primary, #2490ef); outline-offset: 1px;
 		}
@@ -165,12 +166,15 @@ function cell_markup(cell) {
 	if (!cell || cell === SPANNED) return "";
 	const classes = ["awc-who", `awc-${cell.kind}`];
 	if (cell.uncertain) classes.push("awc-uncertain");
+	if (cell.virtual) classes.push("awc-virtual");
 	const title = [
 		cell.employee_name || cell.employee,
 		cell.role,
 		cell.branch,
 		cell.changed,
+		cell.max_rooms ? __("{0} of {1} rooms", [cell.span, cell.max_rooms]) : "",
 		cell.uncertain ? __("role inferred, not recorded") : "",
+		cell.virtual ? __("from the Shift Schedule; no Shift Assignment records it yet") : "",
 		cell.kind === "dropped" ? __("on the books; this run does not schedule it") : "",
 		cell.kind === "added" ? __("proposed; nothing on the books for it") : "",
 	]
@@ -336,6 +340,11 @@ function legend_markup(payload) {
 					[__("Dropped"), "awc-dropped"],
 			  ]
 			: [[__("On the books"), "awc-existing"]];
+	// A settled rota day nothing records yet is on the books as far as the optimizer
+	// is concerned, so it shares the book-side colours and only its border differs.
+	if (payload.pending_bound && payload.pending_bound.count) {
+		keys.push([__("From Shift Schedule, not yet recorded"), "awc-existing awc-virtual"]);
+	}
 	const swatches = [...keys, [__("Room not fully staffed"), "awc-uncovered"]]
 		.map(
 			([label, cls]) =>
@@ -359,6 +368,7 @@ function bar_markup(payload) {
 		)}">&#9654;</button>
 		<button type="button" class="btn btn-default btn-xs awc-today">${__("This week")}</button>
 		${legend_markup(payload)}
+		${pending_toggle_markup(payload)}
 		<button type="button" class="btn btn-default btn-xs awc-export" title="${__(
 			"Opens a print dialog — choose “Save as PDF” as the destination"
 		)}">${__("Export PDF")}</button>
@@ -366,17 +376,25 @@ function bar_markup(payload) {
 	</div>`;
 }
 
-// Settled schedules the week is missing. HRMS is supposed to generate these from
-// the Shift Schedule and cannot for a rota longer than a week (see autoshift/rota),
-// so the chart offers to — landing on a week nobody has generated yet is exactly
-// the moment somebody is in a position to say yes.
+// Settled schedules the week has no records for. They are already drawn, as virtual
+// chips — the optimizer reads them straight off the Shift Schedule, so nothing needs
+// creating for a solve. Writing them to the books is a deliberate act, so the offer
+// sits behind a toggle rather than in the way: look at the week first, then create.
+function pending_toggle_markup(payload) {
+	const pending = payload.pending_bound || {};
+	if (!pending.count) return "";
+	return `<button type="button" class="btn btn-default btn-xs awc-pending-toggle" title="${__(
+		"Settled shifts drawn from the Shift Schedule that no Shift Assignment records yet"
+	)}">${__("{0} not recorded", [pending.count])}</button>`;
+}
+
 function pending_markup(payload) {
 	const pending = payload.pending_bound || {};
 	if (!pending.count) return "";
 	const who = (pending.employee_names || []).join(", ");
-	return `<div class="awc-pending">
+	return `<div class="awc-pending" hidden>
 		<span>${__(
-			"{0} settled shift(s) for {1} practitioner(s) fall in this week per their Shift Schedule, but nothing on the books records them.",
+			"{0} settled shift(s) for {1} practitioner(s) fall in this week per their Shift Schedule, but nothing on the books records them. They are drawn with a dotted border, and the optimizer already plans around them.",
 			[pending.count, pending.employees]
 		)}</span>
 		<button type="button" class="btn btn-xs btn-primary awc-materialize">${__("Create them")}</button>
@@ -485,6 +503,7 @@ const EXPORT_CSS = `
 	.awc-added { background: #ecfdf5; border-color: #6ee7b7; color: #065f46; }
 	.awc-dropped { background: #fef2f2; border-color: #fca5a5; color: #991b1b; text-decoration: line-through; }
 	.awc-uncertain { border-style: dashed; }
+	.awc-virtual { border-style: dotted; font-style: italic; }
 	.awc-mark { font-size: 0.7em; vertical-align: super; }
 	.awc-leaves { margin-top: 0.5rem; font-size: 0.8rem; }
 	.awc-leaves table { width: auto; }
@@ -594,6 +613,14 @@ autoshift.wall_chart.render = function ($wrapper, fetch, week) {
 			return;
 		}
 		$wrapper.html(autoshift.wall_chart.build_html(payload));
+		// The toggle's state outlives a week change, so a planner walking through
+		// weeks to create their records does not have to reopen it on every one.
+		$wrapper.find(".awc-pending").prop("hidden", !$wrapper.data("awc-pending-open"));
+		$wrapper.find(".awc-pending-toggle").on("click", () => {
+			const open = !$wrapper.data("awc-pending-open");
+			$wrapper.data("awc-pending-open", open);
+			$wrapper.find(".awc-pending").prop("hidden", !open);
+		});
 		$wrapper
 			.find(".awc-prev")
 			.on("click", () => autoshift.wall_chart.render($wrapper, fetch, payload.prev_week));

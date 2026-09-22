@@ -245,6 +245,32 @@ pays for it. `role_value_objective` charges it **per assignment, not per presenc
 question is what this role is worth, so a priced collateral duty earns its own value beside
 the shift it rides on — which is how a lead duty gets paid for at all.
 
+### Spreading room load, and what it cannot promise (2026-09-18)
+
+`room_coverage` credits a multi-room holder with their whole max-rooms figure the moment they
+are assigned, so 3+3+0 and 2+2+2 are the same six rooms to it — and the first is one presence
+cheaper. Under soft binding that is exactly how a settled holder got sent home: a colleague
+able to absorb their rooms made their half-day pay nothing.
+
+`room_load_objective` prices the rooms each holder actually takes: the first is free, their
+last allowed room costs the rule weight, the ones in between lie on a straight line. It
+re-states coverage over per-holder one-room tranches, so it needs `room_coverage` (and is
+redundant with it, harmlessly, once the tranches fill). **No binaries**, which is what makes
+the "tranche linearization" cheap here: the cost is convex, so the cheapest tranche always
+fills first without anything forcing the order, and given the assignments the tranche LP is
+one row of ones — totally unimodular — so the rooms per holder come back whole.
+
+Normalised by `m - 1` so the last room costs `w` whatever `m` is: a room nobody else can
+take still opens (its costliest tranche is `w` per gating role against the 3 a room pays).
+
+**What it cannot promise.** Moving a room off somebody at two onto somebody at zero saves
+`w/(m-1)` and costs that person's presence charge (~0.5–1). At `w = 1`, `m = 3` that is a tie,
+so four bound holders at six rooms still come back 2+2+2+0. Raising `w` pushes the break-even
+out but also pulls *unbound* staff in to relieve a colleague — the rule cannot tell the two
+apart, because the cost sits on the load, not on whose presence it is. If the requirement is
+"a bound holder's settled half-day is kept whenever it can be", that is a price on dropping a
+booked presence (a soft-binding concern), not a load cost.
+
 ### Storage
 
 HRMS refuses time-overlapping Shift Assignments for one employee even with
@@ -434,10 +460,20 @@ Consequences that look arbitrary without that context:
 - **ISO weeks.** `cycle.occurrences` counts Monday-based weeks where `create_shifts` chops
   arbitrary seven-day blocks. The two agree whenever the anchor is a Sunday, which is what
   zawin2frappe's phase anchoring produces.
-- **`create_shifts_after` is never written.** It is the phase anchor as well as the handover
-  boundary (nothing is generated on or before it — those records are the import's), and
-  moving it *is* the upstream bug. Idempotency comes from comparing against the books
-  instead, which needs no high-water mark.
+- **`create_shifts_after` is never moved forward.** It is the phase anchor as well as the
+  handover boundary (nothing is generated on or before it — those records are the import's),
+  and moving it by less than a cycle *is* the upstream bug. Idempotency comes from comparing
+  against the books instead, which needs no high-water mark.
+- **…but it is moved back, by whole cycles (2026-09-18).** The Rota Editor anchored a
+  multi-week pattern on whichever week the planner was viewing, and an import anchors where
+  its history ended, so rotas could start weeks into the future and be missing from exactly
+  the weeks a solve and the wall chart read first. `cycle.backdated_anchor` moves an anchor
+  back to at least `ANCHOR_LEAD_WEEKS` (4) before today by a multiple of the cycle, so the
+  phase is untouched and only the boundary moves earlier. The cost is that days in that
+  lead-in which the books never recorded now read as rota days; the coverage check still
+  leaves every recorded day alone. Only `enabled = 0` rows are touched, because on an
+  enabled one the field is HRMS's high-water mark and backdating it has HRMS back-fill real
+  Shift Assignments.
 - **`enabled` / `shift_status` are ignored.** They are HRMS's switches for HRMS's generator,
   and a rota is off precisely because that generator would run it wrongly.
 - **A day carrying the *other* half-day counts as covered, not as a conflict**, under
@@ -445,8 +481,31 @@ Consequences that look arbitrary without that context:
   from history; the record on the books is the record.
 - **One record per day, one savepoint per row** — a refusal costs that day, not the span.
 
-**Creating records before a solve is not optional**: binding freezes people against exactly
-those records, so declining would silently re-plan the one group whose week is settled.
+### A solve reads rotas; it does not materialise them (2026-09-18)
+
+Until 2026-09-18 both solve entry points created the missing Shift Assignments before
+solving, because the loader only read the books and binding freezes people against exactly
+those records. That was a leftover of the optimizer having been built to design around
+existing assignments, and it is wrong once in production: every preview would submit real
+Shift Assignments — notifications included — for weeks nobody has approved, and a re-plan
+would have to cancel and amend them.
+
+`data_loader.load` now calls `materialize.settled_rows` for the horizon's bound employees and
+treats each unrecorded rota day as the record it would materialise as: same shift type,
+location, role and collateral duties, same `(employee, date)` / `(employee, date,
+shift_type)` coverage test, same leave-wins and unresolvable-is-fatal-for-a-bound-employee
+handling (the message names the Shift Schedule Assignment and day instead of a record). The
+consequence worth relying on: **a horizon hashes identically whether or not its rota days
+were materialised**, so a run cached before this change still hits.
+
+Records still get written, but only on an explicit request (the wall chart's "Create them")
+and, once it exists, at commit — which is where an approved plan is meant to become real.
+
+The wall chart reads the same rows, so it shows the week the solver sees: an unrecorded rota
+day is a `virtual` chip on the book side (dotted border, italic), and a run reproducing one
+reads as `kept`, not `added` — whether a day is written down yet is a fact about the books,
+not about the run. Seeing those chips *before* bulk-creating them is the point, so the
+"Create them" offer moved behind an "N not recorded" toggle instead of greeting every week.
 
 ---
 
@@ -465,8 +524,8 @@ So `Shift Schedule Assignment.custom_unconfirmed` marks a pattern an importer *i
 flagged row**, enforced in zawin2frappe, not here. A silver pattern turns gold in two ways:
 
 - **Editing it.** An edit replaces the pattern wholesale with a fresh, unflagged
-  `Shift Schedule Assignment` (+ a private `Shift Schedule`). Because a group is
-  `(employee, shift_type, branch)`, moving one Tuesday confirms that whole row's weekday set,
+  `Shift Schedule Assignment` (+ a private `Shift Schedule`). Because a group is one
+  `edit.group_key`, moving one Tuesday confirms that whole row's weekday set,
   and a move across groups confirms both. The planner was looking at both when they did it.
 - **Promote all**, per employee. It stages a `promote` change, which clears the flag in place
   on every silver pattern that person has left (`EditPlan.promote`). Nothing is replaced, so
@@ -480,7 +539,7 @@ private schedule an edit empties out is cancelled and deleted. `Shift Schedule` 
 record it is, never whether it is true.
 
 **Periodicity is derived, not identity.** A group is keyed on `(employee, shift_type,
-branch)` alone — no cadence, no anchor. Every member `Rota` is resampled into a
+branch, scheduling_role, collateral_roles)` — no cadence, no anchor. Every member `Rota` is resampled into a
 `phase -> weekdays` map over `view_weeks` before any change lands, and `edit.minimal_cycle`
 reads back the smallest cadence that map still needs once the batch is folded in.
 
@@ -511,6 +570,85 @@ must fold the batch exactly as the grid and transcript on screen already show it
 
 **Why draft rows are cleared before the assignments they reference are deleted:** a live Link
 blocks the delete otherwise.
+
+### The role is part of a pattern's identity (2026-09-21)
+
+`group_key` gained `scheduling_role` and `collateral_roles`. The forcing argument is small
+and total: `Shift Schedule Assignment.custom_scheduling_role` is **single-valued**. Two
+half-days at the same shift type and branch worked in different roles cannot share a
+document, so a grouping that folds them together does not produce a wrong-looking schedule —
+it silently re-roles one of them on the way to disk. The same holds for the collateral duties
+riding on a pattern, which live in a child table of that one document.
+
+The consequence is that `|Shift Schedule Assignment|` now scales with
+(shift type x branch x role x duty set) rather than (shift type x branch), and re-roling one
+Tuesday of a Mon–Wed pattern splits one document into two. **That is the intended shape.** A
+document per distinguishable pattern is the only one that can record what is actually worked;
+the previous count was smaller only because it was recording less.
+
+Cadence deliberately stays *out* of the key — see above. Role is identity because a document
+can only hold one; cadence is an outcome because a document's `frequency` is derived from
+what the phases turned out to be.
+
+**"Retag" is a move between two groups that differ only in their role.** It reuses
+`apply_changes`'s move branch exactly, which is not a shortcut but the meaning: the half-day
+stays where it is and the work done in it changes. It is per *occurrence*, like every other
+edit here, so "this Tuesday is a lead duty now" does not quietly re-role the Monday too.
+
+### Why the role is resolved on read, not only by a patch
+
+`materialize.load_rotas` resolves a blank `custom_scheduling_role` through
+`types.resolve_assignment_role` — the same ladder `data_loader` applies to a
+`Shift Assignment` — rather than leaving it to `patches.fill_single_role_assignments`.
+
+The patch alone would have been enough to fill the field in. It would not have been enough to
+make the field *reliable*: a site that has not migrated, a pattern the ladder can only settle
+once somebody gains a second role, and a hand-entered assignment all leave it blank, and the
+editor's discipline scoping is only as good as the attribution behind it. Resolving on read
+means the Rota Editor, the wall chart and a solve agree about which discipline a pattern
+belongs to without anybody having run anything. The patch then writes down the answer those
+readers already give, which is the right order: the reading is the definition, the stored
+value is a cache of it.
+
+The ladder gained one rung for this: **the single non-collateral role the employee holds
+anywhere**, ahead of the Shift Location's discipline. Somebody with one role has no second
+answer, and needing a correctly-filed location to say so was the main thing keeping imported
+rotas unattributed. It is opt-in (`working=None` skips it) because it is the one rung that
+can out-vote the location — a single-role employee whose record sits at a location filed
+under another discipline now resolves to their role rather than failing. That is the intended
+reading: a mis-filed location is a data-entry slip, not evidence of a second role.
+
+`RoleContext` takes the horizon from `settled_rows` and applies `data_loader`'s own
+validity-window predicate, so a solve can never inherit a role its own `DataPackage` says the
+person does not hold over that span — which would only make the loader refuse the row it had
+just produced.
+
+### One week, two disciplines
+
+An employee holding binding roles in two disciplines has **one** settled week. Before the
+role was recorded there was no way to say which discipline a pattern belonged to, so each
+discipline's view showed whatever shift types it happened to share with the other, and
+editing from the wrong view rewrote the pattern — with that view's idea of the role, or with
+none.
+
+Now `Rota.discipline` comes off the resolved role (falling back to the Shift Location's own
+`custom_discipline`), and `editor.is_native` decides what a view may touch. Another
+discipline's patterns are **drawn** — faint, dashed, never draggable — because the thing a
+planner most needs to see is the half-day their colleague has already spoken for. They are
+red on both sides where they collide, using `HR Settings.allow_multiple_shift_assignments` to
+decide what "collide" means: with the setting off, which is HRMS's default and what
+`materialize._covered` already reads, a person has one shift a day, so *any* two rotas on one
+date collide however their shift types are labelled.
+
+An **unattributed** pattern — no resolvable role, no discipline on its location — is native to
+whichever view is looking at it. Nobody owns it, so refusing every view the right to edit it
+would strand it forever; instead `apply_draft` fills in `_default_role` when the replacement
+still names none, which is how such a pattern acquires a role simply by being touched.
+
+Shift Types outside the discipline's `Discipline Branch Config` are drawn as extra read-only
+sections rather than dropped. `branches_of` offers no legal drop target on one, so they could
+not be edited in this view anyway — but they used not to be drawn at all, which made a
+double-booking on an unfamiliar shift invisible rather than merely uneditable.
 
 ---
 
@@ -650,6 +788,57 @@ say. The sandbox's `relaxed_solve` exists so `constraint_frame`'s long-empty `pi
 finally has values in it.
 
 ---
+
+## The objective breakdown is a tree the rules build themselves (2026-09-21)
+
+"Room utilization: 3240" is a number, not an answer. The run already recorded each rule's
+share of the solved objective; what a planner (and, more often, whoever is tuning a weight)
+actually asks next is *where* — which discipline, which branch, which Tuesday morning, and
+how many rooms that half-day really opened. The statistics panel now answers that by
+opening the share out into a drill-down tree.
+
+The decomposition is done by **the rule that earned the value**, not by a reporting module
+downstream of it. A rule is the only thing that knows what its terms mean: room utilization
+is per (discipline, branch, day, shift), the FTE courtesy is one number per person and has
+no finer grain at all, and the preference charge is per half-day worked. So
+`ctx.add_objective(term, path(Discipline=k, Branch=b, Day=d, Shift=s))` labels each term as
+it is contributed, and `objective_tree` folds the labelled terms into the tree after the
+solve. A rule that passes no path is not broken — it files everything under the empty path
+and reports as one total, which is exactly what the flat breakdown did.
+
+Consequences worth naming:
+
+- **Rules contribute many small terms instead of one `lpSum`.** The model is identical —
+  the objective is the same sum either way — but a rule now calls `add_objective` once per
+  slot. This is what makes the mechanism general: the next objective rule gets its
+  breakdown by naming its levels, with no reporting code to extend.
+- **`apply_rules` pre-registers every built-in objective rule**, so a rule that legitimately
+  contributes nothing this run (nobody staffs a second room, no role is priced) reports the
+  0 it scored instead of dropping out of the breakdown. Two rules used to contribute a
+  hand-written constant-0 term purely to stay visible; that hack is gone.
+- **A node carries no level of its own.** Its level is `levels[depth - 1]` of the rule it
+  sits under, because a four-week run over a few dozen people is a few thousand nodes and
+  repeating the word "Employee" on all of them is most of the payload.
+- **Trimming drops depth, never breadth-first detail.** Breadth past `MAX_CHILDREN` folds
+  into one "… and N more" row carrying the rest of the value; a subtree past
+  `MAX_NODES_PER_RULE` loses its *deepest* level and re-folds, repeatedly, until it fits.
+  Coarse levels answer "where did this come from", so they are the last to go — and the
+  levels dropped are named on the node, so the reader is told what they are not seeing
+  rather than mistaking the leaves for the finest grain available.
+- **The tree is persisted, not re-derived.** The values are only meaningful against solved
+  variables, and a solved run is immutable, so there is nothing to recompute against later.
+  Runs solved before this landed carry the flat `{rule: value}` map (breakdown version 1)
+  and read back as rule rows with no children — the detail is genuinely not recoverable for
+  them, and pretending otherwise would mean re-running the rules against a model that no
+  longer exists.
+- **Employee ids are relabelled in `optimizer_run.py`, not in the engine.**
+  `optimizer/rules.py` is Frappe-free and only ever sees docnames; the shared `LEVEL_*`
+  constants are what let the reporting layer recognize a level it can put names to.
+
+The panel renders a node's children on first expand rather than up front, for the same
+reason the payload leaves levels implicit: the tree is built to be *opened*, one branch at
+a time, not to be laid out in full.
+
 
 ## Smaller decisions worth not re-litigating
 

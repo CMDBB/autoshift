@@ -83,6 +83,8 @@ Three apps split the responsibility; keep them separate.
   back 1), with `collateral` set on the rows that are a duty worked on top of one. Counting
   rows therefore double-counts a collateral duty's half-day: count distinct
   (employee, date, shift type) for **presence**, as the statistics panel does.
+  `rooms` is the rooms that assignment takes, measured only under `room_load_objective`
+  (`RuleContext.room_load`); 0 = unmeasured, and the wall chart falls back to `max_rooms`.
 - **Optimizer Run Coverage** — child; the `active_rooms` counterpart. One row per
   (discipline, branch, date, shift) with `staffed_rooms` vs `capacity`. Zero-staffed rows are
   kept on purpose. Pre-table runs fall back to `_derive_coverage_matrix`.
@@ -153,7 +155,7 @@ module.
    captured before the flag read as they did.
 2. `rules.py` — constraint groups *and* objective terms as named rules. `BUILTIN_RULES`
    registry populated by the `@builtin_rule` decorator; `STANDARD_RULES` is the
-   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 20 built-ins:
+   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 21 built-ins:
    `one_shift_per_day`, `warm_start`, `leave_blocklist`, `use_existing_assignments`,
    `bind_role_assignments`, `soft_bind_role_assignments`, `one_branch_per_shift`,
    `room_coverage`, `fte_ceiling`, `role_fte_ceiling`, `exclusive_role_purity`
@@ -161,7 +163,7 @@ module.
    `role_fte_target_objective`, `shift_preference_objective`,
    `suitability_preference_objective`, `weigh_assignments_objective`,
    `collateral_room_value_objective`, `collateral_capacity_value_objective`,
-   `role_value_objective`
+   `role_value_objective`, `room_load_objective`
    (objectives). Five choice groups: `existing_assignments`, `role_binding`,
    `workload_ceiling` (`fte_ceiling` vs `fte_soft_ceiling`), `collateral_value`
    (`collateral_room_value_objective` vs the **standard**
@@ -174,15 +176,20 @@ module.
    when empty). `_cname()`/`_vname()` name
    constraints and any auxiliary variables (`role_fte_target_objective` linearizes an
    absolute deviation with a pair of them, `fte_soft_ceiling` a one-sided one with a
-   single variable). `compile_custom_rule()` execs Custom Code source expecting `apply(ctx)`.
+   single variable, `room_load_objective` a convex per-holder room-load cost with one-room
+   tranches — convex, so no binaries). `compile_custom_rule()` execs Custom Code source expecting `apply(ctx)`.
    `apply_rules()` applies `DataPackage.rules`; an empty selection means all built-ins at
    weight 1.0 (the pre-ruleset behaviour unit tests rely on). Objective rules call
-   `ctx.add_objective(expr)`; the term is scaled by the ruleset row weight.
+   `ctx.add_objective(expr, path(...))`; the term is scaled by the ruleset row weight, and
+   the optional `path` is reporting only (see the statistics panel below). `apply_rules`
+   pre-registers every built-in Objective rule, so one that contributes nothing this run
+   still reports its 0.
    `BuiltinRule.requires`/`.excludes`/`.group`/`.default_weight`/`.topic` are hand-authored,
    **built-ins only** — Custom Code rules carry none of it and are exempt from every check.
    **`apply_rules` reorders specs via `order_specs`, a stable topological sort over
    `requires` — do not drop this**, see design notes.
-3. `data_loader.py` — `load(run_doc)` hydrates a `DataPackage`; resolves the ruleset into
+3. `data_loader.py` — `load(run_doc)` hydrates a `DataPackage` (bound employees' unrecorded
+   rota days come from `rota.materialize.settled_rows`, never from records created first); resolves the ruleset into
    `(rule_name, builtin_key, custom_code, weight)` tuples (throws on
    unimplemented/unvalidated; sorted by name for hash stability); normalizes preferences via
    temperature-scaled softmax (no weight deviates >50% from uniform). Resolves binding pairs
@@ -190,6 +197,8 @@ module.
    assignments into `unresolved_assignments` (but **throws** for a bound employee). An
    existing assignment's role comes from `Shift Assignment.custom_scheduling_role` via
    `types.resolve_assignment_role` (Frappe-free, unit-tested): the recorded role, else the
+   single non-collateral role they hold *anywhere* (`working=`, opt-in — it is the one rung
+   that can out-vote a mis-filed location), else the
    single role the employee holds in the location's discipline, or, holding several there,
    whichever single one of those is `binding` for them (a settled half-day is presence, not a
    choice of role) — **never a guess between two roles neither of which settles it**, which is
@@ -207,7 +216,8 @@ module.
 5. `solver.py` — runs CBC (5 s sync, escalating to a 3600 s background job via
    `frappe.enqueue(queue="long")` on timeout); caches by input hash against prior runs in
    `{Solved, Failed, Approved, Committed}`. Persists `solution_table` (`x`), `coverage_table`
-   (`active_rooms`) and `objective_breakdown` (per-rule objective shares).
+   (`active_rooms`) and `objective_breakdown` (the per-rule objective shares as a
+   drill-down tree, `rules.objective_tree`).
    **`build()` returns its `RuleContext` as a fifth element** so the breakdown can be
    evaluated against solved variables — update sandbox/test call sites if you change that
    shape.
@@ -253,8 +263,7 @@ Optimizer Run, with `type="Automatic"`. Solving reuses `OptimizerRun.solve()` un
 first call a binding-gap check (`OptimizerRun.check_binding_rule_gap` /
 `optimizer_studio.check_binding_rule_gap`, thin wrappers over `data_loader.binding_rule_gap`)
 and confirm before running when the site marks roles binding but the selection omits
-`bind_role_assignments`. The same confirm carries the count from `check_pending_bound_shifts`
-and creates those records before solving. It also warns, without blocking, about bound employees
+`bind_role_assignments`. It also warns, without blocking, about bound employees
 whose rotas in the horizon are still unconfirmed (`check_unconfirmed_rotas`, over
 `rota.editor.unconfirmed_rotas`), with one link per discipline into the Rota Editor
 (`?discipline=…&start=…`, applied by the page's `take_route_options` and then stripped from
@@ -275,15 +284,19 @@ are *disabled with a tooltip* rather than hidden; Solver Log needs only a run, s
   morning covered", which the per-employee roster grid structurally cannot.
   Layout is **derived** by `layout.derive()` from Discipline Branch Config + Scheduling Role +
   Shift Type; anything no band claims lands in an `Unplaced` band with the reason stated.
-  A chip is **as tall as the rooms it covers** (`Slot.rooms` = the holder's `max_rooms`,
+  A chip is **as tall as the rooms it covers** (`Slot.rooms` = the run's measured `rooms`
+  where it has one, else the holder's `max_rooms`,
   drawn as `<td rowspan>`; the lines it swallows arrive as the `SPANNED` sentinel rather
   than as cells), and a line past `covered` — the rows *every* gating lane reaches, the
   chart's own reading of `room_coverage`'s minimum — is hatched, because a half-staffed room
   is not an open room. `dropped` chips sink to the bottom of their lane and count toward
   neither. The headline counts fully-staffed rooms for the same reason.
   With a run, cells are a diff against the books (`kept`/`added`/`dropped`, plus `changed` on
-  a moved half-day) via `chart.merge`. A week whose bound practitioners have no Shift
-  Assignments yet carries a banner offering to create them (`pending_bound` in the payload).
+  a moved half-day) via `chart.merge`. "The books" include bound employees' unrecorded rota
+  days (`source.from_settled_rotas`, off `pending_bound`'s rows, leave days dropped) — the
+  same days the loader reads — drawn as `virtual` chips (dotted, italic), so the week can be
+  checked before anything is created. The "Create them" banner sits behind an
+  "N not recorded" toolbar toggle.
   Split like the optimizer: `chart.py` is Frappe-free (covered by `tests/test_wallchart.py`),
   `layout.py`/`source.py` read the DB, `api.py` holds the whitelisted
   `get_week_chart(week, run, mode)`. Cells print initials — `Employee.custom_initials` where
@@ -294,7 +307,16 @@ are *disabled with a tooltip* rather than hidden; Solver Log needs only a run, s
   employees below FTE target, and each rule's share of the objective
   (`objective_breakdown`, persisted as JSON from `RuleContext.objective_contributions`; the
   shares sum to the objective value — `test_objective_contributions_attribute_and_sum_to_the_objective`
-  pins that). Meters carry a **role-supply bound** (`_role_supply_bounds`) drawn as a marker
+  pins that). Each share **opens into a tree** of where it was earned, down to the
+  (discipline, branch, day, shift) a room was staffed in: an objective rule labels each term
+  it contributes with `rules.path(Discipline=…, Branch=…, Day=…, Shift=…)`, and
+  `rules.objective_tree` folds the labelled terms into nodes after the solve. A node carries
+  no level of its own (it is `levels[depth - 1]` of its rule), breadth past `MAX_CHILDREN`
+  folds into "… and N more", and a subtree past `MAX_NODES_PER_RULE` drops its *deepest*
+  levels (named in `trimmed`). Runs solved before the tree read back as flat rule rows —
+  `_objective_breakdown` normalizes both shapes and relabels the `Employee` level with real
+  names. The panel builds a node's children on first expand.
+  Meters carry a **role-supply bound** (`_role_supply_bounds`) drawn as a marker
   and stated as a warning where it falls below configured capacity.
 - **Roster** — the per-employee grid, `autoshift/public/js/schedule_grid.js` (namespaced
   `autoshift.schedule_grid`), shared by the form and Studio off the same `{days, employees,
@@ -302,8 +324,14 @@ are *disabled with a tooltip* rather than hidden; Solver Log needs only a run, s
 
 **Rota Editor** (Desk Page `autoshift/autoshift/page/rota_editor/`) — lets a planner drag a
 bound employee's shifts to a different day, shift type or branch within their own discipline,
-or add one. Edits stage into a `Rota Edit Draft` (server-side, survives a reload) and apply as
-one `EditPlan`. See "Materialising settled schedules" below.
+add one, or right-click a chip to change the **Scheduling Role** it is worked in (`retag`).
+Edits stage into a `Rota Edit Draft` (server-side, survives a reload) and apply as one
+`EditPlan`. Only *this* discipline's patterns are editable (`editor.is_native`, off
+`Rota.discipline`); another discipline's are drawn faint/dashed/read-only as `foreign_cells`
+and go **red on both sides** where they land on the same half-day (`_mark_clashes`, keyed on
+the date alone unless `HR Settings.allow_multiple_shift_assignments`). Shift Types outside the
+discipline's config become read-only `extra_shift_types` sections. See "Materialising settled
+schedules" below.
 
 **Role Matrix** (`autoshift/role_matrix.py` + Desk Page `autoshift/autoshift/page/role_matrix/`)
 — Employee Scheduling Role drawn as the dense employee × role matrix it is a sparse
@@ -343,21 +371,27 @@ package is deleted.
 
 - `cycle.py` — Frappe-free (`Rota` + `occurrences`, `tests/test_rota.py`). Weekdays in
   `repeat_on_days`, one week in every `cycle_weeks`, counting from the week after
-  `create_shifts_after`. Weeks are ISO (Monday-based).
+  `create_shifts_after`. Weeks are ISO (Monday-based). `backdated_anchor` pulls an anchor
+  back by whole cycles (phase kept) to at least `ANCHOR_LEAD_WEEKS` (4) before today; the
+  editor applies it to every anchor it writes, and the `backdate_rota_anchors` patch did it
+  once to existing `enabled = 0` rows (never enabled ones: HRMS would back-fill them).
 - `materialize.py` — `pending` / `materialize`. Records carry the rota's own
   `custom_scheduling_role` and `custom_collateral_roles`, which is why it builds the
   `Shift Assignment` itself rather than calling HRMS's `create_shift_assignment`: the role
-  has to be set before submit. **`create_shifts_after` is never written**;
+  has to be set before submit. **`create_shifts_after` is never written here** (only backdated, see `cycle.py`);
   idempotency comes from comparing against the books. `enabled`/`shift_status` are ignored;
   records are created `Active` and link back via `Shift Assignment.shift_schedule_assignment`.
   Coverage is keyed on `(employee, date)` or `(employee, date, shift_type)` per
   `HR Settings.allow_multiple_shift_assignments`. One record per day, one savepoint per row;
   failures are collected and reported, never fatal.
-- Three surfaces, each a thin wrapper over `materialize.pending`/`.materialize`, sharing one
-  browser-side helper (`autoshift/public/js/rota.js`, namespaced `autoshift.rota`): the wall
-  chart's `pending_bound` banner, and `check_pending_bound_shifts` /
-  `materialize_bound_shifts` on both `OptimizerRun` and `optimizer_studio`. **Creation at
-  solve time is not optional** — binding freezes people against exactly those records.
+- **A solve never creates records.** `data_loader.load` reads `materialize.settled_rows` —
+  each day a bound employee's rota puts them on that no submitted record covers — straight
+  into `forced`, as if it were on the books, so the package (and its `input_hash`) is the
+  same whether or not those records exist. Churning submitted Shift Assignments (and their
+  notifications) ahead of every preview is what this replaced. Records are only written by
+  the wall chart's on-demand `pending_bound` "Create them" (`materialize_between`), via the
+  browser-side helper `autoshift/public/js/rota.js` (namespaced `autoshift.rota`), and in
+  future by `committer.py`.
 
 **Hand-editing (`rota/edit.py` + `rota/editor.py`)** — same split: `edit.py` is Frappe-free
 (`tests/test_rota_edit.py`), `editor.py` is the DB half.
@@ -373,17 +407,31 @@ package is deleted.
 - **Promote all** (per employee) stages a `promote` `Change`; `EditPlan.promote` lists that
   employee's silver assignments not already being replaced, and Apply clears the flag in
   place. Silver chips draw with a grey dotted border (`re-chip-unconfirmed`).
-- **The role rides along, it is never edited.** `Rota.scheduling_role` /
-  `.collateral_roles` come off the `Shift Schedule Assignment`, and `edit.apply_changes`
-  copies them onto the `NewAssignment` that replaces a pattern, so moving a half-day never
-  changes what is worked during it. An `add` has nothing to inherit, so its `Change` carries
-  a role the way it already carries a company (`editor._role_of`: the one binding,
-  non-collateral role the person holds in that discipline, else nothing).
-- `edit.Change` stages one edit at single-occurrence granularity (`add`/`move`/`remove`; `promote` is per employee),
+- **The role is part of a pattern's identity, and a `move` never changes it.**
+  `edit.group_key` is `(employee, shift_type, branch, scheduling_role, collateral_roles)` —
+  `Shift Schedule Assignment.custom_scheduling_role` is single-valued, so two differently-roled
+  half-days *cannot* share a document. `|SSA|` therefore scales with the role and duty set;
+  that is intended. `Rota.scheduling_role`/`.collateral_roles` come off the
+  `Shift Schedule Assignment` (blank ones resolved on read, below) and are carried onto the
+  `NewAssignment` that replaces a pattern, so moving a half-day never changes what is worked
+  during it. An `add` has nothing to inherit, so its `Change` carries a role the way it
+  already carries a company (`editor._default_role`: the one non-collateral role held in that
+  discipline, else the single binding one; the page prompts only when neither settles it).
+  A `retag` is the one edit that *does* change it — mechanically a move between two groups
+  differing only in role, per occurrence like everything else here.
+- **A blank role is resolved on read, not only by a patch.** `materialize.RoleContext` +
+  `types.resolve_assignment_role` (which gained a "single non-collateral role held anywhere"
+  rung, opt-in via `working=`) fill one in inside `load_rotas`, and `Rota.discipline` follows
+  from it (falling back to `Shift Location.custom_discipline`). `settled_rows` passes its
+  horizon so the window matches `data_loader`'s `employee_roles`.
+  `patches.fill_single_role_assignments` writes the single-role answer down on both
+  `Shift Assignment` and `Shift Schedule Assignment`; `apply_draft` fills one in for a
+  replacement that still names none.
+- `edit.Change` stages one edit at single-occurrence granularity (`add`/`move`/`remove`/`retag`; `promote` is per employee),
   identified by weekday **and** `from_phase`/`to_phase`. `apply_changes(rotas, changes,
   view_start, view_weeks) -> EditPlan` folds a batch onto the current `Rota`s.
-  **Periodicity is derived, not identity** — groups key on `(employee, shift_type, branch)`
-  alone and `edit.minimal_cycle` reads the cadence back out, which is how a rota's periodicity
+  **Periodicity is derived, not identity** — cadence and anchor stay *out* of `group_key` and
+  `edit.minimal_cycle` reads the cadence back out, which is how a rota's periodicity
   changes without any explicit action. Emitted as `EditPlan.cadence_changes`, surfaced as
   **Periodicity changes**, recomputed fresh on every `get_state`/`stage_change` — never
   stored.

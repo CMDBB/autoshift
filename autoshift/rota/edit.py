@@ -21,9 +21,11 @@ Assignment` row pointing at it for this employee is what changes).
 The one edit that replaces nothing is a "promote": it confirms every silver pattern one
 employee still has, as they stand, by clearing the flag in place (`EditPlan.promote`).
 
-**Periodicity is derived, not identity.** A group of edits is keyed on
-`(employee, shift_type, branch)` alone — cadence and anchor are *outcomes* of folding the
-changes, not inputs to the grouping. This is what lets a genuinely varying multi-week
+**Periodicity is derived, not identity.** A group of edits is keyed on what a single
+`Shift Schedule Assignment` can say — `(employee, shift_type, branch, scheduling_role,
+collateral_roles)`, see :func:`group_key` — and *not* on cadence or anchor, which are
+outcomes of folding the changes rather than inputs to the grouping. This is what lets a
+genuinely varying multi-week
 pattern (CLAUDE.md's "Multi-week rotas": several same-cadence assignments at different
 phases) be edited at all: every one of a group's member rows, whatever their own cadence,
 is resampled into a per-view-week `phases` map (`_Group.phases`, `phase -> weekdays`) before
@@ -77,22 +79,28 @@ def _cadence_label(cycle_weeks: int) -> str:
 class Change:
 	"""One staged edit, at single-occurrence granularity.
 
-	`op` is one of "add", "move", "remove", "promote". A "promote" carries only `employee`
-	— see `EditPlan.promote`. A "move" or "remove" identifies the
+	`op` is one of "add", "move", "remove", "retag", "promote". A "promote" carries only
+	`employee` — see `EditPlan.promote`. A "move", "remove" or "retag" identifies the
 	occurrence it touches via `from_assignment` (a `Shift Schedule Assignment` docname)
 	+ `from_weekday`; an "add" has neither, and needs `company` since there is no source
 	`Rota` to take it from. `to_shift_type`/`to_branch` left `None` on a "move" mean
 	"unchanged" — most drags only move a weekday within the same pattern, which is
 	deliberately the cheap path.
 
+	A **"retag"** changes which Scheduling Role one occurrence is worked in and nothing
+	else: same day, same shift type, same branch, new `scheduling_role`. It is mechanically
+	a move between two groups that differ only in their role, which is exactly what it
+	means — the half-day stays where it is and the work done in it changes.
+
 	`from_assignment` may be `None` (or a docname nothing in `rotas` matches — e.g. a
 	prior change in the same batch already replaced it) when the occurrence being touched
 	is itself a not-yet-applied edit — the editor lets a chip stay draggable before Apply,
-	see `rota.editor._effective_rotas`. `from_shift_type`/`from_branch` are then how the
-	group is still found: caller-supplied identity for the source pattern, used in place
-	of resolving one through `from_assignment`. `from_shift_type is not None` is the
-	signal that they were supplied at all — `from_branch` alone may legitimately be
-	`None` (no branch), so it can't carry that signal itself.
+	see `rota.editor._effective_rotas`. `from_shift_type`/`from_branch`/
+	`from_scheduling_role`/`from_collateral_roles` are then how the group is still found:
+	caller-supplied identity for the source pattern, used in place of resolving one through
+	`from_assignment`. `from_shift_type is not None` is the signal that they were supplied
+	at all — any of the others may legitimately be `None`/empty (no branch, no role), so
+	none of them can carry that signal itself.
 
 	`from_phase`/`to_phase` say *which* week of the editor's current view the touched
 	occurrence lives in (0-indexed from the view's first day) — the whole mechanism
@@ -104,9 +112,10 @@ class Change:
 	op: str
 	employee: str
 	company: str | None = None
-	#: The Scheduling Role an "add" creates its pattern in — there is no source `Rota` to
-	#: take one from, exactly as with `company`. Ignored on the other operations, which
-	#: keep whatever the pattern they touch is already worked in.
+	#: The Scheduling Role this operation *targets*: the role an "add" creates its pattern
+	#: in (there is no source `Rota` to take one from, exactly as with `company`), and the
+	#: role a "retag" moves an occurrence into. Ignored by "move" and "remove", which keep
+	#: whatever the pattern they touch is already worked in — see `from_scheduling_role`.
 	scheduling_role: str | None = None
 	to_shift_type: str | None = None
 	to_weekday: int | None = None
@@ -115,6 +124,11 @@ class Change:
 	from_assignment: str | None = None
 	from_shift_type: str | None = None
 	from_branch: str | None = None
+	#: The source pattern's own role and collateral duties — part of its group identity
+	#: now that a role splits one `(employee, shift_type, branch)` into several patterns,
+	#: and what a chained edit on a still-pending chip resolves the group through.
+	from_scheduling_role: str | None = None
+	from_collateral_roles: tuple[str, ...] = ()
 	from_weekday: int | None = None
 	from_phase: int = 0
 
@@ -188,9 +202,45 @@ def _phase_anchor(view_start: datetime.date, phase: int) -> datetime.date:
 	return view_start + datetime.timedelta(weeks=phase - 1)
 
 
+def group_key(
+	employee: str,
+	shift_type: str,
+	branch: str | None,
+	scheduling_role: str | None,
+	collateral_roles: Iterable[str] = (),
+) -> tuple:
+	"""The identity of one pattern — the unit a single `Shift Schedule Assignment` can
+	represent.
+
+	**The role is part of it.** Two half-days at the same shift type and branch worked in
+	*different* Scheduling Roles are two patterns, not one, and must end up as two
+	documents: `Shift Schedule Assignment.custom_scheduling_role` is single-valued, so
+	folding them together would silently re-role one of them. The same goes for the
+	collateral duties riding on a pattern. The count of assignments therefore scales with
+	(shift type x branch x role x duty set) rather than (shift type x branch) — deliberately
+	so; a document per distinguishable pattern is the only shape that can record what is
+	actually worked.
+
+	Cadence is still *not* in the key — see the module docstring. That remains an outcome
+	of folding, which is what lets a weekly pattern become fortnightly by being edited.
+	"""
+	return (employee, shift_type, branch, scheduling_role, tuple(sorted(collateral_roles)))
+
+
+def rota_key(rota: Rota) -> tuple:
+	"""`group_key` for a `Rota` as it stands on the books."""
+	return group_key(
+		rota.employee,
+		rota.shift_type,
+		rota.shift_location,
+		rota.scheduling_role,
+		rota.collateral_roles,
+	)
+
+
 class _Group:
-	"""One `(employee, shift_type, branch)` pattern being folded, as a per-view-week
-	`phases` map rather than a flat weekday set — see the module docstring for why."""
+	"""One `group_key` pattern being folded, as a per-view-week `phases` map rather than a
+	flat weekday set — see the module docstring for why."""
 
 	__slots__ = (
 		"branch",
@@ -204,16 +254,25 @@ class _Group:
 		"sources",
 	)
 
-	def __init__(self, employee, shift_type, branch):
+	def __init__(self, employee, shift_type, branch, scheduling_role=None, collateral_roles=()):
 		self.employee = employee
 		self.shift_type = shift_type
 		self.branch = branch
+		self.scheduling_role: str | None = scheduling_role
+		self.collateral_roles: tuple[str, ...] = tuple(collateral_roles)
 		self.company: str | None = None
-		self.scheduling_role: str | None = None
-		self.collateral_roles: tuple[str, ...] = ()
 		self.phases: dict[int, set[int]] = {}
 		self.original_phases: dict[int, frozenset[int]] = {}
 		self.sources: set[str] = set()
+
+	def label(self) -> str:
+		"""How the transcript names this pattern: shift type, branch, role."""
+		parts = [self.shift_type]
+		if self.branch:
+			parts.append(f"({self.branch})")
+		if self.scheduling_role:
+			parts.append(f"as {self.scheduling_role}")
+		return " ".join(parts)
 
 
 def apply_changes(
@@ -231,9 +290,9 @@ def apply_changes(
 	will do) when every touched pattern is, and stays, weekly: a cadence that never
 	exceeds one week is invariant to which week you sample it from.
 
-	A "group" is the unit a single `Shift Schedule Assignment` can represent — nominally
-	one `(employee, shift_type, branch)` combination, though a cadence wider than one week
-	needs one row per phase. Groups are seeded from whatever `Rota`s already share that
+	A "group" is the unit a single `Shift Schedule Assignment` can represent — one
+	:func:`group_key`, though a cadence wider than one week needs one row per phase.
+	Groups are seeded from whatever `Rota`s already share that
 	key, resampled into `phases` (`phase index -> weekdays occupied that week`) so a
 	pre-existing multi-phase pattern is read back exactly as it already behaves — a
 	weekly member contributes to every phase (cycle 1 ignores phase alignment, see
@@ -247,7 +306,7 @@ def apply_changes(
 	by_name = {r.assignment: r for r in rotas}
 	by_key: dict[tuple, list[Rota]] = {}
 	for r in rotas:
-		by_key.setdefault((r.employee, r.shift_type, r.shift_location), []).append(r)
+		by_key.setdefault(rota_key(r), []).append(r)
 
 	def week_bounds(phase: int) -> tuple[datetime.date, datetime.date]:
 		start = view_start + datetime.timedelta(weeks=phase)
@@ -258,16 +317,11 @@ def apply_changes(
 
 	def group_for(key) -> _Group:
 		if key not in groups:
-			employee, shift_type, branch = key
-			group = _Group(employee, shift_type, branch)
+			group = _Group(*key)
 			members = by_key.get(key, ())
 			for r in members:
 				group.sources.add(r.assignment)
 				group.company = group.company or r.company
-				# First member wins, and members of one group are one person's own
-				# pattern for one shift type at one branch, so they agree in practice.
-				group.scheduling_role = group.scheduling_role or r.scheduling_role
-				group.collateral_roles = group.collateral_roles or r.collateral_roles
 			for phase in range(view_weeks):
 				start, end = week_bounds(phase)
 				group.phases[phase] = {day.weekday() for m in members for day in occurrences(m, start, end)}
@@ -285,48 +339,51 @@ def apply_changes(
 		# look up (see the Change docstring) — falling back to `src_rota` only for callers
 		# that never supply it (unit tests constructing Change directly; pre-existing
 		# behaviour for a plain from_assignment reference).
-		src_shift_type = (
-			change.from_shift_type
-			if change.from_shift_type is not None
-			else (src_rota.shift_type if src_rota else None)
+		supplied = change.from_shift_type is not None
+		src_shift_type = change.from_shift_type if supplied else (src_rota.shift_type if src_rota else None)
+		src_branch = change.from_branch if supplied else (src_rota.shift_location if src_rota else None)
+		src_role = (
+			change.from_scheduling_role if supplied else (src_rota.scheduling_role if src_rota else None)
 		)
-		src_branch = (
-			change.from_branch
-			if change.from_shift_type is not None
-			else (src_rota.shift_location if src_rota else None)
+		src_collateral = (
+			change.from_collateral_roles if supplied else (src_rota.collateral_roles if src_rota else ())
 		)
 		src_company = (
 			change.company if change.company is not None else (src_rota.company if src_rota else None)
 		)
-		src_role = (
-			change.scheduling_role
-			if change.scheduling_role is not None
-			else (src_rota.scheduling_role if src_rota else None)
-		)
 
-		if change.op in ("move", "remove"):
+		if change.op in ("move", "remove", "retag"):
 			if src_shift_type is None:
 				continue  # already gone from a prior change in this batch, or unknown
-			src_key = (change.employee, src_shift_type, src_branch)
+			src_key = group_key(change.employee, src_shift_type, src_branch, src_role, src_collateral)
 			group_for(src_key).phases[change.from_phase].discard(change.from_weekday)
 
-		if change.op == "move":
+		if change.op in ("move", "retag"):
 			if src_shift_type is None:
 				continue
-			shift_type = change.to_shift_type or src_shift_type
-			branch = change.to_branch if change.to_branch is not None else src_branch
-			dst = group_for((change.employee, shift_type, branch))
-			dst.phases[change.to_phase].add(change.to_weekday)
+			# A retag leaves the occurrence exactly where it is and changes only the role
+			# it is worked in; a move is the other way round. Both are the same operation
+			# on the same pair of groups, which is why they share this branch — the role
+			# is simply part of the destination key now (see `group_key`).
+			retag = change.op == "retag"
+			shift_type = src_shift_type if retag else (change.to_shift_type or src_shift_type)
+			branch = (
+				src_branch if retag else (change.to_branch if change.to_branch is not None else src_branch)
+			)
+			# A move into another group is not a change of role: dragging a half-day to
+			# another branch keeps what is worked during it.
+			role = change.scheduling_role if retag else src_role
+			weekday = change.from_weekday if retag else change.to_weekday
+			phase = change.from_phase if retag else change.to_phase
+			dst = group_for(group_key(change.employee, shift_type, branch, role, src_collateral))
+			dst.phases[phase].add(weekday)
 			dst.company = dst.company or src_company
-			# A move into a group that has no pattern of its own yet takes the role it
-			# came from: dragging a half-day to another branch is not a change of role.
-			dst.scheduling_role = dst.scheduling_role or src_role
-			dst.collateral_roles = dst.collateral_roles or (src_rota.collateral_roles if src_rota else ())
 		elif change.op == "add":
-			dst = group_for((change.employee, change.to_shift_type, change.to_branch))
+			dst = group_for(
+				group_key(change.employee, change.to_shift_type, change.to_branch, change.scheduling_role)
+			)
 			dst.phases[change.to_phase].add(change.to_weekday)
 			dst.company = dst.company or change.company
-			dst.scheduling_role = dst.scheduling_role or change.scheduling_role
 
 	deletes: list[str] = []
 	creates: list[NewAssignment] = []
@@ -370,9 +427,8 @@ def apply_changes(
 		if had_content and has_content:
 			old_cycle = minimal_cycle(group.original_phases, view_weeks)
 			if old_cycle != new_cycle:
-				branch = f" ({group.branch})" if group.branch else ""
 				cadence_changes.append(
-					f"{group.employee}: {group.shift_type}{branch} periodicity changed from "
+					f"{group.employee}: {group.label()} periodicity changed from "
 					f"{_cadence_label(old_cycle)} to {_cadence_label(new_cycle)}"
 				)
 
@@ -415,6 +471,13 @@ def describe_change(change: Change, rotas: Iterable[Rota], view_weeks: int = 1) 
 	if change.op == "promote":
 		silver = [r for r in by_name.values() if r.employee == change.employee and r.unconfirmed]
 		return f"{change.employee}: confirmed {len(silver)} unconfirmed pattern(s) as they stand"
+
+	if change.op == "retag":
+		src = by_name.get(change.from_assignment)
+		shift_type = src.shift_type if src else (change.from_shift_type or "?")
+		was = (src.scheduling_role if src else change.from_scheduling_role) or "no role"
+		now = change.scheduling_role or "no role"
+		return f"{change.employee}: {shift_type} {from_weekday}{from_suffix} now worked as {now} (was {was})"
 
 	if change.op == "remove":
 		src = by_name.get(change.from_assignment)

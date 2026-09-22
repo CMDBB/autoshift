@@ -29,12 +29,12 @@ def list_disciplines() -> list[str]:
 	)
 
 
-def _roles(discipline: str | None) -> list[dict]:
+def _roles(disciplines: list[str] | None) -> list[dict]:
 	"""Active roles, ordered as the wall chart orders its lanes: discipline, then
 	`display_order_key`, then most rooms per holder, then name."""
 	filters: dict = {"active": 1}
-	if discipline:
-		filters["discipline"] = discipline
+	if disciplines:
+		filters["discipline"] = ["in", disciplines]
 	rows = frappe.get_all(
 		"Scheduling Role",
 		filters=filters,
@@ -89,15 +89,19 @@ def _settings_summary(employees: list[str]) -> dict[str, dict]:
 
 
 @frappe.whitelist()
-def get_matrix(discipline: str | None = None, show_all: int | str = 0) -> dict:
-	"""Rows, columns and filled cells for one discipline (or every discipline when blank).
+def get_matrix(disciplines: str | list | None = None, show_all: int | str = 0) -> dict:
+	"""Rows, columns and filled cells for a set of disciplines (or every discipline when
+	blank) — the same set filters both: a role is a column when its discipline is in the
+	set, an employee a row when they hold one of those columns.
 
 	Rows are active employees holding any Employee Scheduling Role among the shown
 	columns — active or not, in window or not, since the matrix is where you would go to
 	fix exactly those — or every active employee with `show_all`.
 	"""
 	frappe.has_permission(ESR, throw=True)
-	roles = _roles(discipline or None)
+	if isinstance(disciplines, str):
+		disciplines = json.loads(disciplines) if disciplines else []
+	roles = _roles(disciplines or None)
 	role_names = [r["role"] for r in roles]
 
 	esr_rows = (
