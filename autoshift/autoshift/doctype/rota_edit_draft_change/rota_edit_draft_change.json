@@ -1,0 +1,171 @@
+{
+ "actions": [],
+ "creation": "2026-09-01 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Data",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "op",
+  "employee",
+  "from_assignment",
+  "from_shift_type",
+  "from_branch",
+  "from_scheduling_role",
+  "from_collateral_roles",
+  "from_weekday",
+  "from_phase",
+  "column_break_1",
+  "to_shift_type",
+  "to_weekday",
+  "to_phase",
+  "to_branch",
+  "scheduling_role",
+  "description"
+ ],
+ "fields": [
+  {
+   "description": "Promote confirms every unconfirmed (imported) pattern the employee still has, as it stands.",
+   "fieldname": "op",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Operation",
+   "options": "Add\nMove\nRemove\nRetag\nPromote",
+   "reqd": 1
+  },
+  {
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Employee",
+   "options": "Employee",
+   "reqd": 1
+  },
+  {
+   "depends_on": "eval:[\"Move\", \"Remove\"].includes(doc.op)",
+   "description": "The Shift Schedule Assignment this change moves or removes a day from.",
+   "fieldname": "from_assignment",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "From Assignment",
+   "options": "Shift Schedule Assignment"
+  },
+  {
+   "depends_on": "eval:[\"Move\", \"Remove\", \"Retag\"].includes(doc.op)",
+   "description": "Identifies the touched pattern when from_assignment is blank — the occurrence is itself a not-yet-applied edit with no real Shift Schedule Assignment yet. See rota/edit.py, Change.",
+   "fieldname": "from_shift_type",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "From Shift Type",
+   "options": "Shift Type"
+  },
+  {
+   "depends_on": "eval:[\"Move\", \"Remove\", \"Retag\"].includes(doc.op)",
+   "fieldname": "from_branch",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "From Branch",
+   "options": "Branch"
+  },
+  {
+   "depends_on": "eval:[\"Move\", \"Remove\"].includes(doc.op)",
+   "fieldname": "from_weekday",
+   "fieldtype": "Select",
+   "label": "From Weekday",
+   "options": "\nMonday\nTuesday\nWednesday\nThursday\nFriday\nSaturday\nSunday"
+  },
+  {
+   "default": "0",
+   "description": "Which week of the editor's view the touched occurrence was in (0-indexed) — see rota/edit.py, EditPlan.cadence_changes.",
+   "fieldname": "from_phase",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "From Phase"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval:[\"Add\", \"Move\"].includes(doc.op)",
+   "fieldname": "to_shift_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "To Shift Type",
+   "options": "Shift Type"
+  },
+  {
+   "depends_on": "eval:[\"Add\", \"Move\"].includes(doc.op)",
+   "fieldname": "to_weekday",
+   "fieldtype": "Select",
+   "label": "To Weekday",
+   "options": "\nMonday\nTuesday\nWednesday\nThursday\nFriday\nSaturday\nSunday"
+  },
+  {
+   "default": "0",
+   "description": "Which week of the editor's view the destination occurrence is in (0-indexed) — see rota/edit.py, EditPlan.cadence_changes.",
+   "fieldname": "to_phase",
+   "fieldtype": "Int",
+   "hidden": 1,
+   "label": "To Phase"
+  },
+  {
+   "depends_on": "eval:[\"Add\", \"Move\"].includes(doc.op)",
+   "fieldname": "to_branch",
+   "fieldtype": "Link",
+   "label": "To Branch",
+   "options": "Branch"
+  },
+  {
+   "description": "Frozen at staging time, against the state the change was actually made against — see rota/edit.py.",
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "in_list_view": 1,
+   "label": "Description",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:[\"Move\", \"Remove\", \"Retag\"].includes(doc.op)",
+   "description": "The touched pattern's own Scheduling Role — part of its identity, since a role splits one (employee, shift type, branch) into several patterns. See rota/edit.py, group_key.",
+   "fieldname": "from_scheduling_role",
+   "fieldtype": "Link",
+   "hidden": 1,
+   "label": "From Scheduling Role",
+   "options": "Scheduling Role",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:[\"Move\", \"Remove\", \"Retag\"].includes(doc.op)",
+   "description": "The touched pattern's collateral duties, comma-separated — the rest of its identity. See rota/editor.py, COLLATERAL_SEPARATOR.",
+   "fieldname": "from_collateral_roles",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "From Collateral Roles",
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:[\"Add\", \"Retag\"].includes(doc.op)",
+   "description": "The Scheduling Role this edit puts the occurrence in: the role an Add creates its pattern in, and the role a Retag moves it to.",
+   "fieldname": "scheduling_role",
+   "fieldtype": "Link",
+   "label": "Scheduling Role",
+   "options": "Scheduling Role",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-09-14 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Autoshift",
+ "name": "Rota Edit Draft Change",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

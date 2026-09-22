@@ -1,12 +1,23 @@
 # Autoshift — Shift Optimiser for Frappe HR
 
-Autoshift is a Frappe app that automatically assigns employees to shifts using Mixed Integer Linear Programming (MILP). It integrates with Frappe HR data (employees, shift types, leave applications, holidays) and produces an optimised schedule that maximises room utilisation while respecting staff FTE targets and shift preferences.
+Autoshift is a Frappe app that automatically assigns employees to shifts using
+Mixed Integer Linear Programming (MILP). It integrates with Frappe HR data
+(employees, shift types, leave applications, holidays) and produces an optimised
+schedule that maximises room utilisation while respecting staff FTE targets and
+shift preferences.
+
+Autoshift is organisation-agnostic: disciplines, branches, scheduling roles,
+room counts and rules are all records you create in the desk (see
+[One-time Setup](#one-time-setup)), not constants in the code. Nothing about any
+particular practice ships in this repo — if you are migrating off a legacy
+system, that is a separate concern (for ZaWin, see the companion
+[`zawin2frappe`](https://github.com/CMDBB/zawin2frappe) app).
 
 ## Prerequisites
 
 - A Frappe v16 bench. Frappe HR (`hrms`) is a required app and is installed automatically
-  with autoshift; Python dependencies (`pulp[cbc]` — ships the COIN-OR CBC solver binary —
-  and `numpy`) are installed by bench from `pyproject.toml`.
+with autoshift; Python dependencies (`pulp[cbc]` — ships the COIN-OR CBC solver
+binary — and `numpy`) are installed by bench from `pyproject.toml`.
 - Redis (required by Frappe for background jobs)
 
 ## Installation
@@ -17,14 +28,16 @@ bench get-app $URL_OF_THIS_REPO --branch version-16
 bench install-app autoshift
 ```
 
-Installing seeds the built-in **Optimization Rule** documents and the **Standard Ruleset**
-(see below). When updating an already-installed site, run `bench migrate` as usual.
+Installing seeds the built-in **Optimization Rule** documents and the
+**Standard Ruleset** (see below). When updating an already-installed site, run
+`bench migrate` as usual.
 
 ---
 
 ## One-time Setup
 
-Before running the optimiser, configure the following three areas in the Frappe desk.
+Before running the optimiser, configure the following in the Frappe desk.
+Sections 1–3 are required; 4–6 have working defaults.
 
 ### 1. Optimizer Settings *(singleton)*
 
@@ -35,21 +48,203 @@ Before running the optimiser, configure the following three areas in the Frappe 
 | Bounded Holiday List | Holiday list used for 1-week / 2-week / 4-week planning modes |
 | Unbounded Holiday List | Holiday list used for Unbounded planning mode |
 
-### 2. Discipline Designation Branch Config
+### 2. Discipline Branch Config
 
-**Autoshift → Discipline Designation Branch Config** — one record per *(discipline, designation, branch)* combination.
+**Autoshift → Discipline Branch Config** — one record per *(discipline, branch)*
+combination.
 
 | Field | Description |
 |---|---|
 | Discipline | Department (e.g. Dental, Hygiene) |
-| Employee Type | Frappe designation that maps to this discipline |
 | Branch | Branch / location name |
-| Rooms Num | Number of treatment rooms at this branch for this discipline |
-| Max Rooms for Employee Type | Maximum rooms one employee of this designation can staff simultaneously |
+| Number of Rooms | Number of treatment rooms at this branch for this discipline |
+| Shift Types | Which Shift Types the optimiser schedules here; one listed nowhere is excluded as non-clinical |
 
 At least one record is required; the optimiser will throw if none are found.
 
-### 3. Employee Settings *(optional per employee)*
+### 3. Scheduling Roles
+
+**Autoshift → Scheduling Role** — the optimiser's unit of *capability*. A role
+names exactly one discipline, and an employee may hold several — which is how
+somebody who works two disciplines (say an assistant who also does prophylaxis)
+is scheduled without either discipline over-stating its capacity.
+
+| Field | Description |
+|---|---|
+| Role Name | e.g. "Ortho Assistant" |
+| Discipline | The Department this role staffs |
+| Max Rooms Per Holder | Rooms one holder covers simultaneously in a single slot |
+| Display Order Key | *Optional.* Where this role's column sits in the week wall chart — see below |
+| Chip Sort Field / Descending | *Optional.* Orders the people *within* this role's column each day — see below |
+| Assignments Are Binding | *Optional.* Holders keep exactly the Shift Assignments already on the books — see below |
+
+**Autoshift → Employee Scheduling Role** — one record per employee-capability pair.
+
+| Field | Description |
+|---|---|
+| Employee | Link to Employee |
+| Scheduling Role | The capability they hold |
+| Agreed FTE % in Role | *Optional.* The informally agreed share of their time in this role. Blank means no expectation. |
+| Max Rooms Override | *Optional.* Overrides the role's figure for this person (e.g. an apprentice covering one chair, not three) |
+| Binding Override | *Optional.* Overrides the role's Assignments Are Binding for this person. Blank inherits |
+| Suitability | How suitable they are to work this role: **1** for a regular holder (the default), higher for a substitute — 1.2 a good backup, 3 a terrible but feasible one. Must be at least 1 |
+| Valid From / Valid To | *Optional.* Time-boxes a capability acquired or dropped mid-year |
+
+**An employee with no Scheduling Role is not scheduled at all.** This is how
+non-clinical staff stay out of scope — `Employee.department` and
+`Employee.designation` are payroll data and are not read by the optimiser.
+
+**Display Order Key** affects presentation only, never the schedule. The week
+wall chart draws one column per role of a discipline, ordered by this key
+(default 0), then by Max Rooms Per Holder descending, then by name. Leave it
+alone unless the derived order reads wrong: setting a practitioner role to
+**-1** puts it ahead of every role still on 0, which is how you get the
+practitioner column to the left of the assistant one. It also breaks the tie
+when a Shift Assignment's role has to be inferred, so the chart and the
+inference agree.
+
+**Chip Sort Field** orders the people stacked inside one role's column on a
+given day, which by default is alphabetical by initials. Row numbers on the
+chart are drawn either way — a band's rows are numbered because chairs are — so
+an alphabetical stack makes the number meaningless for anything that reads it as
+more than a chair index. Name a field on Employee (e.g. `date_of_joining`) to
+give the number a meaning instead: apprentices sorted by that field read in
+seniority order rather than alphabetically. Check **Descending** to put the
+highest value first (latest joiner in room 1, say) instead of the lowest. Leave
+the field blank to keep the alphabetical default; an employee with no value for
+the field sorts after everyone who has one, in alphabetical order, rather than
+the chart breaking.
+
+**Assignments Are Binding** is for a role whose schedule is settled by its
+holders rather than by the planner — a senior clinician whose week is fixed,
+say. Their existing Shift Assignments become an *input*: over the run's horizon
+they work exactly what is already on the books, and the optimiser may not add,
+move or drop any of it. A holder whose schedule has not settled yet is exempted
+with **Binding Override = Not Binding** on their Employee Scheduling Role, and
+is then scheduled normally alongside everyone else.
+
+Their week does not have to be entered by hand for every week. If a bound holder
+has a **Shift Schedule** and a **Shift Schedule Assignment** (stock HR's way of
+recording a repeating week — a shift type, a frequency, the weekdays it falls
+on), autoshift creates the missing Shift Assignments from it: the wall chart
+offers to when you land on a week that has none, and both Solve and Preview say
+how many they are about to create before running. See
+[Where a settled week comes from](#where-a-settled-week-comes-from) for why
+autoshift does this rather than HR's own nightly job.
+
+Two things still apply to a bound holder. Approved (and speculated) leave wins
+over a settled assignment: the colliding shift is dropped rather than making the
+run infeasible, and the run-statistics panel reports it so the underlying
+records can be fixed. And a day they have nothing on the books stays empty —
+"settled" means settled, not "fill the gaps".
+
+The toggle only takes effect if the run's ruleset includes the
+**Bind settled schedules** rule (it is in the Standard Ruleset). The rule is
+inert while no role is marked binding, so it costs nothing on a site that does
+not use this.
+
+#### Where a settled week comes from
+
+Stock HR is supposed to generate the Shift Assignments from a Shift Schedule on
+a nightly job, and it does — as long as the frequency is *Every Week*. For
+anything longer it takes its week boundary from the schedule's
+**Create Shifts After** date and then moves that date forward as it goes, so the
+next night's run resumes mid-pattern and the cycle drifts until a four-week rota
+is firing most weeks. A fortnightly Friday or a four-week orthodontic rota
+therefore cannot be switched on as it stands, and the import writes those
+schedules disabled and marked *DO NOT ENABLE*.
+
+Autoshift reads the schedules directly instead and creates the records itself,
+correctly phased, at the two moments you would want it to: when the wall chart
+shows a week that has none, and before a run solves a horizon that has none.
+Nothing existing is touched — a day already covered is left alone — and
+**Create Shifts After** is never modified, because it is also what fixes a
+rota's phase. Creating them before a solve is not optional: binding freezes a
+person against exactly these records, so a horizon without them would freeze
+them to an empty week.
+
+This is a workaround for an HR bug, not a feature autoshift wants to own. The
+day the nightly job anchors its weeks properly, enabling the Shift Schedule
+Assignments does the same work and this can go.
+
+#### Correcting a settled rota
+
+Detection from the import isn't always right — a schedule changes, or
+zawin2frappe never saw it. The **Rota Editor** (a shortcut on the Autoshift
+workspace) lets you fix a bound employee's rota by hand: pick a discipline, then
+drag a shift to a different day, shift type or branch, or click an empty cell to
+add one. Nothing is written until you click **Apply Changes** — every drag is
+staged in a draft first, listed as plain English at the bottom of the page
+("moved AM (Balexert) from Tue-Wed to Tue-Fri") so you can review before
+committing, and **Discard Changes** drops the draft without touching anything. A
+pattern that was imported rather than entered by hand is drawn with a **dotted
+grey border**: it is the import's best reading of the old agenda, not yet a
+confirmed schedule. Editing a pattern confirms it, since the replacement is the
+authoritative record. **Promote all**, next to an employee's name, confirms the
+rest of their imported patterns as they stand. A later zawin2frappe re-import
+only ever updates patterns that are still unconfirmed, so neither your edits
+nor your confirmations get overwritten.
+
+A rota that repeats every N weeks is shown at whatever view width you pick
+(1/2/4 weeks); someone whose rota doesn't divide evenly into the current width
+is left off the grid rather than shown as a fragment, with a note saying why —
+widen the view to see (and edit) their full pattern.
+
+Every pattern records the **Scheduling Role** it is worked in. Hover a chip to
+see it; **right-click** a chip to change it, picking from the roles that person
+holds in this discipline. Adding a shift asks which role only when it cannot be
+worked out — someone with a single role there, or a single *binding* one, simply
+gets it. Patterns imported before the role was recorded have one filled in from
+the same reasoning, so an employee who only ever had one role needs no work at
+all; whatever is still unattributed acquires a role the first time you edit it.
+Because the role is part of what a pattern *is*, re-roling one half-day of a
+Mon–Wed pattern splits it into two schedules. That is intended: one Shift
+Schedule Assignment can only name one role.
+
+Someone who holds binding roles in **two disciplines** has one week, not two, so
+the other discipline's shifts are drawn here as well — faint, italic and
+read-only, labelled with the discipline that owns them. Open that discipline's
+view to change them. Where one of them lands on the same half-day as a shift in
+the discipline you are editing, both turn **red**: the person is booked twice.
+Shift Types this discipline's config doesn't cover appear as extra read-only
+rows at the bottom, marked with a `*`, rather than being left out of the picture.
+
+The Agreed FTE % is deliberately soft: the solver is *penalised* for deviating
+from it (see the "Agreed role FTE split" objective rule) but never forbidden,
+because these splits are normally an informal expectation rather than an
+entitlement. If you do need it enforced, add the non-standard
+**Agreed role FTE ceiling** constraint rule to your ruleset.
+
+#### The Role Matrix
+
+The **Role Matrix** (a shortcut on the Autoshift workspace) shows the same
+records as one table: a row per employee, a column per Scheduling Role (headed by
+its initials, as on the wall chart; hover for the full name), and the
+Suitability in every cell where the employee has that role. Pick a discipline
+(or all of them) and type into a cell to give someone a role or change how
+suitable they are for it; clear a cell to take the role away. Tick **All
+Employees** to list people who have no role there yet. Cells are coloured from
+green (1) to red (3 and up), and a role that is inactive or outside its
+validity window today is struck through. Hover a cell for its Agreed FTE,
+overrides and validity, or click its ↗ to open the record.
+
+The **Settings** column sums up each person's Employee Settings in one chip —
+★ for a favourite shift, ↑ for the shift they weight highest, *Uniform* for
+none — and opens the record in a new tab (or creates one, if they have none).
+
+Like the Rota Editor, nothing is written until you click **Apply Changes**,
+and **Discard Changes** drops your edits. Removing a role deletes its Employee
+Scheduling Role, including any Agreed FTE or validity window on it.
+
+The optimiser uses Suitability through the standard **Shift preferences and
+role suitability** objective: every shift an employee works in a role costs
+its usual preference cost multiplied by their suitability for that role. So
+the practice prefers a regular holder over a backup, and a good backup over a
+poor one, but still uses a poor backup to staff a room nobody else can. With
+every Suitability at 1 this is exactly the older **Shift preferences** rule,
+which you can still pick instead (they are a choice of one).
+
+### 4. Employee Settings *(optional per employee)*
 
 **Autoshift → Employee Settings** — one record per employee to override defaults.
 
@@ -60,20 +255,50 @@ At least one record is required; the optimiser will throw if none are found.
 | Shift Preferences | Table of (shift type, weight) pairs; normalised automatically |
 | Branch Preferences | Table of preferred branches. *Not yet read by the optimiser — set this field has no effect on a run today.* |
 
-Employees without an Employee Settings record use a uniform shift preference and their `custom_fte` field value (set directly on the Employee doctype) for the FTE target.
+Employees without an Employee Settings record use a uniform shift preference and
+their `custom_fte` field value (set directly on the Employee doctype) for the
+FTE target.
 
-### 4. Employee FTE
+### 4b. Bulk Employee Settings *(a shortcut for the two records above)*
 
-On each **Employee** record, fill in the **FTE %** field (0–100). This determines the target number of shifts for the planning period. Employees default to 100 % FTE if the field is blank.
+**Autoshift → Bulk Employee Settings** creates the two per-employee records —
+**Employee Settings** (preferences) and **Employee Scheduling Role** (the
+capability that makes somebody schedulable at all) — for many employees at once,
+so a new site does not need them entered one by one.
 
-### 5. Optimization Rules & Rulesets
+Fill in the template at the top (favourite shift and shift/branch preferences
+for the Employee Settings action; scheduling role, agreed FTE, max-rooms
+override and validity window for the role action), then narrow the employee list
+with the filters:
 
-The constraints a run enforces — and the objective terms it maximises — are documents, not
-hardcoded behaviour.
+| Filter | Description |
+|---|---|
+| Company | Restrict to one company |
+| Discipline | Employees who hold a Scheduling Role in this Department |
+| Holds Role | Employees who hold this specific role |
+| Coverage | *All Employees*, *Without Employee Settings*, or *Without Any Scheduling Role* — i.e. "who is still missing one of these" |
 
-**Autoshift → Optimization Rule** — one document per rule. Each rule has a natural-language
-**Description**, a **Rule Kind** (`Constraint`, `Objective`, or `Mixed`; derived from code
-for built-ins, declared by the developer for custom code) and an optional implementation:
+Tick the employees you want and run the action.
+**An employee who already has the record is skipped, never overwritten**, so it
+is safe to re-run over a partly configured site; use it to fill gaps and edit
+the exceptions by hand afterwards. Up to 30 employees are processed immediately;
+a larger selection runs as a background job with a progress bar.
+
+### 5. Employee FTE
+
+On each **Employee** record, fill in the **FTE %** field (0–100). This
+determines the target number of shifts for the planning period. Employees
+default to 100 % FTE if the field is blank.
+
+### 6. Optimization Rules & Rulesets
+
+The constraints a run enforces — and the objective terms it maximises — are
+documents, not hardcoded behaviour.
+
+**Autoshift → Optimization Rule** — one document per rule. Each rule has a
+natural-language **Description**, a **Rule Kind** (`Constraint`, `Objective`, or
+`Mixed`; derived from code for built-ins, declared by the developer for custom
+code) and an optional implementation:
 
 | Implementation Type | Meaning |
 |---|---|
@@ -81,44 +306,114 @@ for built-ins, declared by the developer for custom code) and an optional implem
 | `Built-in` | Points at a rule shipped in the app code via **Built-in Key** (registry in `autoshift/optimizer/rules.py`) |
 | `Custom Code` | Python on the document defining `apply(ctx)`; it only runs after a developer checks **Validated by Developer** (editing the code clears the flag) |
 
-The Implementation Code editor assists authoring: autocompletion for the rule API
-(`ctx.…`, `ctx.data.…`, `pulp.…`, `itertools.…` — introspected server-side from the real
-classes) and inline lint squiggles from [Ruff](https://docs.astral.sh/ruff/) running as
-WebAssembly in a browser worker (via [ace-linters](https://github.com/mkslanc/ace-linters);
-self-hosted, no external requests). The lint assets come from the app's npm dependencies —
-run `yarn install` in `apps/autoshift` followed by `bench build` once per bench (completions
-work regardless).
+The Implementation Code editor assists authoring: autocompletion for the rule
+API (`ctx.…`, `ctx.data.…`, `pulp.…`, `itertools.…` — introspected server-side
+from the real classes) and inline lint squiggles from
+[Ruff](https://docs.astral.sh/ruff/) running as WebAssembly in a browser worker
+(via [ace-linters](https://github.com/mkslanc/ace-linters); self-hosted, no
+external requests). The lint assets come from the app's npm dependencies — run
+`yarn install` in `apps/autoshift` followed by `bench build` once per bench
+(completions work regardless).
 
-Only implemented rules can be used in a solve. Because writing and validating rules takes
-time, rules are bundled into an **Optimization Ruleset** (**Autoshift → Optimization
-Ruleset**) — a reusable, ordered list of rules that every Optimizer Run points to. Each
-ruleset row carries a **Weight** that multiplies the rule's objective contribution (it has
-no effect on constraint rules — saving warns if you set one there).
+Only implemented rules can be used in a solve. Because writing and validating
+rules takes time, rules are bundled into an **Optimization Ruleset**
+(**Autoshift → Optimization Ruleset**) — a reusable, ordered list of rules that
+every Optimizer Run points to. Each ruleset row carries a **Weight** that
+multiplies the rule's objective contribution (it has no effect on constraint
+rules — saving warns if you set one there).
 
-Migration seeds one Optimization Rule per built-in (constraints: one shift per day, leave
-blocklist, existing assignments, max rooms per slot, room coverage, FTE ceiling; objective
-terms: room utilization, shift preferences) and a **Standard Ruleset** containing all of
-them, which is the default for new runs. Unimplemented rules may sit in a ruleset as a
-draft, but a run using that ruleset refuses to solve until they are implemented.
+Migration seeds one Optimization Rule per built-in and a **Standard Ruleset**,
+the default for new runs. The Standard Ruleset holds the subset that suits most
+sites; the remaining built-ins ship as rules you can add to a ruleset of your
+own — see [How the Optimiser Works](#how-the-optimiser-works) for what each one
+does. Unimplemented rules may sit in a ruleset as a draft, but a run using that
+ruleset refuses to solve until they are implemented.
 
-A ruleset with no `Objective`/`Mixed` rule gives the solver nothing to maximise — it
-returns an arbitrary feasible schedule (typically nobody assigned). Saving such a ruleset
-warns but is allowed, since it's useful for pure feasibility checks. **Note for rulesets
-created before objective rules existed:** only the Standard Ruleset is upgraded
-automatically; add the objective rules to your own rulesets yourself.
+Each rule may name a **Scheduling Rule Topic**
+(**Autoshift → Scheduling Rule Topic**), which is purely a heading: it groups
+the rule into a collapsible section in Optimizer Studio's rule panel and
+constrains nothing. The built-in topics are seeded and re-synced on every
+migrate; topics you create yourself are never touched, and a Custom Code rule
+may file itself under any of them.
 
-> **Security note:** Custom Code rules execute as ordinary Python at solve time, so
-> implementing and validating rules is developer-only. **HR Manager** can create and edit
-> rules, but only the name and NL description: the implementation fields (Implementation
-> Type, Built-in Key, Implementation Code, Validated by Developer) are read-only for
-> everyone except **System Manager** (field permission level 1). The server enforces this
-> independently of the UI — a non-developer's attempted implementation change is cleaned
-> up with a warning (new rules are forced to `Not Implemented`), and setting *Validated by
-> Developer* is refused outright.
+A ruleset with no `Objective`/`Mixed` rule gives the solver nothing to maximise
+— it returns an arbitrary feasible schedule (typically nobody assigned). Saving
+such a ruleset warns but is allowed, since it's useful for pure feasibility
+checks. **Note for rulesets created before objective rules existed:** only the
+Standard Ruleset is upgraded automatically; add the objective rules to your own
+rulesets yourself.
+
+> **Security note:** Custom Code rules execute as ordinary Python at solve time,
+> so implementing and validating rules is developer-only. **HR Manager** can
+> create and edit rules, but only the name and NL description: the
+> implementation fields (Implementation Type, Built-in Key, Implementation Code,
+> Validated by Developer) are read-only for everyone except **System Manager**
+> (field permission level 1). The server enforces this independently of the UI —
+> a non-developer's attempted implementation change is cleaned up with a warning
+> (new rules are forced to `Not Implemented`), and setting
+> *Validated by Developer* is refused outright.
 
 ---
 
 ## Running the Optimiser
+
+There are two ways in. **Optimizer Studio** is the quicker one and the place to
+start; the **Optimizer Run** form below is the full record, and is what Studio
+drives underneath.
+
+### Optimizer Studio
+
+**Optimizer Studio** (a shortcut on the Autoshift workspace) puts the planning
+mode, the start date and the rules on one page, so you can try a ruleset and
+look at the result without creating and saving a run first.
+
+The rule panel lists every implemented rule in plain language, grouped into
+collapsible sections by Scheduling Rule Topic.
+**It cannot express a ruleset that would fail**, which is the point of it:
+
+- Rules that are alternatives to one another are **radio buttons**, including an
+  explicit
+  *None* — so you cannot pick two answers to the same question. The treatment of
+  existing Shift Assignments is the main one.
+- A rule that only makes sense on top of another is drawn **inside** it, its checkbox
+  disabled until the parent is ticked.
+- A rule that contradicts one you have ticked is greyed out, and hovering it
+  says which rule
+  blocked it.
+
+Objective rules carry a **weight** box next to them; constraint rules do not,
+because a weight would do nothing there.
+
+**Preview Schedule** solves and renders the result in the same four-pane
+[Schedule View](#step-3--review-the-solution) the run form uses. Each preview
+really does create an Optimizer Run — with **Type = Automatic**, so these are
+hidden from the Optimizer Run list and workspace by default and do not clutter
+the record of runs you made deliberately.
+
+Your toggles live in a private working ruleset (`Studio Draft — <your user>`),
+overwritten on each preview rather than piling up. The seeded presets are never
+edited in place — picking one copies it into your draft. Two other buttons:
+
+| Button | Effect |
+|---|---|
+| **Populate From Run** | Load an existing run's mode, date and rule selection into the panel |
+| **Save Ruleset As** | Promote your current draft to a permanent, named Optimization Ruleset |
+
+Before solving, Studio checks two things and asks about them in one prompt:
+whether any bound practitioners are missing Shift Assignments for the horizon
+(it creates them — this is not optional, see
+[Where a settled week comes from](#where-a-settled-week-comes-from)), and
+whether roles are marked binding while your selection omits the
+**Bind settled schedules** rule — because that would silently re-plan the one
+group whose week is not yours to set.
+
+The **Week** wall chart is available in Studio before you have previewed
+anything at all: with no run to show, it falls back to the Shift Assignments
+already on the books, so it doubles as a way to look at any week.
+
+**Export PDF**, next to Fullscreen, opens the current week in its own tab with
+the browser's print dialog already up — choose "Save as PDF" as the destination.
+It prints exactly the week you were looking at, minus the navigation buttons.
 
 ### Step 1 — Create an Optimizer Run
 
@@ -128,31 +423,79 @@ automatically; add the objective rules to your own rulesets yourself.
 |---|---|
 | Planning Mode | `1-week`, `2-week`, `4-week`, or `Unbounded` |
 | Start Date | First Monday of the planning period (any day for Unbounded) |
-| Existing Shift Assignments | `Use` = fix already-submitted assignments; `Ignore` = start fresh; `Weigh` = treat as soft preference |
 | Optimization Ruleset | Which rules constrain this run; defaults to **Standard Ruleset** (all built-in rules) |
 | Pending Leaves to Treat as Approved | Optional: select pending Leave Applications to block as if approved |
 
 Save the document. Status is **Draft**.
 
-> **Not yet usable:** `Unbounded` planning mode is selectable in the UI but raises
-> `NotImplementedError` when you try to solve — only `1-week`/`2-week`/`4-week` are
-> implemented today. All three Existing Shift Assignments modes work: `Use` fixes existing
-> assignments as hard constraints, `Weigh` uses them as a soft warm-start the solver may
-> override, `Ignore` disregards them.
+How existing Shift Assignments are treated is no longer a run field — it's a
+choice of which rules the run's Ruleset includes:
+`Honor existing Shift Assignments` fixes them as hard constraints,
+`Objective: Conserve Existing Assignments` treats them as a soft warm-start the
+solver may override, and including neither disregards them.
+**The Standard Ruleset includes neither**, so by default the books are a
+tie-break and not a constraint: a practice's own history is rarely feasible
+under the rest of the ruleset — weeks worked short-handed, double-booked or
+against the current room configuration — and pinning it makes the run unsolvable
+rather than realistic. The people whose week genuinely is not yours to set are
+handled by `Bind settled schedules` instead.
+
+> **Not yet usable:** `Unbounded` planning mode is selectable in the UI but
+> raises `NotImplementedError` when you try to solve — only
+> `1-week`/`2-week`/`4-week` are implemented today.
 
 ### Step 2 — Solve
 
-Click **Solve**. There's only one button: the optimiser first attempts to solve synchronously within a short time limit (a few seconds) — for normal practice sizes this finishes immediately and the form reloads with the result.
+Click **Solve**. There's only one button: the optimiser first attempts to solve
+synchronously within a short time limit (a few seconds) — for normal practice
+sizes this finishes immediately and the form reloads with the result.
 
-If CBC doesn't reach a conclusive result within that short window, Autoshift automatically re-queues the same problem as a background job with the full timeout, and the page polls every 5 seconds until it finishes. No separate "background" action is needed.
+If CBC doesn't reach a conclusive result within that short window, Autoshift
+automatically re-queues the same problem as a background job with the full
+timeout, and the page polls every 5 seconds until it finishes. No separate
+"background" action is needed.
 
 Status becomes **Solved** on success or **Failed** if no feasible schedule exists.
 
 ### Step 3 — Review the Solution
 
-The **Assigned Slots** table shows the full schedule: employee, shift type, date, branch, and whether the slot was forced from an existing Shift Assignment. The **Objective Value** shows the raw MILP objective score (higher is better).
+The **Schedule View** tab carries four ways of reading the run, and is up in
+every state — including a Draft you have not solved yet and a run that failed.
 
-Check the **Solver Log** section for CBC solver output if you need to diagnose infeasibility.
+| Pane | What it answers |
+|---|---|
+| **Week** | *Is the practice covered?* A one-week wall chart: treatment rooms down the page, days across. Always available. |
+| **Statistics** | *Is the schedule full, and if not, why?* Coverage meters, FTE gaps, each rule's share of the objective. |
+| **Roster** | *What did this person get?* The per-employee grid, with existing assignments and leave alongside. |
+| **Solver Log** | CBC's raw output, for diagnosing infeasibility. Available on a failed run too. |
+
+The **Week** chart is built entirely from your configuration: one band per
+*(branch, discipline)* from **Discipline Branch Config**, as many numbered rows
+as it has rooms, and one column per **Scheduling Role** of that discipline. So
+an unstaffed room is a blank row and a role nobody covers is a blank column —
+you can see a gap without reading a number. Use ◀ ▶ to move between weeks.
+
+Before the run is solved the chart shows the
+**Shift Assignments already on the books**. Once it is solved, each cell says
+what the run did with that half-day:
+
+| | |
+|---|---|
+| **Kept** | already on the books, and the run scheduled it again |
+| **Added** | proposed by the run; nothing on the books for it |
+| **Dropped** | on the books, and the run did **not** schedule it |
+| → | kept, but moved — hover for what changed |
+| ★ | pinned rather than chosen (a binding role, or an existing assignment being honoured) |
+
+Anyone the chart cannot place — a role with no Discipline Branch Config, a
+branch with no config, a Shift Type the config omits — appears under
+**Unplaced** with the reason stated above the chart, so nobody is ever quietly
+missing. People on leave that week are listed under the chart: usually the
+answer to why a room is empty.
+
+The **Assigned Slots** table on the first tab remains the raw record: employee,
+shift type, date, branch, and whether the slot was forced. The
+**Objective Value** is the raw MILP score (higher is better).
 
 ### Step 4 — Approve
 
@@ -160,12 +503,14 @@ Click **Approve**. This locks the solution. Status becomes **Approved**.
 
 ### Step 5 — Commit
 
-Click **Commit**. Autoshift creates and submits one **Shift Assignment** record per slot. Status becomes **Committed**.
+Click **Commit**. Autoshift creates and submits one **Shift Assignment** record
+per slot. Status becomes **Committed**.
 
-> **Currently not functional:** how a committed run stays linked to the Shift Assignments it
-> creates is being redesigned ([#5](https://github.com/CMDBB/autoshift/issues/5)), and until
-> that lands Commit raises `NotImplementedError` — the run stays **Approved** and no records
-> are created.
+> **Currently not functional:** how a committed run stays linked to the Shift
+> Assignments it creates is being redesigned
+> ([#5](https://github.com/CMDBB/autoshift/issues/5)), and until that lands
+> Commit raises `NotImplementedError` — the run stays **Approved** and no
+> records are created.
 
 ---
 
@@ -192,49 +537,91 @@ flowchart LR
 
 ## Re-running, Restarting, and Stopping a Run
 
-Optimizer Runs are **immutable** once solving starts: there is no in-place reset, cancel, or re-solve of the same document. Instead, every form (except Draft) shows **Re-run (New Copy)**, which creates a brand-new Draft run with the same Planning Mode, Start Date, Existing Shift Assignments setting, and Leave Speculations, and takes you to it. The original run is left exactly as it was — a permanent record of what was tried and what happened.
+Optimizer Runs are **immutable** once solving starts: there is no in-place
+reset, cancel, or re-solve of the same document. Instead, every form (except
+Draft) shows **Re-run (New Copy)**, which creates a brand-new Draft run with the
+same Planning Mode, Start Date, Optimization Ruleset, and Leave Speculations,
+and takes you to it. The original run is left exactly as it was — a permanent
+record of what was tried and what happened.
 
 This single action covers every case:
-- **Re-run a Failed run** — diagnose via the Solver Log, then duplicate and click Solve again.
-- **Get a fresh solution for a Solved/Approved/Committed run** — duplicate, optionally tweak the new Draft's settings, then solve.
-- **"Stop" a stuck Solving run** — just duplicate and move on with the new run; the original keeps running in the background and will eventually settle into Solved or Failed on its own, but you don't need to wait for it.
 
-The new run is created with **Type = Copy**, distinguishing it from a manually created run (**Manual**) or one created by a future automated tool (**Automatic**). Copy and Manual runs both show up in the Optimizer Run list and workspace by default; **Automatic** runs are hidden from both by default (the type filter can be cleared to see them).
+- **Re-run a Failed run** — diagnose via the Solver Log, then duplicate and
+  click Solve again.
+- **Get a fresh solution for a Solved/Approved/Committed run** — duplicate,
+  optionally tweak the new Draft's settings, then solve.
+- **"Stop" a stuck Solving run** — just duplicate and move on with the new run;
+  the original keeps running in the background and will eventually settle into
+  Solved or Failed on its own, but you don't need to wait for it.
+
+The new run is created with **Type = Copy**, distinguishing it from a manually
+created run (**Manual**) or one created by a future automated tool
+(**Automatic**). Copy and Manual runs both show up in the Optimizer Run list and
+workspace by default; **Automatic** runs are hidden from both by default (the
+type filter can be cleared to see them).
 
 ### Detecting identical inputs
 
-Clicking **Solve** first fingerprints the run's input (employees, leaves, FTE targets, preferences, the resolved ruleset, etc.) and checks whether another run already solved that exact same input. If a match is found, you get an **"Identical run detected"** prompt linking to the existing run, but you can press `yes` to re-run anyway.
+Clicking **Solve** first fingerprints the run's input (employees, leaves, FTE
+targets, preferences, the resolved ruleset, etc.) and checks whether another run
+already solved that exact same input. If a match is found, you get an
+**"Identical run detected"** prompt linking to the existing run, but you can
+press `yes` to re-run anyway.
 
-The Input Hash is only ever recorded on a run that actually went through a real solve attempt, which is also how matches are found for *future* runs.
+The Input Hash is only ever recorded on a run that actually went through a real
+solve attempt, which is also how matches are found for *future* runs.
 
 ---
 
 ## How the Optimiser Works
 
-The MILP model is built with [PuLP](https://coin-or.github.io/pulp/) and solved by the embedded COIN-OR CBC binary.
+The MILP model is built with [PuLP](https://coin-or.github.io/pulp/) and solved
+by the embedded COIN-OR CBC binary.
 
 **Decision variables**
-- `x[employee, shift, day, branch]` ∈ {0, 1} — whether an employee is assigned to a shift on a day at a branch
+
+- `x[employee, role, shift, day, branch]` ∈ {0, 1} — whether an employee works a
+shift on a day at a branch, *in one of their Scheduling Roles*. Variables exist
+only for roles the employee actually holds, so eligibility is structural rather
+than a constraint — there is nothing to forbid, because there is nothing to set.
 - `active_rooms[discipline, shift, day, branch]` ∈ ℤ≥0 — rooms staffed in each slot
 
-**Constraints** — supplied by the run's Optimization Ruleset (see [One-time Setup §5](#5-optimization-rules--rulesets)),
-one Optimization Rule document per constraint group. The built-in constraint rules:
+**Constraints** — supplied by the run's Optimization Ruleset (see
+[One-time Setup §6](#6-optimization-rules--rulesets)), one Optimization Rule
+document per constraint group. The built-in constraint rules:
 
-1. At most one shift per employee per day
+1. At most one shift per employee per day, summed across every role they hold — a second
+   role widens *where* somebody can work, never *how much*
 2. Approved and speculated leaves block assignments
-3. Existing Shift Assignments honored per the run's mode: fixed (`Use`), soft warm-start
-   (`Weigh`), or disregarded (`Ignore`)
-4. Max rooms per employee per slot (from Discipline Designation Branch Config)
-5. Room coverage: staff headcount must support the number of active rooms
+3. Existing Shift Assignments honored per the ruleset's choice of rules: fixed
+   (`Honor existing Shift Assignments`), soft warm-start
+   (`Objective: Conserve Existing Assignments`), or disregarded (neither rule included —
+   which is what the Standard Ruleset does)
+3b. `Bind settled schedules`: holders of a Scheduling Role marked *Assignments Are Binding*
+   are frozen at their existing assignments — those fixed on, every other variable of theirs
+   fixed off. Orthogonal to the choice in 3 (it is scoped by role, not a fourth global
+   policy), so it composes with either member of that choice
+4. Max rooms per (employee, role) per slot (from Scheduling Role, optionally overridden per
+   Employee Scheduling Role)
+5. Room coverage: the roles assigned in a discipline must support its number of active rooms
 6. FTE ceiling: assigned shifts ≤ (1 + tolerance) × target, for every employee. This is an
    upper bound only. Staying near the target today comes from the objective's preference term
    pulling assignments up, not from a hard minimum.
+7. *(non-standard, opt-in)* Agreed role FTE ceiling: the hard reading of an agreed split —
+   a role's shifts ≤ (1 + tolerance) × its agreed figure
+8. *(non-standard, opt-in)* One branch per shift: an employee cannot cover more than one
+   branch during a single shift. Redundant while rule 1 allows only one shift a day; add it
+   if you relax that
 
 **Objective (maximise)** — also supplied by the ruleset; each objective rule's term is
 scaled by its row weight. The built-in objective rules:
 
 - Room utilisation: `weight × Σ active_rooms`
-- Shift preferences: `weight × Σ pref[employee, shift] × x[employee, shift, day, branch]`
+- Shift preferences and role suitability *(standard)*: `weight × Σ (pref[employee, shift] − 1) × suitability[employee, role] × x[...]`
+- Shift preferences *(its alternative)*: the same with every suitability at 1
+- Agreed role FTE split: `−weight × Σ |assigned[employee, role] − agreed[employee, role]|`,
+  linearised with a pair of non-negative slack variables per pair. Only pairs whose Employee
+  Scheduling Role names an agreed figure contribute.
 
 Validated Custom Code rules can add further constraints and/or objective terms
 (`ctx.add_objective(expr)`) on top of — or instead of — the built-ins.
@@ -248,7 +635,7 @@ Current modelling limitations (revisit if the underlying assumption stops holdin
 - **No AM/PM fairness term.** The objective only optimises room utilisation and shift
   preference; nothing currently balances how AM vs. PM shifts are distributed across
   employees.
-- **Room counts are static for the whole planning period.** Discipline Designation Branch
+- **Room counts are static for the whole planning period.** Discipline Branch
   Config doesn't support rooms going offline for part of a run (e.g. maintenance, partial
   closures).
 - **Leave Application is the only day-level blocker.** There's no modelling for on-call
@@ -277,9 +664,10 @@ dev dependency group (`uv sync` once to create `.venv`).
 
 ### Unit tests (pure Python, no site needed)
 
-The optimizer engine (`autoshift/optimizer/`, minus `data_loader`) has no Frappe imports and
-is covered by a fast pytest suite: planning-day generation, input hashing, every built-in
-rule, rule selection, custom-code rules, and multi-employee integration scenarios.
+The optimizer engine (`autoshift/optimizer/`, minus `data_loader`) has no Frappe
+imports and is covered by a fast pytest suite: planning-day generation, input
+hashing, every built-in rule, rule selection, custom-code rules, and
+multi-employee integration scenarios.
 
 ```bash
 cd apps/autoshift
@@ -289,11 +677,12 @@ uv run pytest tests/
 ### Integration tests (need a Frappe site)
 
 Doctype-level tests (solve lifecycle and caching, the developer-only rule
-implementation/validation gate) run with bench, the same way CI does. Run them only against
-a **disposable, never-served test site** — never against a site whose state you care about.
-They must pass on a freshly created site; if a test needs records, seed them in the test
-itself rather than relying on site state (and prune Frappe's recursive test-record
-generation with `IGNORE_TEST_RECORD_DEPENDENCIES` — see `test_optimizer_run.py`).
+implementation/validation gate) run with bench, the same way CI does. Run them
+only against a **disposable, never-served test site** — never against a site
+whose state you care about. They must pass on a freshly created site; if a test
+needs records, seed them in the test itself rather than relying on site state
+(and prune Frappe's recursive test-record generation with
+`IGNORE_TEST_RECORD_DEPENDENCIES` — see `test_optimizer_run.py`).
 
 ```bash
 bench new-site dev.test.localhost --db-root-password <pw> --admin-password <pw>
@@ -306,8 +695,8 @@ bench --site dev.test.localhost run-tests --app autoshift
 bench --site dev.test.localhost run-tests --module autoshift.autoshift.doctype.optimizer_run.test_optimizer_run
 ```
 
-Note: creating a new site can steal `default_site` in `common_site_config.json` — point it
-back at your development site so the test site is never served.
+Note: creating a new site can steal `default_site` in `common_site_config.json`
+— point it back at your development site so the test site is never served.
 
 ### Linting
 
@@ -316,12 +705,12 @@ pre-commit install # once
 pre-commit # then
 ```
 
-Configured hooks: **ruff** (lint + format), **eslint**, **prettier**, **pyupgrade** — run on
-every commit and by CI on PRs.
+Configured hooks: **ruff** (lint + format), **eslint**, **prettier**,
+**pyupgrade** — run on every commit and by CI on PRs.
 
 CI additionally runs Frappe's Semgrep correctness rules, pinned via the
-`frappe-semgrep-rules` git submodule. To reproduce locally, initialise the submodule once,
-then scan:
+`frappe-semgrep-rules` git submodule. To reproduce locally, initialise the
+submodule once, then scan:
 
 ```bash
 git submodule update --init frappe-semgrep-rules
@@ -330,20 +719,44 @@ uv run semgrep scan --config ./frappe-semgrep-rules/rules --config r/python.lang
 
 ### Front-end assets
 
-The app has npm dependencies (`package.json`): `ace-linters` + `ace-python-ruff-linter`
-power the in-browser lint of Custom Code rules. `bench setup requirements` (or a manual
-`yarn install` in `apps/autoshift`) installs them; `bench build` then symlinks
-`node_modules` into served assets (`/assets/autoshift/node_modules/…`), from which
-`optimization_rule.js` lazy-loads them only on the Optimization Rule form.
+The app has npm dependencies (`package.json`): `ace-linters` +
+`ace-python-ruff-linter` power the in-browser lint of Custom Code rules.
+`bench setup requirements` (or a manual `yarn install` in `apps/autoshift`)
+installs them; `bench build` then symlinks `node_modules` into served assets
+(`/assets/autoshift/node_modules/…`), from which `optimization_rule.js`
+lazy-loads them only on the Optimization Rule form.
 
 ### Adding dev data
 
+`dump-dev-data` / `seed-dev-data` move **Autoshift's own configuration** between
+sites — Holiday List, Scheduling Role, Discipline Branch Config, Employee
+Scheduling Role, Employee Settings and Optimizer Settings. They deliberately do
+*not* cover Company, Branch, Department, Designation, Shift Type or Employee:
+those are upstream HR data, and the records these link to must already exist on
+the target site before you seed.
+
 ```bash
-bench --site YOUR_SITE seed-dev-data --input ./dev_data
+bench --site YOUR_SITE dump-dev-data --output ./dev_data   # snapshot a configured site
+bench --site YOUR_SITE seed-dev-data --input ./dev_data    # restore onto another
 ```
 
-(`dump-dev-data` is the inverse, for snapshotting an existing site's data.) Don't seed dev
+Existing records are left alone unless you pass `--overwrite`. Don't seed dev
 data into the test site — keep it pristine.
+
+A dump contains real employees and leave records from whichever site produced
+it, so `dev_data/` is gitignored. The same goes for `sandbox/`:
+`capture-datapackage` snapshots are gitignored and a pre-commit hook strips
+`playground.ipynb` outputs, because the notebook runs against live data. Don't
+commit around either.
+
+---
+
+### Design notes
+
+`docs/design-notes.md` records *why* things are the way they are — the
+postmortems, the upstream bugs being worked around, and the reasoning behind
+decisions that look arbitrary without it. `CLAUDE.md` is the map of what the
+code currently does. Neither is needed to use the app.
 
 ---
 

@@ -1,0 +1,158 @@
+{
+ "actions": [],
+ "autoname": "format:{employee}-{scheduling_role}",
+ "creation": "2026-08-19 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "employee",
+  "employee_name",
+  "scheduling_role",
+  "column_break_1",
+  "role_fte",
+  "max_rooms",
+  "binding_override",
+  "assignment_mode_override",
+  "suitability",
+  "section_break_validity",
+  "active",
+  "column_break_2",
+  "valid_from",
+  "valid_to"
+ ],
+ "fields": [
+  {
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Employee",
+   "options": "Employee",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "employee.employee_name",
+   "fieldname": "employee_name",
+   "fieldtype": "Data",
+   "label": "Employee Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "scheduling_role",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Scheduling Role",
+   "options": "Scheduling Role",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Percent, matching Employee's FTE % convention. Blank means no agreed split: the optimizer then only respects this employee's overall FTE ceiling. Not a hard requirement \u2014 the solver is merely penalized for deviating.",
+   "fieldname": "role_fte",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Agreed FTE % in Role",
+   "non_negative": 1
+  },
+  {
+   "description": "Blank inherits Scheduling Role's Max Rooms Per Holder.",
+   "fieldname": "max_rooms",
+   "fieldtype": "Int",
+   "label": "Max Rooms Override",
+   "non_negative": 1
+  },
+  {
+   "description": "Blank inherits Scheduling Role's Assignments Are Binding. Set \"Not Binding\" for a holder whose schedule has not settled yet \u2014 they are then scheduled normally while the rest of the role stays frozen.",
+   "fieldname": "binding_override",
+   "fieldtype": "Select",
+   "label": "Binding Override",
+   "options": "\nBinding\nNot Binding"
+  },
+  {
+   "description": "Blank inherits the Scheduling Role's Assignment Mode. Set it where this person works the role differently from everybody else \u2014 a lead duty that is this one person's whole day, say.",
+   "fieldname": "assignment_mode_override",
+   "fieldtype": "Select",
+   "label": "Assignment Mode Override",
+   "options": "\nFlexible\nExclusive\nCollateral"
+  },
+  {
+   "default": "1",
+   "description": "How suitable this employee is to work in this role, as a divisor of how desirable the resulting shift is: 1 for a regular holder, 1.2 for a good backup, 3 for a terrible but feasible one. Read by the \"Shift preferences and role suitability\" objective; easiest to maintain in the Role Matrix.",
+   "fieldname": "suitability",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Suitability",
+   "non_negative": 1,
+   "precision": "2"
+  },
+  {
+   "fieldname": "section_break_validity",
+   "fieldtype": "Section Break",
+   "label": "Validity"
+  },
+  {
+   "default": "1",
+   "fieldname": "active",
+   "fieldtype": "Check",
+   "label": "Active"
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Blank means the capability has always been held.",
+   "fieldname": "valid_from",
+   "fieldtype": "Date",
+   "label": "Valid From"
+  },
+  {
+   "description": "Blank means the capability is held indefinitely.",
+   "fieldname": "valid_to",
+   "fieldtype": "Date",
+   "label": "Valid To"
+  }
+ ],
+ "links": [],
+ "modified": "2026-09-14 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Autoshift",
+ "name": "Employee Scheduling Role",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "HR Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
