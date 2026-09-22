@@ -136,7 +136,7 @@ def get_matrix(disciplines: str | list | None = None, show_all: int | str = 0) -
 		frappe.get_all(
 			ESR,
 			filters={"active": 1, "scheduling_role": ["in", list(row_role_names | col_role_names)]},
-			fields=["employee", "scheduling_role", "value_multiplier"],
+			fields=["name", "employee", "scheduling_role", "value_multiplier"],
 			order_by="scheduling_role asc",
 		)
 		if row_role_names or col_role_names
@@ -149,7 +149,11 @@ def get_matrix(disciplines: str | list | None = None, show_all: int | str = 0) -
 	for row in held_rows:
 		self_by_employee.setdefault(
 			row.employee,
-			{"scheduling_role": row.scheduling_role, "value_multiplier": float(row.value_multiplier or 1)},
+			{
+				"name": row.name,
+				"scheduling_role": row.scheduling_role,
+				"value_multiplier": float(row.value_multiplier or 1),
+			},
 		)
 
 	synergy_rows = (
