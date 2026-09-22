@@ -60,7 +60,13 @@ VIOLATION_EPS = 1e-6
 #: infeasibility binding causes gets blamed on binding rather than on the rule it collides
 #: with. The ``presence_*`` families are what a presence variable means (`model_builder`);
 #: relaxing them buys feasibility by inventing somebody who is in and doing nothing.
-INELASTIC_GROUPS = frozenset({"bind_presence", "presence_role", "presence_collateral", "presence_idle"})
+#: ``active_rooms_eq_matched`` is the same kind of definitional tie — what the pooled
+#: ``active_rooms`` *means* once ``room_coverage_matched_rooms`` is selected — so it stays
+#: rigid too; the genuine capacity/matching constraints around it (``room_occ_unique``,
+#: ``room_active_le``/``room_active_ge``) are left elastic as real candidates for the slack.
+INELASTIC_GROUPS = frozenset(
+	{"bind_presence", "presence_role", "presence_collateral", "presence_idle", "active_rooms_eq_matched"}
+)
 
 COMB = tuple[str, str, str, datetime.date, str]  # (employee, role, shift_type, date, branch)
 

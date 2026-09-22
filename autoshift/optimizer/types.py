@@ -141,6 +141,25 @@ class DataPackage:
 	# `rules.role_value_objective`; every other rule ignores it.
 	role_value: dict[str, float] = dataclasses.field(default_factory=dict)
 
+	# Discipline Branch Config.room_value: objective points a staffed room in this
+	# (discipline, branch) is worth, before any employee or synergy bonus. Sparse — only
+	# (discipline, branch) pairs with a nonzero figure — so a site that never configures the
+	# new room-level value mechanism hashes and solves exactly as before. Read by
+	# `rules.room_value_objective`, and by `employee_value_objective`/`synergy_value_objective`
+	# as the base their own bonus scales off.
+	room_value: dict[tuple[str, str], float] = dataclasses.field(default_factory=dict)
+
+	# Employee Scheduling Role.value_multiplier: multiplies this (employee, role) pair's
+	# share of a staffed room's value, once the room they occupy is actually matched.
+	# Sparse — only pairs != 1.0 — mirrors `role_suitability`. Read by
+	# `rules.employee_value_objective`.
+	employee_value_multiplier: dict[tuple[str, str], float] = dataclasses.field(default_factory=dict)
+
+	# Employee Role Synergy: (employee, employee) -> multiplier, keyed by the pair sorted
+	# alphabetically (the relation is symmetric). Sparse — only configured pairs != 1.0.
+	# Read by `rules.synergy_value_objective`.
+	employee_synergy: dict[tuple[str, str], float] = dataclasses.field(default_factory=dict)
+
 	def suitability(self, employee: str, role: str) -> float:
 		return self.role_suitability.get((employee, role), 1.0)
 
@@ -151,6 +170,18 @@ class DataPackage:
 	def value_of(self, role: str) -> float:
 		"""Objective points one shift in `role` is worth on its own. Zero unless set."""
 		return self.role_value.get(role, 0.0)
+
+	def room_value_of(self, discipline: str, branch: str) -> float:
+		"""Objective points a staffed room in this (discipline, branch) is worth. Zero unless set."""
+		return self.room_value.get((discipline, branch), 0.0)
+
+	def value_multiplier(self, employee: str, role: str) -> float:
+		"""How much of a staffed room's value this holder earns. 1 (no bonus) unless set."""
+		return self.employee_value_multiplier.get((employee, role), 1.0)
+
+	def synergy_multiplier(self, employee_a: str, employee_b: str) -> float:
+		"""How much extra value this pair earns sharing a room. 1 (no bonus) unless set."""
+		return self.employee_synergy.get(tuple(sorted((employee_a, employee_b))), 1.0)
 
 	def gates_rooms(self, role: str) -> bool:
 		"""Does room coverage in this role's discipline wait on somebody working it.
@@ -227,7 +258,15 @@ class DataPackage:
 		if not self.role_suitability:
 			# keep the cache hits of runs solved before the field existed
 			del payload["role_suitability"]
-		for name in ("role_mode", "role_mode_overrides", "role_gates_rooms", "role_value"):
+		for name in (
+			"role_mode",
+			"role_mode_overrides",
+			"role_gates_rooms",
+			"role_value",
+			"room_value",
+			"employee_value_multiplier",
+			"employee_synergy",
+		):
 			if not getattr(self, name):  # idem, for sites where every role is Flexible
 				del payload[name]
 		blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -276,6 +315,17 @@ class DataPackage:
 			"role_value": self.role_value,
 			"role_mode_overrides": [
 				[employee, role, mode] for (employee, role), mode in sorted(self.role_mode_overrides.items())
+			],
+			"room_value": [
+				[discipline, branch, value] for (discipline, branch), value in sorted(self.room_value.items())
+			],
+			"employee_value_multiplier": [
+				[employee, role, multiplier]
+				for (employee, role), multiplier in sorted(self.employee_value_multiplier.items())
+			],
+			"employee_synergy": [
+				[employee_a, employee_b, multiplier]
+				for (employee_a, employee_b), multiplier in sorted(self.employee_synergy.items())
 			],
 		}
 		return json.dumps(payload)
@@ -343,6 +393,19 @@ class DataPackage:
 			role_value=payload.get("role_value", {}),
 			role_mode_overrides={
 				(employee, role): mode for employee, role, mode in payload.get("role_mode_overrides", [])
+			},
+			# absent before the room/employee/synergy value mechanism existed: nothing paid
+			# a bonus beyond what `role_value_objective`/`room_utilization_objective` already did
+			room_value={
+				(discipline, branch): value for discipline, branch, value in payload.get("room_value", [])
+			},
+			employee_value_multiplier={
+				(employee, role): multiplier
+				for employee, role, multiplier in payload.get("employee_value_multiplier", [])
+			},
+			employee_synergy={
+				(employee_a, employee_b): multiplier
+				for employee_a, employee_b, multiplier in payload.get("employee_synergy", [])
 			},
 		)
 

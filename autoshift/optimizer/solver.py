@@ -111,10 +111,32 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 			run.set("objective_value", pulp.value(prob.objective) or 0.0)
 			run.set("solution_table", [])
 
+			# Exact per-holder room numbers, where `room_coverage_matched_rooms` measured
+			# them — preferred over `room_load`'s linearized estimate wherever both exist,
+			# since a real room index needs no approximation.
+			occupied_rooms: dict[tuple, list[int]] = {}
+			for (e, r, s, d, b, n), var in ctx.room_occupancy.items():
+				if (pulp.value(var) or 0) > 0.5:
+					occupied_rooms.setdefault((e, r, s, d, b), []).append(n)
+
 			for comb, var in x.items():
 				val = pulp.value(var)
 				if val is not None and val > 0.5:
 					e, r, s, d, b = comb
+					rooms_here = occupied_rooms.get(comb)
+					if rooms_here is not None:
+						rooms_here = sorted(rooms_here)
+						rooms_taken = len(rooms_here)
+						room_index = ",".join(str(n) for n in rooms_here)
+					elif comb in ctx.room_load:
+						# 0 = not measured: without a room-coverage rule that measures load,
+						# a holder is credited their whole max-rooms figure and nothing says
+						# how many of those rooms they actually take
+						rooms_taken = 1 + round(sum(pulp.value(t) or 0 for t in ctx.room_load[comb]))
+						room_index = ""
+					else:
+						rooms_taken = 0
+						room_index = ""
 					run.append(
 						"solution_table",
 						{
@@ -125,12 +147,8 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 							"branch": b,
 							"collateral": 1 if data.is_collateral(e, r) else 0,
 							"forced": 1 if comb in data.forced else 0,
-							# 0 = not measured: without `room_load_objective` a holder is
-							# credited their whole max-rooms figure and nothing says how
-							# many of those rooms they actually take
-							"rooms": 1 + round(sum(pulp.value(t) or 0 for t in ctx.room_load[comb]))
-							if comb in ctx.room_load
-							else 0,
+							"rooms": rooms_taken,
+							"room_index": room_index,
 						},
 					)
 

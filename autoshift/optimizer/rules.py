@@ -125,6 +125,17 @@ class RuleContext:
 	# them so the wall chart draws a chip as tall as the rooms it takes, not the most it could.
 	# Empty when that rule is not selected: then nothing says who takes which room.
 	room_load: dict[tuple, list[pulp.LpVariable]] = field(default_factory=dict)
+	# y[employee, role, shift, day, branch, room_index] binary: filled by
+	# `room_coverage_matched_rooms` for every (employee, gating role) pair that can hold a
+	# specific numbered room (1..Discipline Branch Config.rooms_num). Empty unless that rule
+	# is selected — the legacy pooled `room_coverage` never creates one.
+	room_occupancy: dict[tuple, pulp.LpVariable] = field(default_factory=dict)
+	# room_active[discipline, shift, day, branch, room_index] binary: an AND, across every
+	# gating role in the discipline, of "is this specific room's slot for that role filled" —
+	# the per-room counterpart to the pooled `active_rooms`, which stays tied to
+	# `Σ_n room_active[..., n]` so every rule reading `active_rooms` keeps working unchanged
+	# whichever room-coverage rule is selected. Empty unless `room_coverage_matched_rooms` is.
+	room_active: dict[tuple, pulp.LpVariable] = field(default_factory=dict)
 
 	# objective terms accumulated by the applied rules; model_builder sums these
 	# into the problem's (maximized) objective after all rules have run
@@ -215,6 +226,8 @@ GROUP_ROLE_BINDING = "role_binding"
 GROUP_WORKLOAD_CEILING = "workload_ceiling"
 GROUP_SHIFT_PREFERENCE = "shift_preference"
 GROUP_COLLATERAL_VALUE = "collateral_value"
+GROUP_ROOM_COVERAGE = "room_coverage"
+GROUP_ROOM_VALUE = "room_value_choice"
 
 
 BUILTIN_RULES: dict[str, BuiltinRule] = {}  # empty -> filled by the builtin_rule decorator
@@ -514,6 +527,7 @@ def _gating_holders(data: DataPackage) -> dict[str, dict[str, list[str]]]:
 	"opens rooms nor holds them shut. What a lead duty is worth is decided by <b>Objective: "
 	"Collateral duties</b> instead.",
 	standard=True,
+	group=GROUP_ROOM_COVERAGE,
 	topic=TOPIC_COVERAGE,
 )
 def room_coverage(ctx: RuleContext) -> None:
@@ -531,6 +545,87 @@ def room_coverage(ctx: RuleContext) -> None:
 				>= ctx.active_rooms[(k, s, d, b)],
 				_cname("room_coverage", k, s, d, b, r),
 			)
+
+
+@builtin_rule(
+	"Room coverage per discipline (matched pairing)",
+	"The pooled alternative to <b>Room coverage per discipline</b>: rooms are numbered "
+	"1..the branch's configured count, and a specific room opens only where every gating "
+	"role in its discipline has a specific holder matched into that exact room number — not "
+	"merely enough headcount to cover it. This is what lets a staffed room, and the people "
+	"in it, be priced and paired individually (<b>Objective: Room value</b>, <b>Employee "
+	"value</b>, <b>Synergy value</b>); the pooled rule has no notion of which holder of one "
+	"gating role is paired with which holder of another. Off by default: real per-room "
+	"matching is a materially larger model than a headcount minimum, worth its cost only "
+	"where a room-level value mechanism is actually in use.",
+	standard=False,
+	group=GROUP_ROOM_COVERAGE,
+	topic=TOPIC_COVERAGE,
+)
+def room_coverage_matched_rooms(ctx: RuleContext) -> None:
+	"""Per-room AND across gating roles, tied back to the pooled `active_rooms`.
+
+	Rooms are bare ordinals 1..`data.rooms[(k, b)]` — no identity beyond the index, so the
+	solver is free to relabel which physical room a matched pair lands at (see
+	`synergy_value_objective`'s docstring for why that is not a restriction). For each room
+	index `n`: `room_occ_unique` caps each gating role to at most one occupant at `n`;
+	`room_occ_cap` caps how many rooms one holder occupies at their own `max_rpe`, gated on
+	their being assigned to the role at all; `room_active_le`/`room_active_ge` linearize
+	`room_active[n]` as the AND, across every gating role, of "somebody occupies `n` in that
+	role" — the per-room counterpart to the pooled minimum `room_coverage` takes. Finally
+	`active_rooms_eq_matched` ties the pooled `active_rooms[k,s,d,b]` to `Σ_n room_active`, so
+	every existing rule that reads `active_rooms` (`room_utilization_objective`, both
+	collateral value rules) keeps working unchanged under either coverage rule.
+	"""
+	data = ctx.data
+	k_r_es = _gating_holders(data)
+
+	for k, s, d, b in ctx.active_rooms:
+		r_es = k_r_es.get(k, {})
+		n_rooms = data.rooms.get((k, b), 0)
+		if not r_es or not n_rooms:
+			continue
+
+		occ_by_role_room: dict[tuple[str, int], object] = {}
+		for r, es in r_es.items():
+			for n in range(1, n_rooms + 1):
+				occ_vars = []
+				for e in es:
+					y = ctx.prob.add_variable(_vname("room_occ", e, r, s, d, b, n), cat=pulp.LpBinary)
+					ctx.room_occupancy[(e, r, s, d, b, n)] = y
+					occ_vars.append(y)
+				occ = pulp.lpSum(occ_vars)
+				ctx.prob += (occ <= 1, _cname("room_occ_unique", k, r, s, d, b, n))
+				occ_by_role_room[(r, n)] = occ
+			for e in es:
+				# capped by their own max-rooms figure, and only while actually assigned to
+				# the role — an assigned-but-unmatched gating holder is legal, exactly as
+				# under the pooled rule; it simply opens no room.
+				room_vars = [ctx.room_occupancy[(e, r, s, d, b, n)] for n in range(1, n_rooms + 1)]
+				ctx.prob += (
+					pulp.lpSum(room_vars) <= data.max_rpe.get((e, r), 1) * ctx.x[(e, r, s, d, b)],
+					_cname("room_occ_cap", e, r, s, d, b),
+				)
+
+		roles = sorted(r_es)
+		for n in range(1, n_rooms + 1):
+			active = ctx.prob.add_variable(_vname("room_active", k, s, d, b, n), cat=pulp.LpBinary)
+			ctx.room_active[(k, s, d, b, n)] = active
+			for r in roles:
+				ctx.prob += (
+					active <= occ_by_role_room[(r, n)],
+					_cname("room_active_le", k, r, s, d, b, n),
+				)
+			ctx.prob += (
+				active >= pulp.lpSum(occ_by_role_room[(r, n)] for r in roles) - (len(roles) - 1),
+				_cname("room_active_ge", k, s, d, b, n),
+			)
+
+		ctx.prob += (
+			ctx.active_rooms[(k, s, d, b)]
+			== pulp.lpSum(ctx.room_active[(k, s, d, b, n)] for n in range(1, n_rooms + 1)),
+			_cname("active_rooms_eq_matched", k, s, d, b),
+		)
 
 
 @builtin_rule(
@@ -631,6 +726,7 @@ def exclusive_role_purity(ctx: RuleContext) -> None:
 	# `room_coverage` takes the *minimum* over a discipline's roles, so opening one room
 	# costs two or more assignments, and the schedule collapses to near-empty.
 	default_weight=3.0,
+	group=GROUP_ROOM_VALUE,
 	topic=TOPIC_COVERAGE,
 )
 def room_utilization_objective(ctx: RuleContext) -> None:
@@ -638,6 +734,145 @@ def room_utilization_objective(ctx: RuleContext) -> None:
 	# the rooms a single half-day at a single branch staffed. The model sees the same sum.
 	for (k, s, d, b), rooms in ctx.active_rooms.items():
 		ctx.add_objective(rooms, path(Discipline=k, Branch=b, Day=d, Shift=s))
+
+
+@builtin_rule(
+	"Objective: Room value",
+	"The mutually exclusive alternative to <b>Room utilization</b>: instead of paying a flat "
+	"3 points per staffed room, each room is worth its <b>Value Of A Staffed Room</b> "
+	"(Discipline Branch Config), so different branches can price a staffed room differently. "
+	"Requires <b>Room coverage per discipline (matched pairing)</b> — a room is only worth "
+	"its value once a specific holder of every gating role is matched into it. A branch left "
+	"at 0 (the default on an unconfigured row) contributes nothing.",
+	kind=KIND_OBJECTIVE,
+	standard=False,
+	requires={
+		room_coverage_matched_rooms: "{r} requires {req}: a room's value is only earned once "
+		"it is genuinely matched, not merely headcounted."
+	},
+	group=GROUP_ROOM_VALUE,
+	default_weight=1.0,
+	topic=TOPIC_COVERAGE,
+)
+def room_value_objective(ctx: RuleContext) -> None:
+	data = ctx.data
+	for (k, s, d, b, n), active in ctx.room_active.items():
+		value = data.room_value_of(k, b)
+		if value:
+			ctx.add_objective(value * active, path(Discipline=k, Branch=b, Day=d, Shift=s, Room=str(n)))
+
+
+@builtin_rule(
+	"Objective: Employee value",
+	"Adds a flat bonus (or penalty) to a staffed room's value for the specific holder "
+	"actually matched into it, scaled by their <b>Value Multiplier In A Staffed Room</b> "
+	"(Employee Scheduling Role): 1 is no bonus, 1.25 a 25% premium, added as "
+	"(-1 + multiplier) &times; the room's own value — flat and additive, never compounding "
+	"the room's base value. A room worth 4 with a 1.25 multiplier scores 4 + 1 = 5. Inert "
+	"for any pair left at the default multiplier of 1.",
+	kind=KIND_OBJECTIVE,
+	standard=False,
+	requires={
+		room_value_objective: "{r} scales its bonus off the same room value {req} prices, include {req}"
+	},
+	default_weight=1.0,
+	topic=TOPIC_COVERAGE,
+)
+def employee_value_objective(ctx: RuleContext) -> None:
+	"""AND(y, room_active), linearized as a continuous squeeze — no new binary needed.
+
+	`z`'s only appearance is this one term, so the (signed) objective coefficient alone
+	decides which bound the maximization drives it to: a positive bonus pushes `z` up to
+	`min(y, room_active)`, a penalty pushes it down to `max(0, y + room_active - 1)` — both
+	equal the AND of two binaries exactly, the same squeeze `collateral_room_value_objective`
+	already relies on for a `min(...)`.
+	"""
+	data = ctx.data
+	for (e, r, s, d, b, n), y in ctx.room_occupancy.items():
+		multiplier = data.value_multiplier(e, r)
+		if multiplier == 1.0:
+			continue
+		k = data.role_discipline.get(r, "")
+		base = data.room_value_of(k, b)
+		active = ctx.room_active.get((k, s, d, b, n))
+		if not base or active is None:
+			continue
+		z = ctx.prob.add_variable(_vname("emp_value_and", e, r, s, d, b, n), lowBound=0)
+		ctx.prob += (z <= y, _cname("emp_value_le_y", e, r, s, d, b, n))
+		ctx.prob += (z <= active, _cname("emp_value_le_active", e, r, s, d, b, n))
+		ctx.prob += (z >= y + active - 1, _cname("emp_value_ge", e, r, s, d, b, n))
+		coefficient = (-1 + multiplier) * base
+		ctx.add_objective(coefficient * z, path(Discipline=k, Branch=b, Day=d, Shift=s, Employee=e))
+
+
+@builtin_rule(
+	"Objective: Synergy value",
+	"Adds a flat bonus (or penalty) when two specific employees are matched into the same "
+	"room together, scaled by their <b>Synergy Multiplier</b> (Employee Role Synergy): 1 is "
+	"no bonus, added as (-1 + multiplier) &times; the room's own value, on top of that room's "
+	"base value and any employee-value bonus already earned there — never compounded with "
+	"either. Symmetric: which employee is A and which is B does not matter. Inert while no "
+	"Employee Role Synergy is configured.",
+	kind=KIND_OBJECTIVE,
+	standard=False,
+	requires={
+		room_value_objective: "{r} scales its bonus off the same room value {req} prices, include {req}"
+	},
+	default_weight=1.0,
+	topic=TOPIC_COVERAGE,
+)
+def synergy_value_objective(ctx: RuleContext) -> None:
+	"""AND(occupies-as-A, occupies-as-B, room_active), the 3-way analogue of the employee bonus.
+
+	Gated on a shared *room*, not merely a shared session: room indices carry no meaning
+	anywhere else in the model, so the solver is free to relabel which index a matched pair
+	lands at — rewarding "share a room" and "share a session, wherever indices land" produce
+	identical optimal schedules, and the room-scoped form is the cheaper one to linearize.
+
+	`occ_e[(employee, discipline, ...)]` sums an employee's gating-role occupancy variables
+	for one room; it stays 0/1 in the ordinary case because `model_builder._link_presence`
+	already limits an employee to one *working* role per presence, and a gating role that is
+	also Collateral (the one way to hold two at once) is an unusual configuration
+	`Scheduling Role` itself warns against.
+	"""
+	data = ctx.data
+	if not data.employee_synergy:
+		return
+
+	occ_e: dict[tuple, list[pulp.LpVariable]] = {}
+	for (e, r, s, d, b, n), y in ctx.room_occupancy.items():
+		k = data.role_discipline.get(r, "")
+		occ_e.setdefault((e, k, s, d, b, n), []).append(y)
+
+	by_room: dict[tuple, set[str]] = {}
+	for e, k, s, d, b, n in occ_e:
+		by_room.setdefault((k, s, d, b, n), set()).add(e)
+
+	for (ea, eb), multiplier in data.employee_synergy.items():
+		if multiplier == 1.0:
+			continue
+		for (k, s, d, b, n), here in by_room.items():
+			if ea not in here or eb not in here:
+				continue
+			active = ctx.room_active.get((k, s, d, b, n))
+			base = data.room_value_of(k, b)
+			if not base or active is None:
+				continue
+			occ_a = pulp.lpSum(occ_e[(ea, k, s, d, b, n)])
+			occ_b = pulp.lpSum(occ_e[(eb, k, s, d, b, n)])
+			z = ctx.prob.add_variable(_vname("synergy_and", ea, eb, s, d, b, n), lowBound=0)
+			ctx.prob += (z <= occ_a, _cname("synergy_le_a", ea, eb, s, d, b, n))
+			ctx.prob += (z <= occ_b, _cname("synergy_le_b", ea, eb, s, d, b, n))
+			ctx.prob += (z <= active, _cname("synergy_le_active", ea, eb, s, d, b, n))
+			ctx.prob += (
+				z >= occ_a + occ_b + active - 2,
+				_cname("synergy_ge", ea, eb, s, d, b, n),
+			)
+			coefficient = (-1 + multiplier) * base
+			ctx.add_objective(
+				coefficient * z,
+				path(Discipline=k, Branch=b, Day=d, Shift=s, Employees=f"{ea}+{eb}"),
+			)
 
 
 @builtin_rule(

@@ -38,12 +38,18 @@ function inject_rota_editor_styles() {
 		   employee instead of sitting side by side — plain alternation, not grouped by
 		   employee, is what actually keeps adjacent rows readable at a glance. Hidden
 		   (read-only) rows and the divider between the two sections keep their own look. */
+		/* background-color (opaque) + background-image (the tint), not the background
+		   shorthand: a shorthand here would reset background-color to this same
+		   translucent rgba, and .re-emp-col/.re-shift-col are sticky -- a translucent
+		   sticky column lets the content scrolling underneath show through it. */
 		.rota-editor .re-table tbody tr:nth-child(even):not(.re-row-hidden):not(.re-divider) td {
-			background: var(--zebra-bg, rgba(128, 128, 128, 0.06));
+			background-color: var(--fg-color);
+			background-image: linear-gradient(var(--zebra-bg, rgba(128, 128, 128, 0.06)), var(--zebra-bg, rgba(128, 128, 128, 0.06)));
 		}
 		.rota-editor .re-table tbody tr:nth-child(even):not(.re-row-hidden):not(.re-divider) .re-emp-col,
 		.rota-editor .re-table tbody tr:nth-child(even):not(.re-row-hidden):not(.re-divider) .re-shift-col {
-			background: var(--zebra-bg, rgba(128, 128, 128, 0.06));
+			background-color: var(--fg-color);
+			background-image: linear-gradient(var(--zebra-bg, rgba(128, 128, 128, 0.06)), var(--zebra-bg, rgba(128, 128, 128, 0.06)));
 		}
 		.rota-editor .re-emp-col {
 			text-align: left; white-space: nowrap; position: sticky; left: 0; min-width: 6rem;

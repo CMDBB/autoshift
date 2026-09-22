@@ -2005,3 +2005,175 @@ def test_a_priced_collateral_duty_is_earned_beside_the_shift_it_rides_on():
 def test_role_value_leaves_the_hash_of_a_site_without_it_alone():
 	assert pkg().input_hash() == pkg(role_value={}).input_hash()
 	assert pkg().input_hash() != pkg(role_value={"R1": 1.0}).input_hash()
+
+
+# ── Room value, employee value, synergy value (matched-pairing room assignment) ───────────
+
+
+def test_room_employee_synergy_value_leave_the_hash_of_a_site_without_them_alone():
+	assert pkg().input_hash() == pkg(room_value={}).input_hash()
+	assert pkg().input_hash() != pkg(room_value={("D1", "B1"): 4.0}).input_hash()
+	assert pkg().input_hash() == pkg(employee_value_multiplier={}).input_hash()
+	assert pkg().input_hash() != pkg(employee_value_multiplier={("E1", "R1"): 1.25}).input_hash()
+	assert pkg().input_hash() == pkg(employee_synergy={}).input_hash()
+	assert pkg().input_hash() != pkg(employee_synergy={("E1", "E2"): 1.5}).input_hash()
+
+
+def test_dumps_loads_round_trips_room_employee_synergy_value():
+	data = pkg(
+		room_value={("D1", "B1"): 4.0},
+		employee_value_multiplier={("E1", "R1"): 1.25},
+		employee_synergy={("E1", "E2"): 1.5},
+	)
+	restored = DataPackage.loads(data.dumps())
+	assert restored == data
+	assert restored.input_hash() == data.input_hash()
+
+
+def test_loads_reads_a_package_without_room_employee_synergy_value_as_no_bonus():
+	payload = json.loads(pkg().dumps())
+	for field_name in ("room_value", "employee_value_multiplier", "employee_synergy"):
+		del payload[field_name]
+	restored = DataPackage.loads(json.dumps(payload))
+	assert restored.room_value == {}
+	assert restored.employee_value_multiplier == {}
+	assert restored.employee_synergy == {}
+	assert restored.room_value_of("D1", "B1") == 0.0
+	assert restored.value_multiplier("E1", "R1") == 1.0
+	assert restored.synergy_multiplier("E1", "E2") == 1.0
+
+
+def test_synergy_multiplier_is_looked_up_regardless_of_pair_order():
+	data = pkg(employee_synergy={("E1", "E2"): 1.5})
+	assert data.synergy_multiplier("E1", "E2") == 1.5
+	assert data.synergy_multiplier("E2", "E1") == 1.5
+
+
+def test_room_value_objective_requires_matched_pairing():
+	with pytest.raises(ValueError, match="room_coverage_matched_rooms"):
+		BuiltinRule.check_ruleset({"room_value_objective"})
+
+
+def test_employee_value_objective_requires_room_value():
+	with pytest.raises(ValueError, match="room_value_objective"):
+		BuiltinRule.check_ruleset({"employee_value_objective"})
+
+
+def test_synergy_value_objective_requires_room_value():
+	with pytest.raises(ValueError, match="room_value_objective"):
+		BuiltinRule.check_ruleset({"synergy_value_objective"})
+
+
+def test_matched_pooled_room_coverage_are_mutually_exclusive():
+	with pytest.raises(ValueError, match="mutually exclusive"):
+		BuiltinRule.check_ruleset({"room_coverage", "room_coverage_matched_rooms"})
+
+
+def _paired_pkg(**overrides) -> DataPackage:
+	"""Two gating roles, one room, one holder each — the shape the worked example is built on."""
+	disc, b = "D1", "B1"
+	base: dict[str, Any] = {
+		"employees": ["E1", "E2"],
+		"roles": ["R1", "R2"],
+		"role_discipline": {"R1": disc, "R2": disc},
+		"employee_roles": {"E1": ("R1",), "E2": ("R2",)},
+		"target_shifts": {"E1": 1, "E2": 1},
+		"max_rpe": {("E1", "R1"): 1, ("E2", "R2"): 1},
+		"rooms": {(disc, b): 1},
+		"rules": builtin_specs(
+			"warm_start",
+			"room_coverage_matched_rooms",
+			"room_value_objective",
+			"employee_value_objective",
+			"synergy_value_objective",
+		),
+	}
+	base.update(overrides)
+	return pkg(**base)
+
+
+def test_room_value_is_earned_once_a_room_is_matched():
+	"""Base case: both gating roles matched into the one room earns its configured value."""
+	prob, x, _ar = solve(_paired_pkg(room_value={("D1", "B1"): 4.0}))
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1", role="R1") == 1
+	assert assigned(x, employee="E2", role="R2") == 1
+	assert pulp.value(prob.objective) == pytest.approx(4.0)
+
+
+def test_employee_value_bonus_is_flat_not_compounded():
+	"""1.25 on a 4-value room adds exactly 1, on top of the base value: 4 + 1 = 5."""
+	data = _paired_pkg(
+		room_value={("D1", "B1"): 4.0},
+		employee_value_multiplier={("E1", "R1"): 1.25},
+	)
+	prob, _x, _ar = solve(data)
+	assert status(prob) == "Optimal"
+	assert pulp.value(prob.objective) == pytest.approx(5.0)
+
+
+def test_employee_value_multiplier_of_one_creates_no_variables():
+	"""The sparse skip: an unconfigured (or explicitly 1.0) multiplier adds nothing to solve."""
+	_prob, _x, _ar, _logs, ctx = build(_paired_pkg(room_value={("D1", "B1"): 4.0}))
+	assert not [v for v in _prob.variables() if v.name.startswith("emp_value_and")]
+	assert ctx.objective_contributions.get("employee_value_objective", {}) == {}
+
+
+def test_synergy_value_objective_reproduces_the_worked_example():
+	"""room value 4, employee multiplier 1.25, synergy multiplier 1.5 -> 4 + 1 + 2 = 7."""
+	data = _paired_pkg(
+		room_value={("D1", "B1"): 4.0},
+		employee_value_multiplier={("E1", "R1"): 1.25},
+		employee_synergy={("E1", "E2"): 1.5},
+	)
+	prob, x, _ar = solve(data)
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1", role="R1") == 1
+	assert assigned(x, employee="E2", role="R2") == 1
+	assert pulp.value(prob.objective) == pytest.approx(7.0)
+
+
+def test_synergy_value_is_symmetric_regardless_of_pair_order():
+	forward = _paired_pkg(room_value={("D1", "B1"): 4.0}, employee_synergy={("E1", "E2"): 1.5})
+	reversed_pair = _paired_pkg(room_value={("D1", "B1"): 4.0}, employee_synergy={("E2", "E1"): 1.5})
+	prob_forward, _x, _ar = solve(forward)
+	prob_reversed, _x, _ar = solve(reversed_pair)
+	assert pulp.value(prob_forward.objective) == pytest.approx(pulp.value(prob_reversed.objective))
+
+
+def test_no_synergy_configured_creates_no_synergy_variables():
+	_prob, _x, _ar, _logs, _ctx = build(_paired_pkg(room_value={("D1", "B1"): 4.0}))
+	assert not [v for v in _prob.variables() if v.name.startswith("synergy_and")]
+
+
+def test_synergy_makes_the_solver_prefer_a_specific_pairing():
+	"""Matched pairing, not headcount: R1 has one holder, R2 has two — the solver pairs the
+	one that earns synergy rather than being indifferent between them."""
+	disc, b = "D1", "B1"
+	data = pkg(
+		employees=["E1", "E2", "E3"],
+		roles=["R1", "R2"],
+		role_discipline={"R1": disc, "R2": disc},
+		employee_roles={"E1": ("R1",), "E2": ("R2",), "E3": ("R2",)},
+		target_shifts={"E1": 1, "E2": 1, "E3": 1},
+		max_rpe={("E1", "R1"): 1, ("E2", "R2"): 1, ("E3", "R2"): 1},
+		rooms={(disc, b): 2},
+		room_value={(disc, b): 4.0},
+		employee_synergy={("E1", "E2"): 1.5},
+		rules=builtin_specs(
+			"warm_start", "room_coverage_matched_rooms", "room_value_objective", "synergy_value_objective"
+		),
+	)
+	prob, x, _ar = solve(data)
+	assert status(prob) == "Optimal"
+	# Pairing E1 with E2 (4 + 2 = 6) strictly beats pairing with E3 (4 + 0 = 4) or nobody (0).
+	assert pulp.value(prob.objective) == pytest.approx(6.0)
+	assert assigned(x, employee="E1", role="R1") == 1
+	assert assigned(x, employee="E2", role="R2") == 1
+
+
+def test_active_rooms_stays_tied_to_matched_rooms():
+	"""`active_rooms` keeps meaning the same thing under either coverage rule."""
+	prob, _x, ar = solve(_paired_pkg(room_value={("D1", "B1"): 4.0}))
+	assert status(prob) == "Optimal"
+	assert pulp.value(ar[("D1", "AM", MON, "B1")]) == 1
