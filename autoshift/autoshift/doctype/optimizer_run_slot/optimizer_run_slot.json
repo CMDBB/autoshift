@@ -13,6 +13,7 @@
   "shift_location",
   "branch",
   "rooms",
+  "room_index",
   "collateral",
   "forced"
  ],
@@ -74,6 +75,13 @@
    "fieldtype": "Int",
    "in_grid_view": 1,
    "label": "Rooms Taken",
+   "read_only": 1
+  },
+  {
+   "description": "Comma-separated room numbers this assignment occupies, measured only when the run's ruleset includes \"Room coverage per discipline (matched pairing)\". Blank means unmeasured — the same convention 0 is, for \"Rooms Taken\".",
+   "fieldname": "room_index",
+   "fieldtype": "Data",
+   "label": "Room Index",
    "read_only": 1
   },
   {
