@@ -172,6 +172,7 @@ function cell_markup(cell) {
 		cell.role,
 		cell.branch,
 		cell.changed,
+		cell.room_index ? __("Room {0}", [cell.room_index.join(", ")]) : "",
 		cell.max_rooms ? __("{0} of {1} rooms", [cell.span, cell.max_rooms]) : "",
 		cell.uncertain ? __("role inferred, not recorded") : "",
 		cell.virtual ? __("from the Shift Schedule; no Shift Assignment records it yet") : "",

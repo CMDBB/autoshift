@@ -64,8 +64,11 @@ function inject_studio_styles() {
 			border: 1px solid var(--border-color); border-radius: var(--border-radius);
 			padding: 0.15rem 0.5rem; margin: 0.15rem 0.3rem 0.15rem 0; font-size: var(--text-sm);
 		}
-		.optimizer-studio .op-result { margin-top: 1.5rem; border-top: 1px solid var(--border-color); padding-top: 1rem; }
+		.optimizer-studio .op-result { margin-top: 0.5rem; }
 		.optimizer-studio .op-result-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
+		.optimizer-studio .op-config {
+			margin-top: 1.5rem; border-top: 1px solid var(--border-color); padding-top: 0.5rem;
+		}
 	`;
 	const style = document.createElement("style");
 	style.id = "optimizer-studio-styles";
@@ -114,8 +117,17 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 			change: () => this.reset_result(),
 		});
 
-		// One-shot: picking a run copies its configuration into the panel below, it
-		// isn't a persistent "linked to" state — see populate_from_run().
+		// Both pickers are one-shot prefills: picking one copies its configuration
+		// into the panel below, neither is a persistent "linked to" state — see
+		// load_ruleset() / populate_from_run().
+		this.ruleset_field = this.page.add_field({
+			fieldname: "ruleset",
+			label: __("Load Ruleset"),
+			fieldtype: "Link",
+			options: "Optimization Ruleset",
+			change: () => this.load_ruleset(),
+		});
+
 		this.populate_field = this.page.add_field({
 			fieldname: "populate_from",
 			label: __("Populate From Run"),
@@ -126,17 +138,23 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 	}
 
 	setup_body() {
+		// The week/result view comes FIRST and the inputs below it: the schedule is
+		// what the user is working on, the rule panel is how they nudge it. Everything
+		// that isn't the chart is either a page-header field or inside `.op-config`.
 		this.$body = $(`
 			<div class="optimizer-studio">
-				<div class="op-section-title">${__("Treat as approved (pending leaves)")}</div>
-				<div class="op-leave-picker"></div>
-				<div class="op-leave-pills">
-					<span class="text-muted">${__("None selected")}</span>
-				</div>
-				<div class="op-catalog">
-					<div class="text-muted" style="padding: 0.5rem 0;">${__("Loading rules…")}</div>
-				</div>
 				<div class="op-result"></div>
+				<div class="op-config">
+					<div class="op-section-title">${__("Treat as approved (pending leaves)")}</div>
+					<div class="op-leave-picker"></div>
+					<div class="op-leave-pills">
+						<span class="text-muted">${__("None selected")}</span>
+					</div>
+					<div class="op-section-title">${__("Rules")}</div>
+					<div class="op-catalog">
+						<div class="text-muted" style="padding: 0.5rem 0;">${__("Loading rules…")}</div>
+					</div>
+				</div>
 			</div>
 		`).appendTo(this.page.main);
 
@@ -189,8 +207,10 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 
 	// ── rule catalog ──────────────────────────────────────────────────────────
 
+	// Kept as a promise: a ruleset picked before the catalog has arrived has nothing
+	// to check its rows against, and would read as an empty selection.
 	load_catalog() {
-		frappe
+		this.catalog_ready = frappe
 			.call({ method: "autoshift.optimizer_studio.get_rule_catalog" })
 			.then(({ message }) => {
 				this.catalog = message || [];
@@ -209,7 +229,14 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 					args: { ruleset: "Standard Ruleset" },
 				});
 			})
-			.then(({ message }) => this.set_selection((message && message.rows) || {}));
+			.then(({ message }) => {
+				this.set_selection((message && message.rows) || {});
+				// Only claim it in the picker if it really was there to load.
+				if (message && Object.keys(message.rows || {}).length) {
+					this.show_ruleset("Standard Ruleset");
+				}
+			});
+		return this.catalog_ready;
 	}
 
 	humanize_group(key) {
@@ -547,6 +574,63 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 		if (changed) this.sync_dependencies();
 	}
 
+	// ── loading a saved ruleset ──────────────────────────────────────────────
+	// The picker doubles as a provenance label — it shows what the panel was last
+	// seeded from — so it isn't cleared after a load, and anything that seeds the
+	// panel by other means (the initial Standard Ruleset, Populate From Run, Save
+	// Ruleset As) points it at the ruleset it used. Which is why `show_ruleset`
+	// records the name *before* writing the field: `set_value` fires `change` too,
+	// and `load_ruleset` would otherwise round-trip the ruleset it just applied.
+	show_ruleset(name) {
+		this.loaded_ruleset = name || null;
+		if (this.ruleset_field.get_value() !== (name || "")) {
+			this.ruleset_field.set_value(name || "");
+		}
+	}
+
+	load_ruleset() {
+		const ruleset = this.ruleset_field.get_value();
+		// Clearing the picker forgets what was loaded, so clear-then-pick-again is how
+		// a user throws away hand edits and reloads a ruleset from scratch.
+		if (!ruleset) {
+			this.loaded_ruleset = null;
+			return;
+		}
+		if (ruleset === this.loaded_ruleset) return;
+		(this.catalog_ready || Promise.resolve())
+			.then(() =>
+				frappe.call({
+					method: "autoshift.optimizer_studio.get_ruleset_selection",
+					args: { ruleset },
+				})
+			)
+			.then(({ message }) => {
+				if (!message) return;
+				this.loaded_ruleset = ruleset;
+				this.apply_selection(message.rows || {}, ruleset);
+			});
+	}
+
+	// set_selection, plus a word about anything the panel cannot represent: the
+	// catalog lists implemented rules only, so an unimplemented rule drafted into a
+	// ruleset (which Optimization Ruleset allows, with a warning) would otherwise
+	// disappear from the selection silently.
+	apply_selection(rows, source) {
+		const dropped = Object.keys(rows).filter(
+			(name) => !this.by_name || !this.by_name.has(name)
+		);
+		this.set_selection(rows);
+		if (dropped.length) {
+			frappe.show_alert({
+				message: __("{0}: {1} rule(s) not shown — not implemented.", [
+					frappe.utils.escape_html(source),
+					dropped.length,
+				]),
+				indicator: "orange",
+			});
+		}
+	}
+
 	// ── populate from an existing run ────────────────────────────────────────
 
 	populate_from_run() {
@@ -560,7 +644,8 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 				if (message.date) this.date_field.set_value(message.date);
 				this.leaves = new Set(message.leaves_speculations || []);
 				this.render_leave_pills();
-				this.set_selection(message.rows || {});
+				this.show_ruleset(message.ruleset);
+				this.apply_selection(message.rows || {}, message.ruleset || run);
 			});
 	}
 
@@ -731,7 +816,8 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 						method: "autoshift.optimizer_studio.save_ruleset_as",
 						args: { ruleset: this.last_ruleset, new_name },
 					})
-					.then(() => {
+					.then(({ message }) => {
+						this.show_ruleset(message || new_name);
 						frappe.show_alert({
 							message: __("Saved as {0}", [new_name]),
 							indicator: "green",

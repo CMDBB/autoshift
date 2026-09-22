@@ -375,6 +375,17 @@ def _book_slots(records: list[dict], days: list[datetime.date], virtual: bool) -
 	return slots
 
 
+def _parse_room_index(raw: str | None) -> tuple[int, ...]:
+	"""`Optimizer Run Slot.room_index` ("3,4" or blank) -> the room numbers, parsed.
+
+	Blank on every run that never selected `room_coverage_matched_rooms`, or on an
+	assignment that rule did not match into a room — the ordinary case, not an error.
+	"""
+	if not raw:
+		return ()
+	return tuple(int(part) for part in raw.split(",") if part.strip())
+
+
 def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 	"""One Optimizer Run's proposed slots, clipped to the week."""
 	rows = frappe.get_all(
@@ -389,6 +400,7 @@ def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 			"branch",
 			"forced",
 			"rooms",
+			"room_index",
 		],
 	)
 	if not rows:
@@ -454,6 +466,7 @@ def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 				forced=bool(row["forced"]),
 				role_certain=certain,
 				sort_value=_sort_value(role, person, chip_sort),
+				room_index=_parse_room_index(row["room_index"]),
 			)
 		)
 	return slots

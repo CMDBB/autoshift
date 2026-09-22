@@ -296,13 +296,25 @@ module.
 `autoshift/autoshift/page/optimizer_studio/`) — a workspace-level abstraction *over*
 Optimizer Run + Optimization Ruleset, and the first "automatic"-run surface: Planning Mode /
 Start Date / a human-readable rule-toggle panel (choice groups as radios incl. an explicit
-"None", everything else checkboxes with a weight input on Objective/Mixed rules), a
-"Populate From Run" link picker, and a "Preview Schedule" action. The panel is built so a
+"None", everything else checkboxes with a weight input on Objective/Mixed rules), two
+prefill link pickers — "Load Ruleset" and "Populate From Run" — and a "Preview Schedule"
+action. **The schedule view sits above the toggle panel**, which is the page's whole
+premise: the week is the thing being worked on and the rules are how it is nudged, so
+everything that isn't the chart is either a page-header field or inside `.op-config`.
+The panel is built so a
 ruleset `check_ruleset` would reject is structurally unreachable — see design notes before
 touching `index_catalog` / `blocked_reasons` / `sync_dependencies`. Every preview overwrites
 one ruleset per user (`Studio Draft — <user>`, `is_system=0`) and really does create an
 Optimizer Run, with `type="Automatic"`. Solving reuses `OptimizerRun.solve()` unchanged.
 "Save Ruleset As" promotes the draft via `frappe.copy_doc`.
+Both pickers are one-shot prefills over the same `get_ruleset_selection` /
+`prefill_from_run`, never a persistent link: "Load Ruleset" also doubles as a provenance
+label showing what the panel was last seeded from, so `show_ruleset` records the name
+*before* writing the field (`set_value` fires `change` too) and every other seeding path —
+the initial Standard Ruleset, Populate From Run, Save Ruleset As — points it at the ruleset
+it used. Clearing it forgets that, which is how a user reloads a ruleset over their own hand
+edits. `apply_selection` warns about rows the panel cannot draw, since `get_rule_catalog`
+lists implemented rules only and a ruleset may legally carry unimplemented ones.
 
 **Both solve entry points** — the Optimizer Run form's Solve button and Studio's Preview —
 first call a binding-gap check (`OptimizerRun.check_binding_rule_gap` /
@@ -336,6 +348,17 @@ are *disabled with a tooltip* rather than hidden; Solver Log needs only a run, s
   chart's own reading of `room_coverage`'s minimum — is hatched, because a half-staffed room
   is not an open room. `dropped` chips sink to the bottom of their lane and count toward
   neither. The headline counts fully-staffed rooms for the same reason.
+  **Where a run measured `room_coverage_matched_rooms`, rows are real rooms, not fill
+  order.** `Slot.room_index` (parsed from `Optimizer Run Slot.room_index`) is a solved room
+  number, arbitrary in value but stable across lanes — `chart._room_row_map` compacts a
+  day's distinct indices into a dense 1..K sequence, and two lanes' chips sharing an index
+  land on the same compacted row, which is what draws a genuine pairing (practitioner beside
+  the specific assistant the solver matched them with) rather than merely two lanes stacked
+  in the same visual order by coincidence. Anything without a measured index — no matched-
+  rooms run, a non-gating role, a book slot, a multi-room chip whose indices are not
+  contiguous once compacted — places exactly as it always has. Shown in the chip's tooltip
+  ("Room 3") via `api._cell`'s `room_index`; reporting only, since the row placement is
+  already decided by the time it reaches the payload.
   With a run, cells are a diff against the books (`kept`/`added`/`dropped`, plus `changed` on
   a moved half-day) via `chart.merge`. "The books" include bound employees' unrecorded rota
   days (`source.from_settled_rotas`, off `pending_bound`'s rows, leave days dropped) — the
@@ -531,11 +554,12 @@ package is deleted.
   All four rules are `standard=False` — a ruleset opts in explicitly, and the legacy pooled
   `room_coverage` (headcount only, no pairing) stays the default. `Optimizer Run
   Slot.shift_location`/`Shift Location.custom_discipline` remain unused scaffolding: rooms
-  are still bare ordinals, not tied to an actual `Shift Location` record, and the wall chart
-  still draws a computed row position rather than the solved `room_index` — that upgrade is
-  explicitly deferred. Benchmark solve time before ever proposing the matched rule as
-  standard: `y`'s index set multiplies `active_rooms`'s by `rooms_num`, with no
-  symmetry-breaking constraint yet.
+  are still bare ordinals, not tied to an actual `Shift Location` record. The wall chart
+  **does** now draw from the solved `room_index` where it exists (`wallchart/chart.py`'s
+  `_room_row_map`/`_fill` — see that section below); still deferred is giving a room its own
+  persistent identity beyond one run's solved ordinals. Benchmark solve time before ever
+  proposing the matched rule as standard: `y`'s index set multiplies `active_rooms`'s by
+  `rooms_num`, with no symmetry-breaking constraint yet.
 - **Free-seat / chair auction** and **dependency-graph inference for Custom Code rules** — no
   issue filed, no design work started; see design notes.
 - **Branch Preferences** (`Employee Branch Preference`) are stored but not read by the solver.

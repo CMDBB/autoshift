@@ -17,21 +17,30 @@ dataclasses and the slots as records, so placement can be reasoned about and
 tested without a site. `layout.py` derives the layout from the configuration and
 `source.py` reads the slots; only those two touch the database.
 
-Two things this deliberately does *not* invent, both inherited from the paper
-sheet it generalizes:
+Two things the paper sheet never had either, and this chart only has where the
+run measured them (gh#9, `room_coverage_matched_rooms`):
 
-  **room identity** — a band's rows are numbered because chairs are, but
-  autoshift tracks how many rooms are in use, never which (gh#9). Row 2 is the
-  second person on that half-day, not room 2.
+  **room identity** — where `Slot.room_index` is empty (no run, a pooled-coverage
+  run, a non-gating role, a book slot), a band's rows are still numbered only
+  because chairs are: each lane fills independently, top to bottom, sorted by
+  label or by `Slot.sort_value` — see `_order_lane`. Row 2 is the second person
+  on that half-day, not room 2. Where two or more lanes' slots carry the *same*
+  solved room index, `_fill` compacts every distinct index used that day into a
+  dense 1..K sequence (order preserved, gaps removed — the solver's own numbers
+  are arbitrary labels, never meant to be read as a room's identity) and gives
+  matching slots the same row, so room 2 there really is the second room.
 
-  **pairing** — lanes read as a tandem (practitioner beside assistant) but
-  nothing pairs them: each lane is filled independently and sorted by label,
-  or by `Slot.sort_value` where `Scheduling Role.chip_sort_field` names one —
-  see `_order_lane`. A row is two people working the same half-day at the same
-  place, not a stated partnership.
+  **pairing** — a genuine cross-lane match (see above) is the only thing that
+  puts two lanes' slots on the same row on purpose; anything else landing
+  together is `_order_lane`'s incidental fill order, same as it always was.
+  A multi-room slot whose solved indices are not contiguous once compacted
+  (nothing in the model requires a holder's rooms to be adjacent) falls back to
+  the incidental placement too, rather than draw a chip with a gap in it.
 
-Both are stable across rebuilds of the same data, which is what matters for a
-chart someone reads every week.
+Both stay stable across rebuilds of the same data — real room identity because
+`room_index` is itself stable across rebuilds of one solved run, and incidental
+placement because `_order_lane`'s ordering is deterministic — which is what
+matters for a chart someone reads every week.
 """
 
 from __future__ import annotations
@@ -95,6 +104,13 @@ class Slot:
 	#: standing in for the one it would materialise as. The optimizer reads it as on
 	#: the books, so it compares like one; the chart only draws it differently.
 	virtual: bool = False
+	#: `Optimizer Run Slot.room_index`, parsed — the specific room number(s) this
+	#: assignment was matched into under `room_coverage_matched_rooms`. Empty unless
+	#: that rule measured it: a book slot, a non-gating role, or a run that used the
+	#: pooled `room_coverage` all leave this empty, and `_fill` places them exactly as
+	#: it always has. Sparse by construction, the same convention as everywhere else
+	#: a figure is "real where measured, absent otherwise".
+	room_index: tuple[int, ...] = ()
 
 	@property
 	def match_key(self) -> tuple[str, datetime.date, str]:
@@ -291,6 +307,7 @@ def _recast(slot: Slot, kind: str, changed: str | None = None, virtual: bool | N
 		changed=changed,
 		sort_value=slot.sort_value,
 		virtual=slot.virtual if virtual is None else virtual,
+		room_index=slot.room_index,
 	)
 
 
@@ -427,30 +444,85 @@ def _fill(
 	opinion about it. Where the run measured each holder's load
 	(`room_load_objective`) that sum is the rooms actually open, not merely an
 	upper bound on them.
+
+	Slots carrying a `room_index` (`room_coverage_matched_rooms` measured it) are
+	placed first, at a row derived from that index rather than fill order —
+	`_room_row_map` compacts a day's distinct indices across every lane into a
+	dense sequence, so two lanes' slots that share an index land on the same row
+	(a real pairing) without the solver's own numbering leaving gaps in the stack.
+	Everything else fills the remaining rows exactly as it always has.
 	"""
 	used = 0
 	#: (day index, lane key) -> rows this lane covers that day
 	reach: dict[tuple[int, str], int] = {}
-	for lane in lanes:
-		for index in range(days):
+	for index in range(days):
+		row_of = _room_row_map(pool, band_key, lanes, shift_type, index)
+
+		for lane in lanes:
 			here = _order_lane(pool.get((band_key, lane.key, index, shift_type), []), lane.sort_descending)
-			row = 1
-			covered = 0
+			pinned: list[tuple[int, Slot]] = []
+			unpinned: list[Slot] = []
 			for slot in here:
+				rows = sorted(row_of[v] for v in slot.room_index) if slot.room_index else []
+				if rows and rows[-1] - rows[0] + 1 == len(rows):
+					pinned.append((rows[0], slot))
+				else:
+					unpinned.append(slot)
+
+			occupied: set[int] = set()
+			for row, slot in pinned:
 				span = max(int(slot.rooms or 1), 1)
 				chart.placements.append(Placement(shift_type, band_key, row, lane.key, index, slot, span))
+				occupied.update(range(row, row + span))
+
+			row = 1
+			for slot in unpinned:
+				span = max(int(slot.rooms or 1), 1)
+				while occupied.intersection(range(row, row + span)):
+					row += 1
+				chart.placements.append(Placement(shift_type, band_key, row, lane.key, index, slot, span))
+				occupied.update(range(row, row + span))
 				row += span
-				# `_order_lane` puts every dropped slot last, so this stays the
-				# count of rows the *proposal* reaches, from the top
-				if slot.kind != KIND_DROPPED:
-					covered = row - 1
+
+			# `_order_lane` puts every dropped slot last and a dropped slot is
+			# never pinned (the books never carry a room_index), so the
+			# contiguous-from-the-top prefix of `occupied` is exactly the rows
+			# the *proposal* reaches — same meaning `covered` always had, now
+			# computed over a set instead of a running counter, since a pinned
+			# room index can leave a gap nothing else fills.
+			covered = 0
+			while covered + 1 in occupied:
+				covered += 1
 			reach[(index, lane.key)] = covered
-			used = max(used, row - 1)
+			used = max(used, max(occupied, default=0))
 
 	gating = [lane.key for lane in lanes if lane.gates_rooms]
 	for index in range(days):
 		chart.covered[(shift_type, band_key, index)] = _coverage(reach, index, gating)
 	return used
+
+
+def _room_row_map(
+	pool: dict[tuple[str, str, int, str], list[Slot]],
+	band_key: str,
+	lanes: tuple[Lane, ...],
+	shift_type: str,
+	day_index: int,
+) -> dict[int, int]:
+	"""Solved room index -> chart row, for one band's one day, compacted across lanes.
+
+	The solver's own numbering is an arbitrary label (nothing in the model favors
+	a low index, or packs matches toward one end), so the distinct indices used
+	that day — across every lane, which is what lets two lanes land on the same
+	row — are sorted and remapped to a dense 1..K, in the same order. Two lanes
+	sharing an original index still share it after remapping; that shared value
+	*is* the pairing.
+	"""
+	distinct: set[int] = set()
+	for lane in lanes:
+		for slot in pool.get((band_key, lane.key, day_index, shift_type), ()):
+			distinct.update(slot.room_index)
+	return {original: row for row, original in enumerate(sorted(distinct), start=1)}
 
 
 def _coverage(reach: dict[tuple[int, str], int], day_index: int, gating: list[str]) -> int:
