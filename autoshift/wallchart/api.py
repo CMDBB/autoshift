@@ -82,6 +82,10 @@ def _cell(slot, span: int) -> dict:
 		"virtual": slot.virtual,
 		# only where the run measured a load below the holder's ceiling
 		"max_rooms": slot.max_rooms if slot.max_rooms > slot.rooms else 0,
+		# the solved room number(s), only where room_coverage_matched_rooms measured
+		# them — the row this cell is drawn at is already placed from this, so it is
+		# reporting-only here, for a tooltip to say "Room 3" instead of just showing it.
+		"room_index": list(slot.room_index) or None,
 	}
 
 
