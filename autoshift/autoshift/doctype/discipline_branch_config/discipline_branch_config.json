@@ -44,9 +44,10 @@
   },
   {
    "default": "3",
-   "description": "Objective points a staffed room in this discipline and branch is worth, before any employee or synergy bonus — the same scale a staffed room pays under \"Objective: Room utilization\". 0 leaves the room-level value mechanism off for this branch. Read only by \"Objective: Room value\" and the employee/synergy value objectives built on it.",
+   "description": "Objective points a staffed room in this discipline and branch is worth, before any employee or synergy bonus \u2014 the same scale a staffed room pays under \"Objective: Room utilization\". 0 leaves the room-level value mechanism off for this branch. Read only by \"Objective: Room value\" and the employee/synergy value objectives built on it.",
    "fieldname": "room_value",
    "fieldtype": "Float",
+   "in_list_view": 1,
    "label": "Value Of A Staffed Room",
    "non_negative": 1,
    "precision": "2"
@@ -64,7 +65,7 @@
   }
  ],
  "links": [],
- "modified": "2026-08-19 00:00:00.000000",
+ "modified": "2026-09-22 14:24:00.585086",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Discipline Branch Config",

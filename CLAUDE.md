@@ -554,6 +554,17 @@ package is deleted.
   `migrate` of already-installed sites. **Data seeding new sites need must therefore also run
   from `after_install`** (`autoshift/install.py`), sharing one idempotent function with the
   patch. Doctype schema needs neither — `install-app` syncs all doctype JSONs.
+- **The built-in rule registry re-syncs on every migrate, not via a patch per rule.**
+  `hooks.py`'s `after_migrate` calls `patches.create_standard_optimization_rules.execute()`
+  unconditionally (unlike a patch, an `after_migrate` hook has no "already ran" tracking, so
+  this is safe precisely because that function is idempotent — upsert by `builtin_key`, drop
+  unsupported leftovers, never touch a hand-tuned ruleset row's weight). Adding or renaming a
+  built-in rule in `rules.py` therefore needs **no new patch** to reach an already-migrated
+  site; the historical per-rule patches (`add_objective_rules`, `add_role_value_rule`, …)
+  predate the hook and stay for sites migrating from further back. The same function is also
+  exposed as `optimization_rule.reload_builtin_rules` (System Manager only), wired to a
+  "Reload Built-in Rules" menu item on the Optimization Rule list view
+  (`optimization_rule_list.js`) for picking up a code change without a full migrate.
 - **Two local sites, different jobs.** `development.localhost` is a quasi-staging site served
   to the developer for UI-based no-code changes and exploration — its state is not
   reproducible, so **never run integration tests against it**. `dev.test.localhost` is a

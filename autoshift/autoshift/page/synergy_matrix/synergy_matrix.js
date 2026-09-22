@@ -75,6 +75,11 @@ function inject_synergy_matrix_styles() {
 		}
 		.synergy-matrix th.smx-role-head:hover .smx-bulk,
 		.synergy-matrix td.smx-emp-col:hover .smx-bulk { visibility: visible; }
+		.synergy-matrix .smx-open {
+			position: absolute; top: 0; right: 0.1rem; font-size: 0.7em; line-height: 1;
+			color: var(--text-muted); visibility: hidden; text-decoration: none;
+		}
+		.synergy-matrix td.smx-cell:hover .smx-open { visibility: visible; }
 		.synergy-matrix .smx-legend { margin: 0.5rem 0; display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
 		.synergy-matrix .smx-legend span { padding: 0.05rem 0.45rem; border-radius: var(--border-radius); }
 		.synergy-matrix .smx-transcript { margin-top: 1rem; border-top: 1px solid var(--border-color); padding-top: 0.75rem; }
@@ -341,6 +346,13 @@ autoshift.SynergyMatrix = class SynergyMatrix {
 		const key = this.pair_key(row_emp.employee, col_emp.employee);
 		const cell = this.data.cells[key];
 		const readonly = !cell && !this.data.can_create ? " readonly" : "";
+		const open = cell
+			? `<a class="smx-open" href="/app/employee-role-synergy/${encodeURIComponent(
+					cell.name
+			  )}" target="_blank" title="${esc(
+					__("Open Employee Role Synergy")
+			  )}" tabindex="-1">↗</a>`
+			: "";
 		return (
 			`<td class="smx-cell" data-key="${esc(key)}">` +
 			`<input class="smx-input" type="text" inputmode="decimal" autocomplete="off"${readonly} ` +
@@ -348,7 +360,7 @@ autoshift.SynergyMatrix = class SynergyMatrix {
 				`${row_emp.employee_name || row_emp.employee} × ${
 					col_emp.employee_name || col_emp.employee
 				}`
-			)}"></td>`
+			)}">${open}</td>`
 		);
 	}
 
@@ -361,12 +373,19 @@ autoshift.SynergyMatrix = class SynergyMatrix {
 			)}"></td>`;
 		}
 		const readonly = this.data.can_write_esr ? "" : " readonly";
+		const open = self.name
+			? `<a class="smx-open" href="/app/employee-scheduling-role/${encodeURIComponent(
+					self.name
+			  )}" target="_blank" title="${esc(
+					__("Open Employee Scheduling Role")
+			  )}" tabindex="-1">↗</a>`
+			: "";
 		return (
 			`<td class="smx-cell smx-self-col" data-key="${esc(key)}">` +
 			`<input class="smx-input" type="text" inputmode="decimal" autocomplete="off"${readonly} ` +
 			`data-key="${esc(key)}" title="${esc(
 				__("{0}'s own Value Multiplier", [emp.employee_name || emp.employee])
-			)}"></td>`
+			)}">${open}</td>`
 		);
 	}
 
