@@ -12,7 +12,7 @@ and nothing more. The shape is nested to match the drawing order:
       "days":     [{date, weekday, holiday, working, in_window}, …7],
       "sections": [{shift_type, title,
                     bands: [{key, discipline, branch, numbered, rooms, height,
-                             covered: [rooms open, …7],
+                             open_rows: [[rows open, …], …7],
                              lanes: [{key, label, gates_rooms}],
                              rows: [ [ [cell|null|SPANNED, …7], …lanes ], …height ] }]}],
       "leaves":   {"YYYY-MM-DD": [{employee, label, leave_type, speculative}]},
@@ -32,11 +32,14 @@ rooms that person covers, drawn as `<td rowspan>`, so the lines it swallows are
 `SPANNED` and the renderer emits no cell for them at all. Null is a room nobody
 is in, which is the thing the chart exists to show.
 
-`covered` is how many of a band's rooms are genuinely open on each weekday — the
-lines every gating lane reaches. Rows past it are staffed by somebody but not by
-everybody the room needs, and the chart greys them: a half-staffed room is not an
-open room. It is the chart's own arithmetic, from the same minimum-over-roles the
-solver's `room_coverage` applies, so the picture and the numbers cannot drift.
+`open_rows` is *which* of a band's rows are genuinely open on each weekday — the
+lines every gating lane staffs. Any other row is empty, or staffed by somebody but
+not by everybody the room needs, and the chart greys it: a half-staffed room is not
+an open room. Rows rather than a count, because under `room_coverage_matched_rooms`
+a room nobody was matched into stays a hole (see `chart.py`) and the open ones need
+not start at the top. It is the chart's own arithmetic, from the same
+minimum-over-roles the solver's `room_coverage` applies, so the picture and the
+numbers cannot drift.
 """
 
 from __future__ import annotations
@@ -82,6 +85,10 @@ def _cell(slot, span: int) -> dict:
 		"virtual": slot.virtual,
 		# only where the run measured a load below the holder's ceiling
 		"max_rooms": slot.max_rooms if slot.max_rooms > slot.rooms else 0,
+		# the solved room number(s), only where room_coverage_matched_rooms measured
+		# them — the row this cell is drawn at is already placed from this, so it is
+		# reporting-only here, for a tooltip to say "Room 3" instead of just showing it.
+		"room_index": list(slot.room_index) or None,
 	}
 
 
@@ -105,7 +112,7 @@ def _band_payload(chart, cells, band_key, shift_type, lanes, rooms) -> dict:
 		"key": band_key,
 		"rooms": rooms,
 		"height": height,
-		"covered": [chart.covered_rooms(shift_type, band_key, day) for day in range(7)],
+		"open_rows": [list(chart.covered_rows(shift_type, band_key, day)) for day in range(7)],
 		"lanes": [{"key": lane.key, "label": lane.label, "gates_rooms": lane.gates_rooms} for lane in lanes],
 		"rows": rows,
 	}

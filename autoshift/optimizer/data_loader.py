@@ -229,7 +229,7 @@ def load(run_doc) -> DataPackage:
 	# ── Discipline-Branch Config ─────────────────────────────────────────────
 	config_rows = frappe.get_all(
 		"Discipline Branch Config",
-		fields=["name", "discipline", "branch", "rooms_num"],
+		fields=["name", "discipline", "branch", "rooms_num", "room_value"],
 	)
 	if not config_rows:
 		frappe.throw(frappe._("No Discipline Branch Config records found. Please configure them first."))
@@ -240,8 +240,14 @@ def load(run_doc) -> DataPackage:
 
 	flags: set[DataPackage.FLAG] = set()
 	rooms: dict[tuple[str, str], int] = {}
+	# Objective points a staffed room is worth, before any employee/synergy bonus. Sparse:
+	# 0 (the default on an unconfigured row) means "the room-level value mechanism is off
+	# for this branch" — read only by room_value_objective and the two bonus rules built on it.
+	room_value: dict[tuple[str, str], float] = {}
 	for r in config_rows:
 		rooms[(r.discipline, r.branch)] = int(r.rooms_num or 0)
+		if r.room_value:
+			room_value[(r.discipline, r.branch)] = float(r.room_value)
 
 	# ── Planning horizon ─────────────────────────────────────────────────────
 	# Needed this early because role validity windows are resolved against it.
@@ -313,6 +319,7 @@ def load(run_doc) -> DataPackage:
 			"binding_override",
 			"assignment_mode_override",
 			"suitability",
+			"value_multiplier",
 			"valid_from",
 			"valid_to",
 		],
@@ -347,6 +354,7 @@ def load(run_doc) -> DataPackage:
 	role_fte_pct: dict[tuple[str, str], float] = {}
 	binding_pairs: set[tuple[str, str]] = set()
 	role_suitability: dict[tuple[str, str], float] = {}
+	employee_value_multiplier: dict[tuple[str, str], float] = {}
 	role_mode_overrides: dict[tuple[str, str], str] = {}
 	for row in held_rows:
 		if row.employee not in active_employees:
@@ -359,6 +367,9 @@ def load(run_doc) -> DataPackage:
 		# blank reads as a regular holder, like the field's default; kept sparse
 		if row.suitability and float(row.suitability) != 1.0:
 			role_suitability[pair] = float(row.suitability)
+		# blank reads as no bonus, like the field's default; kept sparse
+		if row.value_multiplier and float(row.value_multiplier) != 1.0:
+			employee_value_multiplier[pair] = float(row.value_multiplier)
 		# blank inherits the role's mode; an override restating it is not an override
 		override = row.assignment_mode_override
 		if override and override != role_mode.get(row.scheduling_role, MODE_FLEXIBLE):
@@ -444,6 +455,23 @@ def load(run_doc) -> DataPackage:
 		employees.append(name)
 		fte_pct = cast(float, emp.custom_fte) or 100.0
 		target_shifts[name] = round(fte_pct / 100.0 * fulltime_shifts)
+
+	# ── Employee Role Synergy ────────────────────────────────────────────────
+	# Extra value a pair earns sharing a room, beyond what each earns on their own. Sparse:
+	# only configured pairs != 1.0, keyed by the sorted pair (the relation is symmetric).
+	# Read only by rules.synergy_value_objective.
+	employee_synergy: dict[tuple[str, str], float] = {}
+	if employees:
+		synergy_rows = frappe.get_all(
+			"Employee Role Synergy",
+			filters={"active": 1, "employee_a": ["in", employees], "employee_b": ["in", employees]},
+			fields=["employee_a", "employee_b", "synergy_multiplier"],
+		)
+		for row in synergy_rows:
+			if row.synergy_multiplier and float(row.synergy_multiplier) != 1.0:
+				employee_synergy[tuple(sorted((row.employee_a, row.employee_b)))] = float(
+					row.synergy_multiplier
+				)
 
 	# An employee with no Employee Settings document means the same as one whose
 	# preference tables are blank: uniform preferences. Without this backfill the
@@ -732,6 +760,7 @@ def load(run_doc) -> DataPackage:
 		role_target_shifts=role_target_shifts,
 		max_rpe=max_rpe,
 		rooms=rooms,
+		room_value=room_value,
 		disciplines=disciplines,
 		leave_blocked=leave_blocked,
 		forced=forced,
@@ -745,4 +774,6 @@ def load(run_doc) -> DataPackage:
 		binding_conflicts=tuple(sorted(binding_conflicts)),
 		unresolved_assignments=tuple(sorted(set(unresolved_assignments))),
 		role_suitability=role_suitability,
+		employee_value_multiplier=employee_value_multiplier,
+		employee_synergy=employee_synergy,
 	)

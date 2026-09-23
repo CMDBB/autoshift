@@ -172,6 +172,7 @@ function cell_markup(cell) {
 		cell.role,
 		cell.branch,
 		cell.changed,
+		cell.room_index ? __("Room {0}", [cell.room_index.join(", ")]) : "",
 		cell.max_rooms ? __("{0} of {1} rooms", [cell.span, cell.max_rooms]) : "",
 		cell.uncertain ? __("role inferred, not recorded") : "",
 		cell.virtual ? __("from the Shift Schedule; no Shift Assignment records it yet") : "",
@@ -250,10 +251,12 @@ function band_markup(band, days, run, width, today) {
 	for (let row = 0; row < band.height; row++) {
 		const cells = [`<td class="awc-ord">${band.numbered ? row + 1 : ""}</td>`];
 		days.forEach((day, day_index) => {
-			// How many of this band's rooms are genuinely open that day. A line past
-			// it holds somebody without holding everybody the room needs, so it is
-			// hatched: a half-staffed room is not an open room.
-			const covered = (band.covered || [])[day_index] || 0;
+			// Which of this band's rows are genuinely open that day. Any other line
+			// either holds nobody, or holds somebody without holding everybody the
+			// room needs, so it is hatched: a half-staffed room is not an open room.
+			// A set of rows, not a count: a room the solver matched nobody into stays
+			// a hole, so the open lines do not have to start at the top.
+			const open_rows = new Set((band.open_rows || [])[day_index] || []);
 			lanes.forEach((lane, lane_index) => {
 				const cell = (band.rows[row][lane_index] || [])[day_index];
 				// A line swallowed by the chip above it gets no <td> at all — that is
@@ -262,7 +265,7 @@ function band_markup(band, days, run, width, today) {
 				const cls = ["awc-cell", ...day_classes(day, run, today)];
 				if (day_index && !lane_index) cls.push("awc-day-start");
 				if (lane.gates_rooms === false) cls.push("awc-aside");
-				if (band.numbered && row + 1 > covered) cls.push("awc-uncovered");
+				if (band.numbered && !open_rows.has(row + 1)) cls.push("awc-uncovered");
 				const rowspan = cell && cell.span > 1 ? ` rowspan="${cell.span}"` : "";
 				cells.push(
 					`<td class="${cls.join(" ")}"${rowspan} colspan="${

@@ -15,6 +15,7 @@
   "binding_override",
   "assignment_mode_override",
   "suitability",
+  "value_multiplier",
   "section_break_validity",
   "active",
   "column_break_2",
@@ -87,6 +88,15 @@
    "fieldtype": "Float",
    "in_list_view": 1,
    "label": "Suitability",
+   "non_negative": 1,
+   "precision": "2"
+  },
+  {
+   "default": "1",
+   "description": "Multiplies this employee's share of a staffed room's value when working this role, once the room they occupy is actually matched: 1 is no bonus, 1.25 a 25% premium. Read by \"Objective: Employee value\" — flat, never compounding, added as (-1 + multiplier) × the room's own value.",
+   "fieldname": "value_multiplier",
+   "fieldtype": "Float",
+   "label": "Value Multiplier In A Staffed Room",
    "non_negative": 1,
    "precision": "2"
   },

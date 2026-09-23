@@ -152,3 +152,18 @@ def get_code_completions() -> list[dict]:
 	from autoshift.optimizer.editor_support import completion_items
 
 	return completion_items()
+
+
+@frappe.whitelist()
+def reload_builtin_rules() -> None:
+	"""Re-sync Optimization Rule documents from the current `rules.BUILTIN_RULES` registry —
+	the list view's "Reload Built-in Rules" menu action (see optimization_rule_list.js).
+
+	`hooks.py`'s `after_migrate` already runs this on every `bench migrate`; this is for
+	picking up a rules.py change immediately while developing, without a full migrate.
+	Developer-only, the same gate as implementing a rule at all.
+	"""
+	frappe.only_for(DEVELOPER_ROLE)
+	from autoshift.patches.create_standard_optimization_rules import execute
+
+	execute()

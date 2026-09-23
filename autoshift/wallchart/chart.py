@@ -17,21 +17,35 @@ dataclasses and the slots as records, so placement can be reasoned about and
 tested without a site. `layout.py` derives the layout from the configuration and
 `source.py` reads the slots; only those two touch the database.
 
-Two things this deliberately does *not* invent, both inherited from the paper
-sheet it generalizes:
+Two things the paper sheet never had either, and this chart only has where the
+run measured them (gh#9, `room_coverage_matched_rooms`):
 
-  **room identity** — a band's rows are numbered because chairs are, but
-  autoshift tracks how many rooms are in use, never which (gh#9). Row 2 is the
-  second person on that half-day, not room 2.
+  **room identity** — where `Slot.room_index` is empty (no run, a pooled-coverage
+  run, a non-gating role, a book slot), a band's rows are still numbered only
+  because chairs are: each lane fills independently, top to bottom, sorted by
+  label or by `Slot.sort_value` — see `_order_lane`. Row 2 is the second person
+  on that half-day, not room 2. Where a slot carries a solved room index, that
+  index **is** the row: room 2 is drawn on line 2 whatever else is on the chart,
+  so two lanes' slots sharing an index share a row.
+  **A room nobody was matched into therefore stays an empty line.** Nothing in
+  the model prefers a low room number — every room of a band is interchangeable,
+  so leaving room 1 shut and opening rooms 2 and 3 is one of many co-optimal
+  answers — and closing the gap up would draw that as rooms 1 and 2, i.e. as a
+  schedule the solver did not produce. A reader chasing "why is room 1 empty"
+  should land on the right question (there is no such preference) rather than on
+  a chart that quietly renumbered the answer.
 
-  **pairing** — lanes read as a tandem (practitioner beside assistant) but
-  nothing pairs them: each lane is filled independently and sorted by label,
-  or by `Slot.sort_value` where `Scheduling Role.chip_sort_field` names one —
-  see `_order_lane`. A row is two people working the same half-day at the same
-  place, not a stated partnership.
+  **pairing** — a genuine cross-lane match (see above) is the only thing that
+  puts two lanes' slots on the same row on purpose; anything else landing
+  together is `_order_lane`'s incidental fill order, same as it always was.
+  A multi-room slot whose solved indices are not contiguous (nothing in the model
+  requires a holder's rooms to be adjacent) falls back to the incidental
+  placement, rather than draw a chip with a gap in it.
 
-Both are stable across rebuilds of the same data, which is what matters for a
-chart someone reads every week.
+Both stay stable across rebuilds of the same data — real room identity because
+`room_index` is itself stable across rebuilds of one solved run, and incidental
+placement because `_order_lane`'s ordering is deterministic — which is what
+matters for a chart someone reads every week.
 """
 
 from __future__ import annotations
@@ -95,6 +109,13 @@ class Slot:
 	#: standing in for the one it would materialise as. The optimizer reads it as on
 	#: the books, so it compares like one; the chart only draws it differently.
 	virtual: bool = False
+	#: `Optimizer Run Slot.room_index`, parsed — the specific room number(s) this
+	#: assignment was matched into under `room_coverage_matched_rooms`. Empty unless
+	#: that rule measured it: a book slot, a non-gating role, or a run that used the
+	#: pooled `room_coverage` all leave this empty, and `_fill` places them exactly as
+	#: it always has. Sparse by construction, the same convention as everywhere else
+	#: a figure is "real where measured, absent otherwise".
+	room_index: tuple[int, ...] = ()
 
 	@property
 	def match_key(self) -> tuple[str, datetime.date, str]:
@@ -190,11 +211,14 @@ class Chart:
 	placements: list[Placement] = field(default_factory=list)
 	#: Rows actually drawn, per (shift_type, band key).
 	heights: dict[tuple[str, str], int] = field(default_factory=dict)
-	#: Rooms genuinely open, per (shift_type, band key, day index): the rows every
-	#: gating lane covers. A row above this is staffed by somebody but not by
-	#: everybody the room needs, and the chart greys it — a half-staffed room is
-	#: not an open room, and drawing it like one is how a chart lies.
-	covered: dict[tuple[str, str, int], int] = field(default_factory=dict)
+	#: Rooms genuinely open, per (shift_type, band key, day index): **which rows**
+	#: every gating lane staffs, ascending. Any other row is either empty or
+	#: staffed by somebody but not by everybody the room needs, and the chart greys
+	#: it — a half-staffed room is not an open room, and drawing it like one is how
+	#: a chart lies. Rows, not a count, because a solved room index can leave a
+	#: genuine hole: rooms 2 and 3 open with room 1 shut is not "two rooms from the
+	#: top", and the hatching has to follow the real lines.
+	covered: dict[tuple[str, str, int], tuple[int, ...]] = field(default_factory=dict)
 	warnings: list[str] = field(default_factory=list)
 	#: The lanes the overflow band needed, if any.
 	overflow_lanes: tuple[Lane, ...] = ()
@@ -207,7 +231,11 @@ class Chart:
 		return self.heights.get((shift_type, band_key), 0)
 
 	def covered_rooms(self, shift_type: str, band_key: str, day_index: int) -> int:
-		return self.covered.get((shift_type, band_key, day_index), 0)
+		"""How many rooms are open. The headline figure; `covered_rows` places them."""
+		return len(self.covered.get((shift_type, band_key, day_index), ()))
+
+	def covered_rows(self, shift_type: str, band_key: str, day_index: int) -> tuple[int, ...]:
+		return self.covered.get((shift_type, band_key, day_index), ())
 
 	def cell(self, shift_type: str, band_key: str, row: int, lane: str, day_index: int) -> list[Slot]:
 		return [
@@ -291,6 +319,7 @@ def _recast(slot: Slot, kind: str, changed: str | None = None, virtual: bool | N
 		changed=changed,
 		sort_value=slot.sort_value,
 		virtual=slot.virtual if virtual is None else virtual,
+		room_index=slot.room_index,
 	)
 
 
@@ -427,25 +456,54 @@ def _fill(
 	opinion about it. Where the run measured each holder's load
 	(`room_load_objective`) that sum is the rooms actually open, not merely an
 	upper bound on them.
+
+	Slots carrying a `room_index` (`room_coverage_matched_rooms` measured it) are
+	placed first, at exactly that room's row rather than by fill order, so two
+	lanes' slots sharing an index land on the same row (a real pairing) and a room
+	nobody was matched into stays an empty line — see the module docstring for why
+	that hole is the truth and not a gap to close. Everything else fills the
+	remaining rows exactly as it always has.
 	"""
 	used = 0
-	#: (day index, lane key) -> rows this lane covers that day
-	reach: dict[tuple[int, str], int] = {}
-	for lane in lanes:
-		for index in range(days):
+	#: (day index, lane key) -> the rows this lane *staffs* that day
+	reach: dict[tuple[int, str], frozenset[int]] = {}
+	for index in range(days):
+		for lane in lanes:
 			here = _order_lane(pool.get((band_key, lane.key, index, shift_type), []), lane.sort_descending)
-			row = 1
-			covered = 0
+			pinned: list[tuple[int, Slot]] = []
+			unpinned: list[Slot] = []
 			for slot in here:
+				rows = sorted(slot.room_index)
+				if rows and rows[-1] - rows[0] + 1 == len(rows):
+					pinned.append((rows[0], slot))
+				else:
+					unpinned.append(slot)
+
+			occupied: set[int] = set()
+			#: `occupied` minus what the run sent home — see `_order_lane`. A dropped
+			#: chip holds its line on the chart and staffs nothing, which is why the
+			#: two sets are tracked apart rather than one being derived from the other.
+			staffed: set[int] = set()
+			for row, slot in pinned:
 				span = max(int(slot.rooms or 1), 1)
 				chart.placements.append(Placement(shift_type, band_key, row, lane.key, index, slot, span))
-				row += span
-				# `_order_lane` puts every dropped slot last, so this stays the
-				# count of rows the *proposal* reaches, from the top
+				occupied.update(range(row, row + span))
 				if slot.kind != KIND_DROPPED:
-					covered = row - 1
-			reach[(index, lane.key)] = covered
-			used = max(used, row - 1)
+					staffed.update(range(row, row + span))
+
+			row = 1
+			for slot in unpinned:
+				span = max(int(slot.rooms or 1), 1)
+				while occupied.intersection(range(row, row + span)):
+					row += 1
+				chart.placements.append(Placement(shift_type, band_key, row, lane.key, index, slot, span))
+				occupied.update(range(row, row + span))
+				if slot.kind != KIND_DROPPED:
+					staffed.update(range(row, row + span))
+				row += span
+
+			reach[(index, lane.key)] = frozenset(staffed)
+			used = max(used, max(occupied, default=0))
 
 	gating = [lane.key for lane in lanes if lane.gates_rooms]
 	for index in range(days):
@@ -453,15 +511,21 @@ def _fill(
 	return used
 
 
-def _coverage(reach: dict[tuple[int, str], int], day_index: int, gating: list[str]) -> int:
-	"""Rooms open on one day of one band: the rows *every* gating lane reaches.
+def _coverage(
+	reach: dict[tuple[int, str], frozenset[int]], day_index: int, gating: list[str]
+) -> tuple[int, ...]:
+	"""Rooms open on one day of one band: the rows *every* gating lane staffs.
 
-	The minimum, exactly as `rules.room_coverage` takes it — a room needs each of
-	the roles it is defined by, so one lane running two lines deep next to a lane
-	running one covers one room and leaves a half-staffed line above it. A band
-	with no gating lane at all covers nothing: there is no role to say the room is
-	open, which is the same answer the solver gives.
+	The intersection, which is how `rules.room_coverage`'s minimum reads once rows
+	are rooms — a room needs each of the roles it is defined by, so a line with a
+	practitioner and no assistant is half-staffed rather than open, and the count
+	of open rooms is how many lines survive the intersection. Where no run measured
+	room identity every lane fills from the top, the intersection is a prefix, and
+	this is the same figure the minimum always gave. A band with no gating lane at
+	all covers nothing: there is no role to say a room is open, which is the same
+	answer the solver gives.
 	"""
 	if not gating:
-		return 0
-	return min(reach.get((day_index, key), 0) for key in gating)
+		return ()
+	rows = set.intersection(*(set(reach.get((day_index, key), frozenset())) for key in gating))
+	return tuple(sorted(rows))

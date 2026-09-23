@@ -91,7 +91,11 @@ Three apps split the responsibility; keep them separate.
 - **Optimizer Settings** — singleton: holiday lists.
 - **Discipline Branch Config** (+ child **… Shift Type**) — per (discipline, branch): room
   count and the Shift Types in scope. A Shift Type on no config row is treated as
-  non-clinical and excluded.
+  non-clinical and excluded. `room_value` (Float, default 3) prices a staffed room in this
+  branch in objective points — the per-branch override `room_value_objective` reads in place
+  of `room_utilization_objective`'s flat weight; 0 (unconfigured) leaves the room-level value
+  mechanism off. Existing rows are **not** backfilled to 3 on migrate — the field is inert
+  until a row is deliberately configured.
 - **Scheduling Role** — the optimizer's unit of *capability* and the scheduling axis that
   replaced designation: names exactly one discipline (Link to `Department`) plus a
   max-rooms-per-holder figure. `assignments_binding` (Check, default off) marks a role whose
@@ -114,11 +118,26 @@ Three apps split the responsibility; keep them separate.
   *informally* agreed FTE % in that role; blank = no expectation), an optional `max_rooms`
   override, a `binding_override` Select (blank inherits the role's flag), `suitability`
   (Float ≥ 1, default 1: 1 = regular holder, 1.2 = good backup, 3 = terrible but feasible
-  substitute), an `assignment_mode_override` Select (blank inherits the role's mode),
+  substitute), a `value_multiplier` (Float, default 1) that scales this holder's share of a
+  staffed room's value — `employee_value_objective` adds `(-1 + multiplier) *
+  room_value(discipline, branch)` per room they are matched into, flat and never
+  compounding, so a site that leaves every multiplier at 1 hashes and solves as before — an
+  `assignment_mode_override` Select (blank inherits the role's mode),
   `active`, and a `valid_from`/`valid_to` window. **An employee holding no
   in-window role is not scheduled at all** — that is how non-clinical staff stay out of
   scope. A substitute is just a row with `suitability > 1`; the loader treats it as held
   like any other.
+- **Employee Role Synergy** — a **standalone, symmetric employee × employee** relation
+  (autonamed `{employee_a}-{employee_b}`, the pair sorted alphabetically before insert so
+  either order collides on one document): `synergy_multiplier` (Float, default 1) prices two
+  employees matched into the same room together, read the same flat, non-compounding way as
+  `value_multiplier` — `synergy_value_objective` adds `(-1 + multiplier) *
+  room_value(discipline, branch)` per room both occupy, on top of the room's base value and
+  any employee-value bonus already earned there. Edited densely via the **Synergy Matrix**
+  page (`autoshift/employee_role_synergy.py`), the same stage-then-apply grid
+  pattern as the Role Matrix but genuinely rectangular — rows and columns are two different
+  role-based employee groups, never the same one, so same-role pairing needs no cell — with
+  a per-employee control to set every pair in that employee's row/column at once.
 - **Scheduling Rule Topic** — optional heading an `Optimization Rule` files itself under, so
   Studio's toggle panel renders as collapsible sections. Built-ins declare theirs in
   `rules.py` (`TOPIC_*`, `TOPIC_ORDER`); the seeding re-syncs the topic docs (`is_system=1`)
@@ -155,25 +174,39 @@ module.
    captured before the flag read as they did.
 2. `rules.py` — constraint groups *and* objective terms as named rules. `BUILTIN_RULES`
    registry populated by the `@builtin_rule` decorator; `STANDARD_RULES` is the
-   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 21 built-ins:
+   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 25 built-ins:
    `one_shift_per_day`, `warm_start`, `leave_blocklist`, `use_existing_assignments`,
    `bind_role_assignments`, `soft_bind_role_assignments`, `one_branch_per_shift`,
-   `room_coverage`, `fte_ceiling`, `role_fte_ceiling`, `exclusive_role_purity`
+   `room_coverage`, `room_coverage_matched_rooms`, `fte_ceiling`, `role_fte_ceiling`,
+   `exclusive_role_purity`
    (constraints) and `room_utilization_objective`, `fte_soft_ceiling`,
    `role_fte_target_objective`, `shift_preference_objective`,
    `suitability_preference_objective`, `weigh_assignments_objective`,
    `collateral_room_value_objective`, `collateral_capacity_value_objective`,
-   `role_value_objective`, `room_load_objective`
-   (objectives). Five choice groups: `existing_assignments`, `role_binding`,
+   `role_value_objective`, `room_load_objective`, `room_value_objective`,
+   `employee_value_objective`, `synergy_value_objective`
+   (objectives). Seven choice groups: `existing_assignments`, `role_binding`,
    `workload_ceiling` (`fte_ceiling` vs `fte_soft_ceiling`), `collateral_value`
    (`collateral_room_value_objective` vs the **standard**
    `collateral_capacity_value_objective`, which prices a supervised post by the rooms its
-   branch has configured rather than by the rooms staffed that half-day) and
+   branch has configured rather than by the rooms staffed that half-day),
    `shift_preference`
    (`shift_preference_objective` vs the **standard** `suitability_preference_objective`, which
    charges `(-1 + pref) * suitability` per assignment and equals the former while every
    suitability is 1; `DataPackage.role_suitability` is sparse and left out of `input_hash`
-   when empty). `_cname()`/`_vname()` name
+   when empty), `room_coverage` (`room_coverage` — pooled, per-role minimum, **standard** —
+   vs `room_coverage_matched_rooms` — every gating role matched into the same numbered room,
+   non-standard) and `room_value_choice` (`room_utilization_objective` — flat per-room
+   weight, **standard** — vs `room_value_objective`, which prices a room by
+   `DataPackage.room_value_of(discipline, branch)` and requires the matched-rooms coverage
+   rule, since only a genuinely matched room has an individual holder to attribute value
+   to). `employee_value_objective`/`synergy_value_objective` (non-standard, both `requires`
+   `room_value_objective`) add a flat, non-compounding bonus on top — `(-1 + multiplier) *
+   room_value(...)` — gated by a linearized AND of the room being matched (`room_active`)
+   and the specific holder(s) occupying it (`RuleContext.room_occupancy`, the `y[employee,
+   role, shift, day, branch, room_index]` family `room_coverage_matched_rooms` builds); see
+   design notes for the full worked example and why synergy is gated on a shared room index
+   rather than a shared session. `_cname()`/`_vname()` name
    constraints and any auxiliary variables (`role_fte_target_objective` linearizes an
    absolute deviation with a pair of them, `fte_soft_ceiling` a one-sided one with a
    single variable, `room_load_objective` a convex per-holder room-load cost with one-room
@@ -212,12 +245,21 @@ module.
    built **here, not in a rule**: they are what `p` means, the same way `active_rooms`'s room
    cap lives in the variable bound. Rules key workload and binding on `p`. Constraints and objective both via
    `rules.apply_rules`; the maximized objective sums `ctx.objective_terms` (empty = constant
-   0, pure feasibility).
+   0, pure feasibility). Room-level assignment's `y[employee,role,shift,day,branch,room_index]`
+   and `room_active[discipline,shift,day,branch,room_index]` are **not** built here — they are
+   rule-owned, created only by `room_coverage_matched_rooms` (see design notes), so a ruleset
+   that keeps the legacy pooled `room_coverage` pays no cost for room identity. That rule ties
+   the pooled `active_rooms` to `Σ_n room_active[...,n]`, so every existing rule reading
+   `active_rooms` keeps working unchanged under either coverage rule.
 5. `solver.py` — runs CBC (5 s sync, escalating to a 3600 s background job via
    `frappe.enqueue(queue="long")` on timeout); caches by input hash against prior runs in
    `{Solved, Failed, Approved, Committed}`. Persists `solution_table` (`x`), `coverage_table`
    (`active_rooms`) and `objective_breakdown` (the per-rule objective shares as a
-   drill-down tree, `rules.objective_tree`).
+   drill-down tree, `rules.objective_tree`). `solution_table`'s `rooms`/`room_index` prefer
+   the exact per-holder room numbers `ctx.room_occupancy` measured (under
+   `room_coverage_matched_rooms`) over `ctx.room_load`'s linearized estimate, falling back to
+   0 ("unmeasured") when neither rule ran — **a single figure covers both mechanisms**, so
+   `wallchart/source.py` needs no preference logic of its own.
    **`build()` returns its `RuleContext` as a fifth element** so the breakdown can be
    evaluated against solved variables — update sandbox/test call sites if you change that
    shape.
@@ -233,7 +275,10 @@ module.
    constraint and minimizes the total, so the non-zero slacks *are* the infeasibility.
    `INELASTIC_GROUPS` keeps `bind_presence` and the definitional `presence_*` constraints
    rigid, for the same reason variable bounds stay rigid: they are input, and relaxing them
-   blames binding for every collision instead of the rule it collides with.
+   blames binding for every collision instead of the rule it collides with. Same reasoning
+   adds `active_rooms_eq_matched` — what the pooled `active_rooms` *means* once
+   `room_coverage_matched_rooms` is selected — while the genuine matching constraints around
+   it (`room_occ_unique`, `room_active_le`/`room_active_ge`) stay elastic.
    `relax_integrality`/`lp_relaxation`/`shadow_prices` drop integrality so CBC returns
    duals — `pi`/`dj` are `None` on a MILP. **`solver.run_solve` appends `report()` to a
    Failed run's Solver Log**; `bench diagnose-model` and the sandbox helpers are the
@@ -251,13 +296,25 @@ module.
 `autoshift/autoshift/page/optimizer_studio/`) — a workspace-level abstraction *over*
 Optimizer Run + Optimization Ruleset, and the first "automatic"-run surface: Planning Mode /
 Start Date / a human-readable rule-toggle panel (choice groups as radios incl. an explicit
-"None", everything else checkboxes with a weight input on Objective/Mixed rules), a
-"Populate From Run" link picker, and a "Preview Schedule" action. The panel is built so a
+"None", everything else checkboxes with a weight input on Objective/Mixed rules), two
+prefill link pickers — "Load Ruleset" and "Populate From Run" — and a "Preview Schedule"
+action. **The schedule view sits above the toggle panel**, which is the page's whole
+premise: the week is the thing being worked on and the rules are how it is nudged, so
+everything that isn't the chart is either a page-header field or inside `.op-config`.
+The panel is built so a
 ruleset `check_ruleset` would reject is structurally unreachable — see design notes before
 touching `index_catalog` / `blocked_reasons` / `sync_dependencies`. Every preview overwrites
 one ruleset per user (`Studio Draft — <user>`, `is_system=0`) and really does create an
 Optimizer Run, with `type="Automatic"`. Solving reuses `OptimizerRun.solve()` unchanged.
 "Save Ruleset As" promotes the draft via `frappe.copy_doc`.
+Both pickers are one-shot prefills over the same `get_ruleset_selection` /
+`prefill_from_run`, never a persistent link: "Load Ruleset" also doubles as a provenance
+label showing what the panel was last seeded from, so `show_ruleset` records the name
+*before* writing the field (`set_value` fires `change` too) and every other seeding path —
+the initial Standard Ruleset, Populate From Run, Save Ruleset As — points it at the ruleset
+it used. Clearing it forgets that, which is how a user reloads a ruleset over their own hand
+edits. `apply_selection` warns about rows the panel cannot draw, since `get_rule_catalog`
+lists implemented rules only and a ruleset may legally carry unimplemented ones.
 
 **Both solve entry points** — the Optimizer Run form's Solve button and Studio's Preview —
 first call a binding-gap check (`OptimizerRun.check_binding_rule_gap` /
@@ -287,10 +344,28 @@ are *disabled with a tooltip* rather than hidden; Solver Log needs only a run, s
   A chip is **as tall as the rooms it covers** (`Slot.rooms` = the run's measured `rooms`
   where it has one, else the holder's `max_rooms`,
   drawn as `<td rowspan>`; the lines it swallows arrive as the `SPANNED` sentinel rather
-  than as cells), and a line past `covered` — the rows *every* gating lane reaches, the
-  chart's own reading of `room_coverage`'s minimum — is hatched, because a half-staffed room
-  is not an open room. `dropped` chips sink to the bottom of their lane and count toward
-  neither. The headline counts fully-staffed rooms for the same reason.
+  than as cells), and any line **not** in `covered` — the rows *every* gating lane staffs,
+  the chart's own reading of `room_coverage`'s minimum — is hatched, because a half-staffed
+  room is not an open room. `dropped` chips sink to the bottom of their lane and count
+  toward neither. The headline counts fully-staffed rooms for the same reason.
+  `Chart.covered` is the **set of open rows** per (shift type, band, day), not a count
+  (`covered_rows` places them, `covered_rooms` counts them), and reaches the browser as the
+  band's `open_rows` — an open room need not be at the top of the stack, so `_coverage`
+  intersects the gating lanes' staffed rows instead of taking a minimum over prefixes.
+  **Where a run measured `room_coverage_matched_rooms`, rows are real rooms, not fill
+  order.** `Slot.room_index` (parsed from `Optimizer Run Slot.room_index`) is a solved room
+  number, and **that number is the row** — two lanes' chips sharing an index land on the
+  same row, which is what draws a genuine pairing (practitioner beside the specific
+  assistant the solver matched them with) rather than merely two lanes stacked in the same
+  visual order by coincidence. **A room nobody was matched into therefore stays an empty
+  line**: no rule prefers a low room number, every room of a band is interchangeable, and
+  compacting the gap away would draw rooms 2-3 as rooms 1-2 — a schedule the solver did not
+  produce, and one that reads as a bug in the model rather than as the co-optimality it is
+  (see design notes). Anything without a measured index — no matched-rooms run, a non-gating
+  role, a book slot, a multi-room chip whose indices are not contiguous — places exactly as
+  it always has, filling the rows left over. Shown in the chip's tooltip
+  ("Room 3") via `api._cell`'s `room_index`; reporting only, since the row placement is
+  already decided by the time it reaches the payload.
   With a run, cells are a diff against the books (`kept`/`added`/`dropped`, plus `changed` on
   a moved half-day) via `chart.merge`. "The books" include bound employees' unrecorded rota
   days (`source.from_settled_rotas`, off `pending_bound`'s rows, leave days dropped) — the
@@ -341,6 +416,28 @@ the doc, or a new one, in a new tab); each role cell is an inline `suitability` 
 = no row. Edits stage **client-side only** (no draft doctype) and `apply_changes` writes the
 batch in one request, so one failing row rolls it all back. Clearing a cell deletes the row —
 HR Manager has no delete permission on the doctype, and the page refuses the edit up front.
+
+**Synergy Matrix** (`autoshift/employee_role_synergy.py` + Desk Page
+`autoshift/autoshift/page/synergy_matrix/`, route `synergy-matrix` — named apart from the
+**Employee Role Synergy** doctype it edits, whose own list view already claims the
+`employee-role-synergy` route) — the same stage-then-apply grid pattern as Role Matrix, but
+genuinely rectangular: `get_matrix` splits each scoped discipline's gating Scheduling Roles
+into two sides (`_split_by_side`, alternating by role name, sorted for determinism — which
+role lands on which side is arbitrary, since Employee Role Synergy carries no role of its
+own), so a role's holders land wholly on one side and same-role pairing — never a considered
+feature — is structurally impossible rather than merely hidden behind a disabled diagonal.
+Rows are one side's holders, columns the other's; cell `(A, B)`/`(B, A)` share one staged key
+regardless (the pair canonicalized alphabetically, matching the doctype's own
+`before_insert`). A per-employee control sets every pair in that employee's row/column at
+once, pairing against whichever side it is *not* on. A dedicated **Self** row (under the
+header) and column (right after Employee, mirroring Role Matrix's Settings column) carry a
+different field entirely — `Employee Scheduling Role.value_multiplier` — so the
+employee-value half of the same room-value mechanism can be edited alongside synergy without
+leaving the page; clearing a self cell resets it to 1 rather than deleting the role-holding
+record. Ctrl/Cmd+click toggles a cell into a multi-selection and Shift+click extends it as a
+rectangular range (by table position, so a selection may span the Self row/column and the
+pair grid together); an inner-button prompt sets every selected cell at once. Focusing any
+cell highlights its row and column.
 
 ---
 
@@ -457,9 +554,19 @@ package is deleted.
   mechanism turns up. `committer.py` raises `NotImplementedError` until this lands.
 - **[#8](https://github.com/CMDBB/autoshift/issues/8) `Unbounded` planning mode.** Selectable;
   `planning_days()` returns infinite days but the model builder truncates to 100. Backlog.
-- **[#9](https://github.com/CMDBB/autoshift/issues/9) Room-level assignment.**
-  `Optimizer Run Slot.shift_location` and `Shift Location.custom_discipline` exist as
-  scaffolding, but `model_builder.py` only tracks an aggregate room *count*. Backlog.
+- **[#9](https://github.com/CMDBB/autoshift/issues/9) Room-level assignment — landed, opt-in.**
+  `room_coverage_matched_rooms` matches a specific holder of every gating role into a
+  specific numbered room (`1..Discipline Branch Config.rooms_num`, no new Room doctype), the
+  prerequisite for `room_value_objective`/`employee_value_objective`/`synergy_value_objective`.
+  All four rules are `standard=False` — a ruleset opts in explicitly, and the legacy pooled
+  `room_coverage` (headcount only, no pairing) stays the default. `Optimizer Run
+  Slot.shift_location`/`Shift Location.custom_discipline` remain unused scaffolding: rooms
+  are still bare ordinals, not tied to an actual `Shift Location` record. The wall chart
+  **does** now draw from the solved `room_index` where it exists, one row per room number,
+  holes and all (`wallchart/chart.py`'s `_fill` — see that section below); still deferred is
+  giving a room its own persistent identity beyond one run's solved ordinals. Benchmark solve time before ever
+  proposing the matched rule as standard: `y`'s index set multiplies `active_rooms`'s by
+  `rooms_num`, with no symmetry-breaking constraint yet.
 - **Free-seat / chair auction** and **dependency-graph inference for Custom Code rules** — no
   issue filed, no design work started; see design notes.
 - **Branch Preferences** (`Employee Branch Preference`) are stored but not read by the solver.
@@ -478,6 +585,17 @@ package is deleted.
   `migrate` of already-installed sites. **Data seeding new sites need must therefore also run
   from `after_install`** (`autoshift/install.py`), sharing one idempotent function with the
   patch. Doctype schema needs neither — `install-app` syncs all doctype JSONs.
+- **The built-in rule registry re-syncs on every migrate, not via a patch per rule.**
+  `hooks.py`'s `after_migrate` calls `patches.create_standard_optimization_rules.execute()`
+  unconditionally (unlike a patch, an `after_migrate` hook has no "already ran" tracking, so
+  this is safe precisely because that function is idempotent — upsert by `builtin_key`, drop
+  unsupported leftovers, never touch a hand-tuned ruleset row's weight). Adding or renaming a
+  built-in rule in `rules.py` therefore needs **no new patch** to reach an already-migrated
+  site; the historical per-rule patches (`add_objective_rules`, `add_role_value_rule`, …)
+  predate the hook and stay for sites migrating from further back. The same function is also
+  exposed as `optimization_rule.reload_builtin_rules` (System Manager only), wired to a
+  "Reload Built-in Rules" menu item on the Optimization Rule list view
+  (`optimization_rule_list.js`) for picking up a code change without a full migrate.
 - **Two local sites, different jobs.** `development.localhost` is a quasi-staging site served
   to the developer for UI-based no-code changes and exploration — its state is not
   reproducible, so **never run integration tests against it**. `dev.test.localhost` is a

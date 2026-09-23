@@ -42,7 +42,14 @@ function inject_role_matrix_styles() {
 		}
 		.role-matrix thead .rm-emp-col, .role-matrix thead .rm-settings-col { z-index: 4; }
 		.role-matrix .rm-initials { color: var(--text-muted); margin-left: 0.3rem; font-size: 0.85em; }
-		.role-matrix tbody tr:nth-child(even) td { background: var(--zebra-bg, rgba(128, 128, 128, 0.04)); }
+		.role-matrix tbody tr:nth-child(even) td {
+			/* background (shorthand) would reset background-color to this rgba itself,
+			   making sticky columns translucent and letting scrolled-under content show
+			   through; layering the tint as a background-image instead keeps an opaque
+			   background-color underneath. */
+			background-color: var(--fg-color);
+			background-image: linear-gradient(var(--zebra-bg, rgba(128, 128, 128, 0.04)), var(--zebra-bg, rgba(128, 128, 128, 0.04)));
+		}
 		.role-matrix .rm-chip {
 			display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
 			white-space: nowrap; padding: 0.05rem 0.45rem; border-radius: var(--border-radius);

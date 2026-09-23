@@ -367,6 +367,10 @@ drives underneath.
 mode, the start date and the rules on one page, so you can try a ruleset and
 look at the result without creating and saving a run first.
 
+The **schedule itself is at the top of the page**, with the rule panel
+underneath it: you are looking at the week and reaching down to adjust it, not
+filling in a form and waiting to see what comes out.
+
 The rule panel lists every implemented rule in plain language, grouped into
 collapsible sections by Scheduling Rule Topic.
 **It cannot express a ruleset that would fail**, which is the point of it:
@@ -392,12 +396,18 @@ the record of runs you made deliberately.
 
 Your toggles live in a private working ruleset (`Studio Draft — <your user>`),
 overwritten on each preview rather than piling up. The seeded presets are never
-edited in place — picking one copies it into your draft. Two other buttons:
+edited in place — picking one copies it into your draft. Three other controls:
 
-| Button | Effect |
+| Control | Effect |
 |---|---|
+| **Load Ruleset** | Copy any saved ruleset's rules and weights into the panel (it starts on **Standard Ruleset**) |
 | **Populate From Run** | Load an existing run's mode, date and rule selection into the panel |
 | **Save Ruleset As** | Promote your current draft to a permanent, named Optimization Ruleset |
+
+**Load Ruleset** also shows what the panel was last seeded from, including after
+a Populate From Run or a Save Ruleset As. It is a copy, not a link: editing the
+toggles afterwards never touches the ruleset named there. Clear it and pick the
+same ruleset again to throw your edits away and start from it afresh.
 
 Before solving, Studio checks two things and asks about them in one prompt:
 whether any bound practitioners are missing Shift Assignments for the horizon
@@ -474,6 +484,14 @@ The **Week** chart is built entirely from your configuration: one band per
 as it has rooms, and one column per **Scheduling Role** of that discipline. So
 an unstaffed room is a blank row and a role nobody covers is a blank column —
 you can see a gap without reading a number. Use ◀ ▶ to move between weeks.
+
+Where the ruleset uses **Room coverage per discipline (matched pairing)**, the
+row a chip sits on **is** the room the solver matched it into —
+hover a chip to see which — and two people the solver put in the same room are
+drawn side by side on that row. Nothing in the optimiser prefers one room to
+another, so a run may well work rooms 2 and 3 and leave room 1 shut: that shows
+as an empty top row, and it is not a mistake. Shuffling the chips up to close
+the gap would show you a schedule the run did not produce.
 
 Before the run is solved the chart shows the
 **Shift Assignments already on the books**. Once it is solved, each cell says
