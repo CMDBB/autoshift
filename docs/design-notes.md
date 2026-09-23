@@ -213,12 +213,12 @@ Two changes, both following from the same arithmetic the solver uses:
   two lines of the band, which is how the paper sheet has always drawn it, and it makes a
   lane's height the sum `room_coverage` puts on the left of its inequality rather than a
   headcount that happens to look like one.
-- **Lines past the covered rooms are hatched.** Coverage is the minimum over the band's
+- **Lines that are not open rooms are hatched.** Coverage is the minimum over the band's
   *gating* lanes, so a line with a practitioner and no assistant is not an open room, and
   the chart no longer implies it is. `dropped` chips sort to the bottom of their lane and
-  are left out of the count: what the run sends home does not staff anything, and leaving
-  it above the proposal would both overstate coverage and break the run of covered lines
-  the hatching starts after.
+  are left out: what the run sends home does not staff anything, and counting it would
+  overstate coverage. (Coverage is now read per row rather than as a count from the top —
+  see "An unstaffed room stays a hole" below for the case that forced that.)
 
 The headline total switched to the same measure (rooms fully staffed, not cells occupied),
 because a headline that disagreed with the picture under it is worse than no headline.
@@ -732,6 +732,36 @@ silently drop somebody" bargain the rest of the chart makes.
 
 Generalized from `cmdb_frappe/planning/`, which stays where it is: that sheet's bands, its
 practitioner/assistant tandem and its numbered chairs are one practice's paper.
+
+### An unstaffed room stays a hole (2026-09-23)
+
+Under `room_coverage_matched_rooms` the solver matches holders into numbered rooms, and
+**nothing in the model prefers one room number to another**: the rooms of a band are
+interchangeable, so opening rooms 2 and 3 while room 1 stays shut is exactly as optimal as
+any other pick of two. That is a property of the model, and the right one — a preference for
+low numbers would be a constraint nobody asked for, and the symmetry is also why gh#9 still
+warns about solve time.
+
+The chart's first cut compacted a day's distinct room indices into a dense `1..K` before
+placing them, on the reasoning that the solver's numbering is an arbitrary label and a gap in
+the stack would look like a drawing error. It is the opposite: closing the gap draws rooms 2
+and 3 *as* rooms 1 and 2, which is a schedule the solver did not produce, and it sends a
+reader who notices room 1 empty on the Optimizer Run looking for a logic bug in the model
+instead of at a co-optimal answer. A chart that silently renumbers is worse than one with a
+hole in it, because only one of the two can be checked against the run.
+
+So a measured `room_index` **is** the row. Two consequences worth naming:
+
+- **Coverage had to become per-row.** It was the length of the run of lines every gating lane
+  reached from the top, which reads 0 the moment room 1 is empty — the whole band would
+  hatch. `_coverage` now intersects the gating lanes' *staffed* rows and `Chart.covered` holds
+  that set (`open_rows` in the payload). Where no run measured room identity every lane still
+  fills from the top, the intersection is a prefix, and the figure is the one the minimum
+  always gave — which is why nothing about pooled `room_coverage` runs changed.
+- **Dropped chips had to be excluded explicitly.** The old prefix count relied on
+  `_order_lane` sinking them below the proposal; with holes allowed, "below" no longer means
+  "outside the count", so `_fill` tracks the rows a lane *staffs* separately from the rows it
+  *occupies*. A dropped chip still holds its line on the chart and still staffs nothing.
 
 ---
 

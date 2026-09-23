@@ -485,6 +485,14 @@ as it has rooms, and one column per **Scheduling Role** of that discipline. So
 an unstaffed room is a blank row and a role nobody covers is a blank column —
 you can see a gap without reading a number. Use ◀ ▶ to move between weeks.
 
+Where the ruleset uses **Room coverage per discipline (matched pairing)**, the
+row a chip sits on **is** the room the solver matched it into —
+hover a chip to see which — and two people the solver put in the same room are
+drawn side by side on that row. Nothing in the optimiser prefers one room to
+another, so a run may well work rooms 2 and 3 and leave room 1 shut: that shows
+as an empty top row, and it is not a mistake. Shuffling the chips up to close
+the gap would show you a schedule the run did not produce.
+
 Before the run is solved the chart shows the
 **Shift Assignments already on the books**. Once it is solved, each cell says
 what the run did with that half-day:
