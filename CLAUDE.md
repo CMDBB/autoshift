@@ -344,19 +344,26 @@ are *disabled with a tooltip* rather than hidden; Solver Log needs only a run, s
   A chip is **as tall as the rooms it covers** (`Slot.rooms` = the run's measured `rooms`
   where it has one, else the holder's `max_rooms`,
   drawn as `<td rowspan>`; the lines it swallows arrive as the `SPANNED` sentinel rather
-  than as cells), and a line past `covered` — the rows *every* gating lane reaches, the
-  chart's own reading of `room_coverage`'s minimum — is hatched, because a half-staffed room
-  is not an open room. `dropped` chips sink to the bottom of their lane and count toward
-  neither. The headline counts fully-staffed rooms for the same reason.
+  than as cells), and any line **not** in `covered` — the rows *every* gating lane staffs,
+  the chart's own reading of `room_coverage`'s minimum — is hatched, because a half-staffed
+  room is not an open room. `dropped` chips sink to the bottom of their lane and count
+  toward neither. The headline counts fully-staffed rooms for the same reason.
+  `Chart.covered` is the **set of open rows** per (shift type, band, day), not a count
+  (`covered_rows` places them, `covered_rooms` counts them), and reaches the browser as the
+  band's `open_rows` — an open room need not be at the top of the stack, so `_coverage`
+  intersects the gating lanes' staffed rows instead of taking a minimum over prefixes.
   **Where a run measured `room_coverage_matched_rooms`, rows are real rooms, not fill
   order.** `Slot.room_index` (parsed from `Optimizer Run Slot.room_index`) is a solved room
-  number, arbitrary in value but stable across lanes — `chart._room_row_map` compacts a
-  day's distinct indices into a dense 1..K sequence, and two lanes' chips sharing an index
-  land on the same compacted row, which is what draws a genuine pairing (practitioner beside
-  the specific assistant the solver matched them with) rather than merely two lanes stacked
-  in the same visual order by coincidence. Anything without a measured index — no matched-
-  rooms run, a non-gating role, a book slot, a multi-room chip whose indices are not
-  contiguous once compacted — places exactly as it always has. Shown in the chip's tooltip
+  number, and **that number is the row** — two lanes' chips sharing an index land on the
+  same row, which is what draws a genuine pairing (practitioner beside the specific
+  assistant the solver matched them with) rather than merely two lanes stacked in the same
+  visual order by coincidence. **A room nobody was matched into therefore stays an empty
+  line**: no rule prefers a low room number, every room of a band is interchangeable, and
+  compacting the gap away would draw rooms 2-3 as rooms 1-2 — a schedule the solver did not
+  produce, and one that reads as a bug in the model rather than as the co-optimality it is
+  (see design notes). Anything without a measured index — no matched-rooms run, a non-gating
+  role, a book slot, a multi-room chip whose indices are not contiguous — places exactly as
+  it always has, filling the rows left over. Shown in the chip's tooltip
   ("Room 3") via `api._cell`'s `room_index`; reporting only, since the row placement is
   already decided by the time it reaches the payload.
   With a run, cells are a diff against the books (`kept`/`added`/`dropped`, plus `changed` on
@@ -555,9 +562,9 @@ package is deleted.
   `room_coverage` (headcount only, no pairing) stays the default. `Optimizer Run
   Slot.shift_location`/`Shift Location.custom_discipline` remain unused scaffolding: rooms
   are still bare ordinals, not tied to an actual `Shift Location` record. The wall chart
-  **does** now draw from the solved `room_index` where it exists (`wallchart/chart.py`'s
-  `_room_row_map`/`_fill` — see that section below); still deferred is giving a room its own
-  persistent identity beyond one run's solved ordinals. Benchmark solve time before ever
+  **does** now draw from the solved `room_index` where it exists, one row per room number,
+  holes and all (`wallchart/chart.py`'s `_fill` — see that section below); still deferred is
+  giving a room its own persistent identity beyond one run's solved ordinals. Benchmark solve time before ever
   proposing the matched rule as standard: `y`'s index set multiplies `active_rooms`'s by
   `rooms_num`, with no symmetry-breaking constraint yet.
 - **Free-seat / chair auction** and **dependency-graph inference for Custom Code rules** — no

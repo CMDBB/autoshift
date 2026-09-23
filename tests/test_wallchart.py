@@ -469,29 +469,46 @@ def test_slots_sharing_a_solved_room_index_land_on_the_same_row():
 		slot(employee="E1", role="R1", room_index=(3,)),
 		slot(employee="E2", role="R2", room_index=(3,)),
 	]
-	chart = build(layout(band(rooms=2)), slots, MONDAY)
-	assert placement(chart, 1, "R1").slot.employee == "E1"
-	assert placement(chart, 1, "R2").slot.employee == "E2"
+	chart = build(layout(band(rooms=3)), slots, MONDAY)
+	assert placement(chart, 3, "R1").slot.employee == "E1"
+	assert placement(chart, 3, "R2").slot.employee == "E2"
 
 
-def test_distinct_room_indices_compact_to_a_dense_sequence():
-	"""The solver's own numbers are arbitrary labels — order is what is kept."""
+def test_a_solved_room_index_is_the_row_it_draws_at():
+	"""Room 3 is line 3, not "the second one that happened to be used"."""
 	slots = [
-		slot(employee="E1", role="R1", room_index=(9,)),
-		slot(employee="E2", role="R1", room_index=(5,)),
+		slot(employee="E1", role="R1", room_index=(3,)),
+		slot(employee="E2", role="R1", room_index=(1,)),
 	]
-	chart = build(layout(band(rooms=2)), slots, MONDAY)
-	assert placement(chart, 1, "R1").slot.employee == "E2"  # 5 sorts before 9
-	assert placement(chart, 2, "R1").slot.employee == "E1"
+	chart = build(layout(band(rooms=3)), slots, MONDAY)
+	assert placement(chart, 1, "R1").slot.employee == "E2"
+	assert placement(chart, 3, "R1").slot.employee == "E1"
+
+
+def test_a_room_nobody_was_matched_into_stays_an_empty_line():
+	"""Every room of a band is interchangeable, so a solve that leaves room 1 shut and
+	works rooms 2 and 3 is co-optimal with any other pick — and closing the gap up
+	would draw a schedule the solver did not produce. The hole is the answer."""
+	slots = [
+		slot(employee="E1", role="R1", room_index=(2,)),
+		slot(employee="E2", role="R2", room_index=(2,)),
+		slot(employee="E3", role="R1", room_index=(3,)),
+		slot(employee="E4", role="R2", room_index=(3,)),
+	]
+	chart = build(layout(band(rooms=3)), slots, MONDAY)
+	assert placement(chart, 1, "R1") is None
+	assert placement(chart, 1, "R2") is None
+	assert chart.covered_rows(AM, "C1", 0) == (2, 3)  # open rooms, not "the top two"
+	assert chart.covered_rooms(AM, "C1", 0) == 2
 
 
 def test_a_noncontiguous_multi_room_slot_falls_back_to_incidental_placement():
-	"""Nothing ties a multi-room holder's rooms together, so a compacted span with a
-	gap in it (another lane's index landed between this slot's two) is not drawn —
-	the slot is placed exactly as it would be with no room_index at all."""
+	"""Nothing ties a multi-room holder's rooms together, so a chip that would have to
+	be drawn with a gap in it (rooms 1 and 3) is not pinned at all — the slot is
+	placed exactly as it would be with no room_index."""
 	slots = [
-		slot(employee="E1", role="R1", rooms=2, room_index=(2, 9)),
-		slot(employee="E2", role="R2", room_index=(5,)),  # compacts to the row between E1's two
+		slot(employee="E1", role="R1", rooms=2, room_index=(1, 3)),
+		slot(employee="E2", role="R2", room_index=(2,)),
 	]
 	chart = build(layout(band(rooms=3)), slots, MONDAY)
 	placed = placement(chart, 1, "R1")
@@ -499,30 +516,30 @@ def test_a_noncontiguous_multi_room_slot_falls_back_to_incidental_placement():
 	assert placed.span == 2
 
 
-def test_a_pinned_gap_caps_reach_at_the_contiguous_prefix():
-	"""R1 is pinned at rows 1 and 3 with nothing of its own at row 2, and nothing
-	spare to fill it — reach stops at row 1, exactly as an incidental gap would."""
+def test_lanes_matched_into_different_rooms_open_neither_of_them():
+	"""The practitioner is in room 1 and the assistant in room 3: two half-staffed
+	lines, not one open room. Coverage is per row, so a count taken from the top
+	would have called this a room."""
 	slots = [
-		slot(employee="E1", role="R1", room_index=(10,)),
-		slot(employee="E2", role="R2", room_index=(20,)),
-		slot(employee="E3", role="R1", room_index=(30,)),
+		slot(employee="E1", role="R1", room_index=(1,)),
+		slot(employee="E2", role="R2", room_index=(3,)),
 	]
 	chart = build(layout(band(rooms=3)), slots, MONDAY)
 	assert placement(chart, 1, "R1").slot.employee == "E1"
-	assert placement(chart, 3, "R1").slot.employee == "E3"
-	assert chart.covered_rooms(AM, "C1", 0) == 0
+	assert placement(chart, 3, "R2").slot.employee == "E2"
+	assert chart.covered_rows(AM, "C1", 0) == ()
 
 
 def test_an_unpinned_slot_fills_around_a_pinned_row():
-	"""A solved pairing at row 1 does not block a second, unmeasured assignment from
-	landing at row 2 in the same lane."""
+	"""A solved pairing at room 2 does not stop a second, unmeasured assignment in the
+	same lane from taking the line above it."""
 	slots = [
-		slot(employee="E1", role="R1", room_index=(4,)),
+		slot(employee="E1", role="R1", room_index=(2,)),
 		slot(employee="E2", role="R1"),
 	]
 	chart = build(layout(band(rooms=2)), slots, MONDAY)
-	assert placement(chart, 1, "R1").slot.employee == "E1"
-	assert placement(chart, 2, "R1").slot.employee == "E2"
+	assert placement(chart, 2, "R1").slot.employee == "E1"
+	assert placement(chart, 1, "R1").slot.employee == "E2"
 
 
 def test_merge_keeps_the_room_index_on_a_kept_slot():
