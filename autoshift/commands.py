@@ -283,4 +283,47 @@ def diagnose_model(context, run_name, snapshot_path, lp_path, elastic, integral,
 		click.echo(f"\nLP written to {diagnostics.write_lp(prob, lp_path)}")
 
 
-commands = [dump_dev_data, seed_dev_data, capture_datapackage, diagnose_model]
+@click.command("update-holiday-lists")
+@click.option("--dry-run", is_flag=True, help="Report what would change without writing")
+@pass_context
+def update_holiday_lists(context, dry_run):
+	"""Assign each bound employee a Holiday List matching their rota
+
+	Frappe HR counts leave by subtracting an employee's own holidays from the days they
+	apply for, so a settled four-day week has to be written down as a holiday list or a
+	week off is charged as five days. This derives one per employee from their rotas and
+	the company calendar; see `autoshift.rota.holidays`. The Rota Editor offers the same
+	thing from its menu — this is for the first bulk run.
+	"""
+	from autoshift.rota import holidays
+
+	site = get_site(context)
+	frappe.init(site=str(site))
+	frappe.connect()
+	try:
+		if dry_run:
+			found = holidays.pending()
+			for entry in found["employees"]:
+				click.echo(f"{entry['employee']}: from {entry['from_date']} ({entry['digest']})")
+			click.echo(f"{len(found['employees'])} employee(s) would be assigned an updated list")
+			for employee in found["unconfigured"]:
+				click.echo(f"skipped (no company holiday list): {employee}")
+			return
+		result = holidays.apply()
+		frappe.db.commit()
+		click.echo(f"assigned {result['assigned']} list(s) across {len(result['lists'])} calendar(s)")
+		for failure in result["failures"]:
+			click.echo(f"failed: {failure['employee']}: {failure['error']}")
+		for employee in result["unconfigured"]:
+			click.echo(f"skipped (no company holiday list): {employee}")
+	finally:
+		frappe.destroy()
+
+
+commands = [
+	dump_dev_data,
+	seed_dev_data,
+	capture_datapackage,
+	diagnose_model,
+	update_holiday_lists,
+]

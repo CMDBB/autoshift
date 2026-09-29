@@ -29,6 +29,7 @@ from .cycle import (
 	WEEKDAY_INDEX,
 	WEEKDAY_LABEL,
 	Rota,
+	first_covered_week,
 	monday_of,
 	occurrences,
 )
@@ -385,6 +386,53 @@ def _effective_rotas(rotas: list[Rota], plan: edit.EditPlan, discipline: str | N
 	return kept + created
 
 
+def _upcoming_patterns(
+	rotas: list[Rota], view_start: datetime.date, view_end: datetime.date, view_weeks: int
+) -> list[dict]:
+	"""Native patterns that begin *after* the window on screen, one entry per pattern.
+
+	Nothing pulls a `create_shifts_after` backwards any more (see `cycle.ANCHOR_LEAD_WEEKS`),
+	so a rota anchored in the future is simply not drawn — correct, and invisible. This is
+	what makes it visible: the editor offers to start it from this view instead, as a
+	staged `backdate` change that goes through Apply like any other edit.
+
+	Grouped by `edit.group_key`, so a multi-phase pattern is one offer rather than one per
+	phase row, and skipped where the view is too narrow to resample the cadence faithfully
+	(`edit.rota_view_weeks`) — the same predicate that hides such an employee's row.
+	"""
+	by_key: dict[tuple, list[Rota]] = {}
+	for rota in rotas:
+		if not rota.weekdays or rota.anchor is None:
+			continue
+		if rota.until is not None and rota.until < view_start:
+			continue  # already ended: history, not something waiting to start
+		if first_covered_week(rota, view_start) <= view_end:
+			continue  # reaches the view already, whether or not it lands on a drawn day
+		by_key.setdefault(edit.rota_key(rota), []).append(rota)
+
+	offers = []
+	for members in by_key.values():
+		if not all(edit.rota_view_weeks(m.cycle_weeks, view_weeks) for m in members):
+			continue
+		first = min(m.anchor + datetime.timedelta(days=1) for m in members)
+		weekdays: set[int] = set()
+		for m in members:
+			weekdays |= set(m.weekdays)
+		sample = members[0]
+		branch = f" at {sample.shift_location}" if sample.shift_location else ""
+		offers.append(
+			{
+				"employee": sample.employee,
+				# Any member identifies the group; `stage_change` resolves the rest of the
+				# identity off the row itself.
+				"assignment": sample.assignment,
+				"label": f"{sample.shift_type} {edit.weekday_range_label(sorted(weekdays))}{branch}",
+				"starts": first.isoformat(),
+			}
+		)
+	return sorted(offers, key=lambda o: (o["employee"], o["label"]))
+
+
 def is_native(rota: Rota, discipline: str) -> bool:
 	"""May a view of `discipline` edit this pattern?
 
@@ -527,7 +575,8 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 	plan = edit.apply_changes(
 		native_rotas, staged, view_start=start_date, view_weeks=view_weeks, today=_today()
 	)
-	effective = _effective_rotas(native_rotas, plan, discipline) + foreign_rotas
+	native_effective = _effective_rotas(native_rotas, plan, discipline)
+	effective = native_effective + foreign_rotas
 
 	by_employee: dict[str, list[Rota]] = {}
 	for rota in effective:
@@ -651,6 +700,10 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 		# wrong last month is a real thing to want, and the view is where the planner
 		# says which month they mean.
 		"retroactive": plan.retroactive,
+		# Patterns that start after this window and are therefore invisible in it, each
+		# offering to be started from `turning_point` instead. Computed against the draft
+		# already folded in, so staging one makes its own offer go away.
+		"upcoming_patterns": _upcoming_patterns(native_effective, start_date, end_date, view_weeks),
 	}
 
 
@@ -722,7 +775,7 @@ def stage_change(discipline: str, change: str | dict, start: str, view_weeks: in
 
 	from_assignment = change.get("from_assignment") or None
 	source = None
-	if change["op"] in ("move", "remove", "retag"):
+	if change["op"] in ("move", "remove", "retag", "backdate"):
 		# `effective_before` includes not-yet-applied placeholders (see `_effective_rotas`),
 		# so this also resolves a chip that is itself still pending — a chip stays
 		# draggable throughout, not just once its own Shift Schedule Assignment exists.

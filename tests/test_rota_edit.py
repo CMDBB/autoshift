@@ -987,3 +987,70 @@ def test_retroactive_is_set_only_when_the_view_starts_before_today():
 	assert plan_on(VIEW).retroactive is False
 	assert plan_on(VIEW - datetime.timedelta(days=1)).retroactive is False
 	assert plan_on(None).retroactive is False
+
+
+# ── apply_changes: backdate ──────────────────────────────────────────────────
+
+
+def test_backdate_starts_a_future_pattern_at_the_view():
+	"""The pattern is invisible in this window because it genuinely has not begun. Asking
+	for it to begin now recreates it anchored here and drops the future row, which never
+	generated a day."""
+	future = rota("SSA1", [TUE, THU], anchor=VIEW + datetime.timedelta(weeks=3))
+	change = Change(op="backdate", employee="E1", from_assignment="SSA1")
+
+	plan = apply_changes([future], [change], view_start=VIEW)
+
+	assert plan.delete == ("SSA1",) and plan.terminate == ()
+	assert len(plan.create) == 1
+	created = plan.create[0]
+	assert created.weekdays == frozenset({TUE, THU})
+	assert created.anchor == VIEW - ONE_DAY
+	assert created.shift_type == "AM" and created.branch == "B1"
+
+
+def test_backdate_keeps_a_multiweek_pattern_in_phase():
+	"""Two phases three weeks out come back as two phases here, in the same order — the
+	shift is a whole number of weeks, taken over the group."""
+	start = VIEW + datetime.timedelta(weeks=4)
+	week0 = rota("A0", [MON], cycle=2, anchor=start - ONE_DAY)
+	week1 = rota("A1", [WED], cycle=2, anchor=start + datetime.timedelta(weeks=1) - ONE_DAY)
+	change = Change(op="backdate", employee="E1", from_assignment="A0")
+
+	plan = apply_changes([week0, week1], [change], view_start=VIEW, view_weeks=2)
+
+	assert sorted(plan.delete) == ["A0", "A1"]
+	by_anchor = {n.anchor: n for n in plan.create}
+	assert sorted(by_anchor) == [VIEW - ONE_DAY, VIEW + datetime.timedelta(weeks=1) - ONE_DAY]
+	assert by_anchor[VIEW - ONE_DAY].weekdays == frozenset({MON})
+	assert by_anchor[VIEW + datetime.timedelta(weeks=1) - ONE_DAY].weekdays == frozenset({WED})
+	assert all(n.cycle_weeks == 2 for n in plan.create)
+
+
+def test_backdate_carries_the_role_and_duties_across():
+	future = rota("SSA1", [TUE], anchor=VIEW + datetime.timedelta(weeks=2), role="R1", collateral=("D1",))
+	change = Change(op="backdate", employee="E1", from_assignment="SSA1")
+
+	plan = apply_changes([future], [change], view_start=VIEW)
+
+	assert plan.create[0].scheduling_role == "R1"
+	assert plan.create[0].collateral_roles == ("D1",)
+
+
+def test_backdating_a_pattern_that_already_reaches_the_view_does_nothing():
+	current = rota("SSA1", [TUE], anchor=VIEW - ONE_DAY)
+	change = Change(op="backdate", employee="E1", from_assignment="SSA1")
+
+	plan = apply_changes([current], [change], view_start=VIEW)
+
+	assert plan == type(plan)()  # an empty plan: nothing to end, delete or create
+
+
+def test_backdate_is_described_in_terms_of_the_pattern_it_starts():
+	future = rota("SSA1", [TUE, THU], anchor=VIEW + datetime.timedelta(weeks=3))
+	line = describe_change(Change(op="backdate", employee="E1", from_assignment="SSA1"), [future])
+
+	assert line == (
+		f"E1: started AM at B1 from this week (was starting "
+		f"{(VIEW + datetime.timedelta(weeks=3) + ONE_DAY).isoformat()})"
+	)

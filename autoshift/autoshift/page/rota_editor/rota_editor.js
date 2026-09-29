@@ -29,6 +29,9 @@ function inject_rota_editor_styles() {
 		.rota-editor { position: relative; }
 		.rota-editor .re-hint { margin-bottom: 0.75rem; }
 		.rota-editor .re-banner { margin-bottom: 0.75rem; }
+		.rota-editor .re-upcoming { margin-bottom: 0.75rem; }
+		.rota-editor .re-upcoming ul { margin: 0.4rem 0 0; padding-left: 1.1rem; }
+		.rota-editor .re-upcoming li { margin-bottom: 0.2rem; }
 		.rota-editor .re-grid-wrap { overflow-x: auto; }
 		.rota-editor .re-table { border-collapse: collapse; font-size: var(--text-sm); }
 		.rota-editor .re-table th, .rota-editor .re-table td {
@@ -168,6 +171,9 @@ autoshift.RotaEditor = class RotaEditor {
 		this.setup_body();
 		this.page.set_primary_action(__("Apply Changes"), () => this.apply());
 		this.page.set_secondary_action(__("Discard Changes"), () => this.discard());
+		// Holiday lists are per employee and span the whole published calendar, so this
+		// is a menu action rather than something bound to the discipline on screen.
+		this.page.add_menu_item(__("Update Holiday Lists…"), () => this.review_holiday_lists());
 		this.load_disciplines();
 	}
 
@@ -212,6 +218,7 @@ autoshift.RotaEditor = class RotaEditor {
 			"Right-click a chip to change the Scheduling Role it is worked in. Faint italic chips are another discipline's settled week — read-only here, and red where they land on the same half-day as one of this discipline's."
 		)}</div>
 				<div class="re-banner form-message yellow" hidden></div>
+				<div class="re-upcoming form-message blue" hidden></div>
 				<div class="re-grid-wrap"><div class="re-grid"></div></div>
 				<div class="re-trash">🗑 ${__("Remove")}</div>
 				<div class="re-transcript"></div>
@@ -264,6 +271,14 @@ autoshift.RotaEditor = class RotaEditor {
 			})
 			.on("click", ".re-promote", (e) => {
 				this.stage({ op: "promote", employee: $(e.currentTarget).attr("data-employee") });
+			})
+			.on("click", ".re-start-now", (e) => {
+				const $el = $(e.currentTarget);
+				this.stage({
+					op: "backdate",
+					employee: $el.attr("data-employee"),
+					from_assignment: $el.attr("data-assignment"),
+				});
 			})
 			.on("click", ".re-cell-empty", (e) => {
 				const $el = $(e.currentTarget);
@@ -592,6 +607,7 @@ autoshift.RotaEditor = class RotaEditor {
 			this.day_phases[d.date] = Math.floor(i / 7);
 		});
 		this.render_banner();
+		this.render_upcoming();
 		this.render_grid();
 		this.render_transcript();
 	}
@@ -881,6 +897,35 @@ autoshift.RotaEditor = class RotaEditor {
 		);
 	}
 
+	// Patterns that start after this window. Nothing drags a start date backwards on its
+	// own any more, so being invisible here is the truth — this is where a planner can
+	// ask for one to begin now instead, as a staged edit like any other.
+	render_upcoming() {
+		const $el = this.$body.find(".re-upcoming");
+		const offers = this.state.upcoming_patterns || [];
+		$el.prop("hidden", !offers.length);
+		if (!offers.length) return;
+		const from = frappe.datetime.str_to_user(this.state.turning_point);
+		const items = offers
+			.map((o) => {
+				const label = frappe.utils.escape_html(`${o.employee}: ${o.label}`);
+				const starts = frappe.datetime.str_to_user(o.starts);
+				return (
+					`<li>${__("{0} — starts {1}", [label, starts])} ` +
+					`<button class="btn btn-xs btn-default re-start-now" ` +
+					`data-assignment="${frappe.utils.escape_html(o.assignment)}" ` +
+					`data-employee="${frappe.utils.escape_html(o.employee)}">` +
+					`${__("Start from {0}", [from])}</button></li>`
+				);
+			})
+			.join("");
+		$el.html(
+			`<div>${__("{0} pattern(s) exist for a later date and are not shown in this window.", [
+				offers.length,
+			])}</div><ul>${items}</ul>`
+		);
+	}
+
 	render_transcript() {
 		const $t = this.$body.find(".re-transcript");
 		const changes = this.state.pending_changes || [];
@@ -962,6 +1007,86 @@ autoshift.RotaEditor = class RotaEditor {
 							indicator: "green",
 						});
 						this.refresh();
+					});
+			}
+		);
+	}
+
+	// ── holiday lists ────────────────────────────────────────────────────────
+
+	// Frappe HR counts leave by subtracting an employee's own holidays from the days
+	// applied for, so a settled four-day week has to be written down as a holiday list or
+	// a week off costs five days. Derived from the rotas this page edits — on demand,
+	// never as a side effect of applying an edit, because it submits HR documents.
+	review_holiday_lists() {
+		frappe
+			.call({
+				method: "autoshift.rota.holidays.get_pending",
+				freeze: true,
+				freeze_message: __("Checking holiday lists…"),
+			})
+			.then(({ message }) => this.show_holiday_lists(message));
+	}
+
+	show_holiday_lists(pending) {
+		const rows = pending.employees || [];
+		const unconfigured = pending.unconfigured || [];
+		if (!rows.length) {
+			const note = unconfigured.length
+				? __("{0} employee(s) have no company holiday list to build one from.", [
+						unconfigured.length,
+				  ])
+				: __("Every bound employee's holiday list matches their rota.");
+			frappe.msgprint(note, __("Holiday Lists"));
+			return;
+		}
+		const retroactive = rows.filter((r) => r.retroactive).length;
+		const list = rows
+			.map(
+				(r) =>
+					`<li>${frappe.utils.escape_html(r.employee)} — ${__("from {0}", [
+						frappe.datetime.str_to_user(r.from_date),
+					])}${r.current_list ? "" : ` (${__("no list of their own yet")})`}</li>`
+			)
+			.join("");
+		const warnings = [
+			unconfigured.length
+				? `<p class="text-muted">${__(
+						"{0} employee(s) skipped: their company publishes no holiday list to build one from.",
+						[unconfigured.length]
+				  )}</p>`
+				: "",
+			retroactive
+				? `<p class="text-warning">${__(
+						"{0} of these start before today. Leave already approved keeps the day count it was approved with.",
+						[retroactive]
+				  )}</p>`
+				: "",
+		].join("");
+		frappe.confirm(
+			`<p>${__("Assign an updated holiday list to {0} employee(s)?", [rows.length])}</p>` +
+				`<ul>${list}</ul>${warnings}`,
+			() => {
+				frappe
+					.call({
+						method: "autoshift.rota.holidays.apply_pending",
+						freeze: true,
+						freeze_message: __("Assigning holiday lists…"),
+					})
+					.then(({ message }) => {
+						frappe.show_alert({
+							message: __("Assigned {0} holiday list(s) across {1} calendar(s).", [
+								message.assigned,
+								(message.lists || []).length,
+							]),
+							indicator: (message.failures || []).length ? "orange" : "green",
+						});
+						(message.failures || []).forEach((f) =>
+							frappe.msgprint(
+								frappe.utils.escape_html(`${f.employee}: ${f.error}`),
+								__("Holiday list not assigned")
+							)
+						);
 					});
 			}
 		);

@@ -65,7 +65,7 @@ import datetime
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from .cycle import FREQUENCY_LABEL, WEEKDAY_LABEL, Rota, monday_of, occurrences
+from .cycle import FREQUENCY_LABEL, WEEKDAY_LABEL, Rota, first_covered_week, monday_of, occurrences
 
 
 def weekday_range_label(weekdays: Iterable[int]) -> str:
@@ -99,13 +99,22 @@ def _cadence_label(cycle_weeks: int) -> str:
 class Change:
 	"""One staged edit, at single-occurrence granularity.
 
-	`op` is one of "add", "move", "remove", "retag", "promote". A "promote" carries only
-	`employee` — see `EditPlan.promote`. A "move", "remove" or "retag" identifies the
-	occurrence it touches via `from_assignment` (a `Shift Schedule Assignment` docname)
-	+ `from_weekday`; an "add" has neither, and needs `company` since there is no source
-	`Rota` to take it from. `to_shift_type`/`to_branch` left `None` on a "move" mean
-	"unchanged" — most drags only move a weekday within the same pattern, which is
-	deliberately the cheap path.
+	`op` is one of "add", "move", "remove", "retag", "backdate", "promote". A "promote"
+	carries only `employee` — see `EditPlan.promote`. A "move", "remove" or "retag"
+	identifies the occurrence it touches via `from_assignment` (a `Shift Schedule
+	Assignment` docname) + `from_weekday`; an "add" has neither, and needs `company` since
+	there is no source `Rota` to take it from. `to_shift_type`/`to_branch` left `None` on a
+	"move" mean "unchanged" — most drags only move a weekday within the same pattern, which
+	is deliberately the cheap path.
+
+	A **"backdate"** is the one op that touches no occurrence at all: it names a pattern
+	whose first week falls *after* the view (so the grid shows nothing of it) and asks for
+	it to start at the view instead. `from_weekday` is unused; the pattern is identified
+	the same way every other op identifies its source group. It exists because
+	`create_shifts_after` is no longer quietly pulled backwards to keep a pattern on
+	screen — see `cycle.ANCHOR_LEAD_WEEKS` and the design notes — so a pattern that starts
+	later than the window is now genuinely absent from it, and moving it earlier has to be
+	something a planner asks for and sees in the transcript.
 
 	A **"retag"** changes which Scheduling Role one occurrence is worked in and nothing
 	else: same day, same shift type, same branch, new `scheduling_role`. It is mechanically
@@ -444,6 +453,29 @@ def apply_changes(
 			change.company if change.company is not None else (src_rota.company if src_rota else None)
 		)
 
+		if change.op == "backdate":
+			if src_shift_type is None:
+				continue
+			src_key = group_key(change.employee, src_shift_type, src_branch, src_role, src_collateral)
+			group = group_for(src_key)
+			members = by_key.get(src_key, ())
+			starts = [first_covered_week(m, view_start) for m in members if m.weekdays]
+			# How far ahead of the view the pattern begins. Taken over the whole group and
+			# in whole weeks, so several rows sitting at different phases keep their
+			# offsets from each other; a pattern already reaching the view has nothing to
+			# ask for.
+			delta = min(starts) - view_start if starts else datetime.timedelta()
+			if delta <= datetime.timedelta():
+				continue
+			for phase in range(view_weeks):
+				week_start = view_start + delta + datetime.timedelta(weeks=phase)
+				group.phases[phase] = {
+					day.weekday()
+					for m in members
+					for day in occurrences(m, week_start, week_start + datetime.timedelta(days=6))
+				}
+			continue
+
 		if change.op in ("move", "remove", "retag"):
 			if src_shift_type is None:
 				continue  # already gone from a prior change in this batch, or unknown
@@ -591,6 +623,14 @@ def describe_change(change: Change, rotas: Iterable[Rota], view_weeks: int = 1) 
 		was = (src.scheduling_role if src else change.from_scheduling_role) or "no role"
 		now = change.scheduling_role or "no role"
 		return f"{change.employee}: {shift_type} {from_weekday}{from_suffix} now worked as {now} (was {was})"
+
+	if change.op == "backdate":
+		src = by_name.get(change.from_assignment)
+		shift_type = (src.shift_type if src else change.from_shift_type) or "?"
+		branch = f" at {src.shift_location}" if src and src.shift_location else ""
+		starts = src.anchor + datetime.timedelta(days=1) if src and src.anchor else None
+		when = f" (was starting {starts.isoformat()})" if starts else ""
+		return f"{change.employee}: started {shift_type}{branch} from this week{when}"
 
 	if change.op == "remove":
 		src = by_name.get(change.from_assignment)

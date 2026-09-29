@@ -63,6 +63,13 @@ Two consequences of that stance, both deliberate:
 Nothing here is practice-specific: which roles are binding is
 `Scheduling Role.assignments_binding`, site data (see CLAUDE.md, "App boundary").
 
+## Holiday lists (`calendar.py` + `holidays.py`)
+
+The same settled week, projected the other way: into the per-employee `Holiday List`
+Frappe HR needs in order to charge leave correctly. Derived, not entered — see
+`holidays.py` for why HR needs one at all, and what the mechanism deliberately cannot
+express.
+
 ## Hand-editing a rota (`edit.py` + `editor.py`)
 
 The detection above is a read-proxy for whatever zawin2frappe emitted, and that

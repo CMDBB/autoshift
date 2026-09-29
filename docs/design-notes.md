@@ -744,14 +744,77 @@ code: `patches.backdate_rota_anchors` already ran with them on every existing si
 anchors it moved are **not** restored — there is no record of what they were, so everything
 before today is one epoch and correctness starts here.
 
-### What this does not solve yet
+### Making an invisible pattern visible, without lying about it
 
-A pattern anchored after the window on screen is now genuinely absent from it instead of being
-dragged backwards, and there is not yet a prompt offering to start it earlier ("an SSA exists
-for a future date but not for the displayed window — push it back?"). Editor-created rows are
-anchored at the view they were laid out in, so they are visible by construction; the gap shows
-up only for rows an importer wrote with a future anchor. Filed as a follow-up, not a
-regression.
+A pattern anchored after the window on screen is now genuinely absent from it. That is
+correct and unhelpful at once, so `edit.Change` gained a **`backdate`** op: the editor lists
+such patterns above the grid ("2 pattern(s) exist for a later date and are not shown in this
+window") with a button that stages a request to start one from this view instead. It goes
+through the draft, the transcript and Apply like every other edit — which is the difference
+from what it replaces. Backdating used to happen silently, to every row, on every create.
+
+Mechanically it is the one op that touches no occurrence. `apply_changes` re-seeds the
+group's `phases` by resampling its members over *their own* future weeks, shifted back by
+`min(first_covered_week) - view_start`, then lets the ordinary create path anchor the result
+here. The shift is taken over the whole group and in whole weeks, so several rows sitting at
+different phases keep their offsets from each other. The future rows are then deleted rather
+than ended, since by definition they never ran a day.
+
+---
+
+## Per-employee holiday lists: an export, not a second source of truth (2026-09-29)
+
+Frappe HR charges leave by subtracting holidays from the span applied for —
+`get_number_of_leave_days` is `date_diff + 1` minus `get_holidays(employee, from, to)` unless
+the Leave Type sets `include_holiday`. That resolves through
+`hrms.utils.holiday_list.get_holiday_list_for_employee`, which reads submitted **`Holiday
+List Assignment`** documents for the employee and falls back to their company's. So HR
+expects a holiday list *per employee*, with their own non-working days in it; an employee
+whose week is four days, holding only the company calendar, is charged five days for a week
+off.
+
+This app already knows those days, so `rota/holidays.py` derives the list rather than asking
+anyone to type it: the company calendar, unioned with every day of the window the employee
+does not work. The arithmetic is `rota/calendar.py`, Frappe-free and unit-tested, the same
+split as `cycle.py`/`materialize.py`.
+
+Four decisions worth keeping:
+
+- **It is an export, and never read back.** `data_loader` blocks leave by the Leave
+  Application's date range and takes its working calendar from `Optimizer Settings`; neither
+  consults a per-employee list. Reading one would make the solver's view depend on
+  bookkeeping the solver's own inputs produced.
+- **The company's assigned list is the base, not `Optimizer Settings`.** Those two settings
+  fields are the planner's calendar — one weekends-only, one weekends plus closures — not a
+  statement about what the company observes. And the base is unioned in *verbatim*, not
+  supplemented: an employee with any assignment of their own stops falling back to the
+  company's entirely, so a public holiday missing from the generated list simply vanishes for
+  them. A base holiday also survives a rota that covers that day, since a pattern knows
+  nothing about public holidays.
+- **Bound employees only.** An unbound employee's week is the optimizer's to decide and
+  differs week to week, so there is no pattern to derive from. They keep the company calendar
+  and a part-timer among them is charged as if they worked every weekday. Inventing a nominal
+  week for them would put a false statement in HR's records rather than an incomplete one.
+- **Whole days only, and this is a dead end rather than a gap.** `Holiday` carries
+  `is_half_day`, but `get_holidays` returns `len(dates)` and never reads it. An employee who
+  works five mornings therefore has no derivable holidays at all, and no per-employee list can
+  fix it.
+
+**Succession, and why it needs no end date.** Generation mints and never edits: a changed
+rota produces a new `Holiday List` and a new assignment starting at the first date the two
+derivations disagree (`calendar.first_difference`), with the old pair left submitted. HLA
+resolution is `from_date <= as_on` ordered descending, limit 1, so a successor implicitly ends
+its predecessor — the asymmetry with `Shift Schedule Assignment`, which needed
+`custom_create_shifts_until` because an employee has one applicable holiday list at a time and
+many concurrent rotas. Already-approved leave is unaffected either way:
+`Leave Application.total_leave_days` is computed on validate and stored.
+
+Lists are named by a content digest and shared, so a practice of a hundred people on a handful
+of patterns produces a handful of documents. The window is the **base list's own** — a
+generated list cannot reach past the dates the company has published, and "the calendar was
+extended into next year" is then drift that shows up on the next check rather than a range to
+invent. Triggered on demand only (the Rota Editor's menu, or `bench update-holiday-lists`),
+never as a side effect of applying a rota edit: it submits HR documents.
 
 ---
 
