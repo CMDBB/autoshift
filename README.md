@@ -39,14 +39,18 @@ Installing seeds the built-in **Optimization Rule** documents and the
 Before running the optimiser, configure the following in the Frappe desk.
 Sections 1–3 are required; 4–6 have working defaults.
 
-### 1. Optimizer Settings *(singleton)*
+### 1. The calendar
 
-**Autoshift → Optimizer Settings**
+**HR → Holiday List Assignment** — assign each company a `Holiday List`.
 
-| Field | Description |
-|---|---|
-| Bounded Holiday List | Holiday list used for 1-week / 2-week / 4-week planning modes |
-| Unbounded Holiday List | Holiday list used for Unbounded planning mode |
+The optimizer reads Frappe HR's own calendars rather than keeping its own. The
+company's list decides which days are worked at all: its **weekly off** rows
+(weekends) are what makes the week five days, and nothing is scheduled on them.
+Its dated holidays, and any list assigned to an individual employee, remove that
+person's days only — see *Holiday lists per employee* below.
+
+Without a list assigned to a company, a run refuses to start: nothing tells it
+which days are worked.
 
 ### 2. Discipline Branch Config
 
@@ -243,6 +247,32 @@ the practice prefers a regular holder over a backup, and a good backup over a
 poor one, but still uses a poor backup to staff a room nobody else can. With
 every Suitability at 1 this is exactly the older **Shift preferences** rule,
 which you can still pick instead (they are a choice of one).
+
+### 3b. Holiday lists per employee
+
+Frappe HR charges leave by subtracting an employee's own holidays from the days
+they apply for. An employee whose settled week is four days, holding only the
+company calendar, is therefore charged five days for a week off.
+
+The Rota Editor's **Update Holiday Lists…** menu item fixes that from the rotas
+it already edits. It shows who no longer matches their pattern and from when,
+then assigns each of them a `Holiday List` built from the company calendar plus
+every day their rota leaves free. Employees working the same week share one
+list. Nothing is edited or deleted: a changed rota creates a new list and a new
+assignment starting on the day the week actually changed, so leave approved
+under the old one keeps the numbers it was approved with.
+
+`bench --site <site> update-holiday-lists [--dry-run]` does the same in bulk,
+for the first run.
+
+Two limits are worth knowing. Only employees with a **binding** Scheduling Role
+get one, because nobody else has a settled pattern to derive a list from. And
+only whole days can be expressed — Frappe HR counts a half-day holiday as a
+full day off — so an employee who works five mornings gains nothing from this.
+
+What the *optimiser* reads back is narrower still: only the dated holidays on
+these lists, never the rota-derived days off. Which days a bound employee works
+is decided by the role-binding rules in your ruleset, not by their holiday list.
 
 ### 4. Employee Settings *(optional per employee)*
 

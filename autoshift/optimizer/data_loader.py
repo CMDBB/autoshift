@@ -217,14 +217,80 @@ def ruleset_binding_rule_gap(ruleset: str) -> dict:
 	return binding_rule_gap(builtin_keys_of(names))
 
 
+def _availability(
+	employees: list[str], all_days: list[datetime.date]
+) -> tuple[dict[str, list[datetime.date]], list[datetime.date]]:
+	"""Which days each employee may be scheduled on, and the horizon that follows.
+
+	Frappe HR already answers this, per employee, through `Holiday List Assignment` — so
+	this reads HR's own calendars rather than a second opinion kept on `Optimizer
+	Settings`. The answer comes in two parts, and the split matters:
+
+	- **Weekly offs from the company's calendar** are what makes a week five days rather
+	  than seven. They apply to everyone, so they define `working_days` and nobody gets a
+	  variable outside them. Taken from the *company's* list, never from the employee's:
+	  a bound employee's own generated list also carries their rota's off-days as weekly
+	  offs, and those are the `role_binding` rules' business, at whatever strength the
+	  ruleset chose — not something to settle by deleting variables. See `rota.holidays`.
+	- **Everything else on the employee's own resolved list** — public holidays, closures,
+	  an individually assigned calendar — is personal, and removes that person's variables
+	  on that day and nobody else's.
+
+	`working_days` is then the union of what is left: a day nobody can work is not in the
+	horizon at all, so the model is no larger than it was when one settings list defined
+	the same thing.
+
+	Resolution goes through `rota.holidays.applicable_lists`, **not** HRMS's own
+	`get_holiday_dates_between_range`, because that helper resolves a company through
+	`Holiday List Assignment` alone and never falls back to `Company.default_holiday_list`
+	— so a site that simply set the company default reads as having no calendar and every
+	day of the week comes back working.
+	"""
+	from autoshift.rota.holidays import applicable_lists, rows_between
+
+	if not employees or not all_days:
+		return {}, list(all_days)
+	first, last = all_days[0], all_days[-1]
+
+	def rows(assigned_to: str, company: str | None):
+		return rows_between(applicable_lists(assigned_to, company, first, last), first, last)
+
+	companies = {
+		row.name: row.company
+		for row in frappe.get_all("Employee", filters={"name": ["in", employees]}, fields=["name", "company"])
+	}
+	weekly_by_company: dict[str, set[datetime.date]] = {}
+	for company in sorted({c for c in companies.values() if c}):
+		company_rows = rows(company, company)
+		if not company_rows:
+			frappe.throw(
+				frappe._(
+					"No Holiday List could be resolved for {0}, so the optimizer cannot tell "
+					"which days are worked. Assign one through Holiday List Assignment, or set "
+					"the company's Default Holiday List."
+				).format(company)
+			)
+		weekly_by_company[company] = {row.date for row in company_rows if row.weekly_off}
+
+	available: dict[str, list[datetime.date]] = {}
+	for name in employees:
+		company = companies.get(name)
+		# Their own list's *dated* holidays only. Its weekly offs are the company's answer
+		# above, or — for a bound employee whose list this app generated — their rota's
+		# days off, which belong to the binding rules and not to the variable set.
+		personal = {row.date for row in rows(name, company) if not row.weekly_off}
+		blocked = weekly_by_company.get(company, set()) | personal
+		available[name] = [day for day in all_days if day not in blocked]
+
+	worked_by_someone = set().union(*available.values()) if available else set()
+	return available, [day for day in all_days if day in worked_by_someone]
+
+
 def load(run_doc) -> DataPackage:
 	start_date = getdate(run_doc.date)
 	mode = run_doc.mode
 
 	rules = _load_rules(run_doc)
-
-	# ── Optimizer settings ──────────────────────────────────────────────────
-	settings = frappe.get_single("Optimizer Settings")
 
 	# ── Discipline-Branch Config ─────────────────────────────────────────────
 	config_rows = frappe.get_all(
@@ -489,11 +555,14 @@ def load(run_doc) -> DataPackage:
 		if name in target_shifts:
 			role_target_shifts[(name, role)] = pct / 100.0 * fulltime_shifts
 
-	_holiday_list_name: str = settings.get(f"{'un' if mode == 'Unbounded' else ''}bounded_holiday_list")
-	_holiday_list_doc = frappe.get_doc("Holiday List", _holiday_list_name)
-	_holiday_doc_list: list = _holiday_list_doc.get("holidays")
-	holiday_list = [h.get("holiday_date") for h in _holiday_doc_list]
-	working_days = [d for d in all_days if d not in holiday_list]
+	# ── The calendar ──────────────────────────────────────────────────────────
+	# Read per employee, from Frappe HR's own `Holiday List Assignment`, rather than from
+	# one list on `Optimizer Settings`. See `_availability` for the split between the
+	# weekly offs (which define the horizon) and the holidays (which are personal).
+	available, working_days = _availability(employees, all_days)
+	employee_days = {
+		name: frozenset(days) for name, days in available.items() if len(days) != len(working_days)
+	}
 
 	# ── Leave blocklist ───────────────────────────────────────────────────────
 	window_start = str(working_days[0]) if working_days else str(start_date)
@@ -747,6 +816,15 @@ def load(run_doc) -> DataPackage:
 			continue
 		forced.update(combs)
 
+	# The books outrank the calendar. A submitted Shift Assignment on somebody's holiday is
+	# a fact about a day they worked, and a run that could not represent it would either
+	# crash on a missing variable or quietly drop a settled half-day. Only within the
+	# horizon: a day nobody at all works has no place in the model to put it.
+	horizon = set(working_days)
+	for _e, _r, _s, _d, _b in forced:
+		if _e in employee_days and _d in horizon and _d not in employee_days[_e]:
+			employee_days[_e] = employee_days[_e] | {_d}
+
 	return DataPackage(
 		flags=flags,
 		employees=employees,
@@ -763,6 +841,7 @@ def load(run_doc) -> DataPackage:
 		room_value=room_value,
 		disciplines=disciplines,
 		leave_blocked=leave_blocked,
+		employee_days=employee_days,
 		forced=forced,
 		shift_preferences=shift_preferences,
 		rules=rules,

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import functools
 import hashlib
 import itertools
 import json
@@ -118,6 +119,23 @@ class DataPackage:
 	# the Role Matrix hashes and solves exactly as before.
 	role_suitability: dict[tuple[str, str], float] = dataclasses.field(default_factory=dict)
 
+	# Which days each employee may be assigned at all, where that differs from
+	# `working_days`. **Sparse and subtractive**: an employee absent here is available on
+	# every working day, so a site where everybody shares one calendar hashes and solves
+	# exactly as before.
+	#
+	# This is availability as *structure*, not as a constraint: `model_builder` never
+	# creates an `x` or a `p` for a day an employee is not available, so no rule can
+	# assign one and no diagnostic has to explain why it did not. A public holiday is too
+	# binding to be worth a variable and a constraint to hold it at zero.
+	#
+	# It carries **only holidays** — the non-weekly-off rows of the employee's resolved
+	# `Holiday List`. A bound employee's own off-days are *not* here, even though their
+	# generated holiday list records them: which days the books put somebody on is what
+	# the `role_binding` rules decide, at the strength a ruleset chose, and moving that
+	# into the variable set would make binding unconditional. See `rota.holidays`.
+	employee_days: dict[str, frozenset[datetime.date]] = dataclasses.field(default_factory=dict)
+
 	# Assignment mode per role, from Scheduling Role.assignment_mode and the per-holder
 	# override on Employee Scheduling Role. Sparse in two ways: only roles that are *not*
 	# MODE_FLEXIBLE appear, and a pair whose holder overrides the role's mode is keyed by
@@ -219,6 +237,30 @@ class DataPackage:
 			r for r in self.employee_roles.get(employee, ()) if self.mode(employee, r) == MODE_EXCLUSIVE
 		)
 
+	@functools.cached_property
+	def _ordered_days(self) -> dict[str, tuple[datetime.date, ...]]:
+		"""`employee_days` in `working_days` order, so iteration is deterministic and a
+		day nobody's horizon contains cannot sneak in through a hand-built package."""
+		return {
+			employee: tuple(day for day in self.working_days if day in days)
+			for employee, days in self.employee_days.items()
+		}
+
+	def days_of(self, employee: str) -> "typing.Sequence[datetime.date]":
+		"""The days `employee` may work: `working_days` unless they deviate from it.
+
+		The per-employee counterpart of `employee_roles` — every loop that builds or reads
+		a variable for one person iterates this rather than `working_days`.
+		"""
+		days = self._ordered_days.get(employee)
+		return self.working_days if days is None else days
+
+	def available(self, employee: str, day: datetime.date) -> bool:
+		"""Is `day` one of `employee`'s? Assumes `day` is already a working day — the
+		membership test for loops keyed on something other than an employee."""
+		days = self.employee_days.get(employee)
+		return True if days is None else day in days
+
 	def bound_employees(self) -> frozenset[str]:
 		"""Whose presence is settled.
 
@@ -259,6 +301,7 @@ class DataPackage:
 			# keep the cache hits of runs solved before the field existed
 			del payload["role_suitability"]
 		for name in (
+			"employee_days",
 			"role_mode",
 			"role_mode_overrides",
 			"role_gates_rooms",
@@ -293,6 +336,10 @@ class DataPackage:
 			],
 			"disciplines": self.disciplines,
 			"leave_blocked": [[employee, date.isoformat()] for employee, date in self.leave_blocked],
+			"employee_days": {
+				employee: sorted(day.isoformat() for day in days)
+				for employee, days in self.employee_days.items()
+			},
 			"forced": [
 				[employee, role, shift_type, date.isoformat(), branch]
 				for employee, role, shift_type, date, branch in self.forced
@@ -356,6 +403,10 @@ class DataPackage:
 			max_rpe={(employee, role): cap for employee, role, cap in payload["max_rpe"]},
 			rooms={(discipline, branch): capacity for discipline, branch, capacity in payload["rooms"]},
 			disciplines=payload["disciplines"],
+			employee_days={
+				employee: frozenset(datetime.date.fromisoformat(day) for day in days)
+				for employee, days in payload.get("employee_days", {}).items()
+			},
 			leave_blocked={
 				(employee, datetime.date.fromisoformat(date)) for employee, date in payload["leave_blocked"]
 			},

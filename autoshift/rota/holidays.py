@@ -21,10 +21,12 @@ the company's own calendar with every day in the window the employee does not wo
 
 ## What this is and is not
 
-**An export.** Nothing here feeds back into the optimizer: `data_loader` blocks leave by
-the Leave Application's date range and takes its working calendar from
-`Optimizer Settings`, neither of which consults a per-employee list. Reading one back
-would make the solver's view depend on the bookkeeping it produced.
+**Mostly an export.** The optimizer reads these lists, but only their **dated holidays** —
+`data_loader._availability` takes the non-weekly-off rows per employee, and the weekly offs
+from the *company's* list rather than anyone's own. The rota-derived days off written here
+are deliberately not read back: they are regenerated on demand and would lag, and which days
+a bound employee works is the `role_binding` rules' decision at whatever strength the ruleset
+chose. Deleting their variables would make that binding unconditional.
 
 **Whole days only.** `Holiday` carries an `is_half_day` flag but `get_holidays` counts
 dates, not days — so a half-day holiday still deducts a full one, and an employee who
@@ -78,21 +80,70 @@ LIST_PREFIX = "Autoshift"
 
 
 def _rows_of(holiday_list: str) -> list[Row]:
-	return sorted(
-		(
+	return rows_between([holiday_list])
+
+
+def rows_between(
+	holiday_lists: list[str],
+	first: datetime.date | None = None,
+	last: datetime.date | None = None,
+) -> list[Row]:
+	"""The `Holiday` rows of these lists, in date order, each with its `weekly_off` flag.
+
+	Several lists at once because an assignee's list can change part-way through a window
+	(:func:`applicable_lists`); where two of them name the same date, the first list wins,
+	which is the order `applicable_lists` returns them in.
+	"""
+	if not holiday_lists:
+		return []
+	filters: dict = {"parent": ["in", holiday_lists], "parenttype": "Holiday List"}
+	if first is not None and last is not None:
+		filters["holiday_date"] = ["between", [first, last]]
+	order = {name: index for index, name in enumerate(holiday_lists)}
+	by_date: dict[datetime.date, tuple[int, Row]] = {}
+	for row in frappe.get_all(
+		"Holiday", filters=filters, fields=["parent", "holiday_date", "description", "weekly_off"]
+	):
+		date = frappe.utils.getdate(row.holiday_date)
+		rank = order.get(row.parent, len(order))
+		if date in by_date and by_date[date][0] <= rank:
+			continue
+		by_date[date] = (
+			rank,
 			Row(
-				date=frappe.utils.getdate(row.holiday_date),
+				date=date,
 				description=(row.description or "").strip(),
 				weekly_off=bool(row.weekly_off),
-			)
-			for row in frappe.get_all(
-				"Holiday",
-				filters={"parent": holiday_list, "parenttype": "Holiday List"},
-				fields=["holiday_date", "description", "weekly_off"],
-			)
-		),
-		key=lambda r: r.date,
-	)
+			),
+		)
+	return [by_date[date][1] for date in sorted(by_date)]
+
+
+def applicable_lists(
+	assigned_to: str, company: str | None, first: datetime.date, last: datetime.date
+) -> list[str]:
+	"""The `Holiday List`s in force for `assigned_to` over `[first, last]`, earliest first.
+
+	The resolution HRMS itself does — `Holiday List Assignment` for the assignee, then for
+	their company — **plus `Company.default_holiday_list`**, which HRMS's own
+	`get_holiday_list_for_employee` dropped when it took the `employee_holiday_list` hook
+	over from erpnext. A site that never created an assignment and simply set the company
+	default therefore reads as having no calendar at all through the HRMS helpers, which is
+	not what anybody configuring it meant.
+
+	Two probes rather than one because an assignment can start part-way through the window;
+	that is also why this returns a list.
+	"""
+	from hrms.utils.holiday_list import get_assigned_holiday_list
+
+	names: list[str] = []
+	for as_on in (first, last):
+		name = get_assigned_holiday_list(assigned_to, as_on)
+		if not name and company:
+			name = base_list_for(company, as_on)
+		if name and name not in names:
+			names.append(name)
+	return names
 
 
 def base_list_for(company: str, as_on: datetime.date) -> str | None:

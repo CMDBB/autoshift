@@ -92,7 +92,9 @@ Three apps split the responsibility; keep them separate.
 - **Optimizer Run Coverage** — child; the `active_rooms` counterpart. One row per
   (discipline, branch, date, shift) with `staffed_rooms` vs `capacity`. Zero-staffed rows are
   kept on purpose. Pre-table runs fall back to `_derive_coverage_matrix`.
-- **Optimizer Settings** — singleton: holiday lists.
+- **Optimizer Settings** — singleton, **now fieldless**. Its two holiday lists were the
+  app's own calendar; the optimizer reads Frappe HR's `Holiday List Assignment` instead
+  (`data_loader._availability`). Kept as the place a future global setting would land.
 - **Discipline Branch Config** (+ child **… Shift Type**) — per (discipline, branch): room
   count and the Shift Types in scope. A Shift Type on no config row is treated as
   non-clinical and excluded. `room_value` (Float, default 3) prices a staffed room in this
@@ -167,7 +169,13 @@ Pure-Python where possible, for testability. `data_loader.py` is the only Frappe
 module.
 
 1. `types.py` — `DataPackage` (the engine's only input shape), SHA256 `input_hash()` for
-   caching, `planning_days()` (raises `NotImplementedError` for `"Unbounded"`). Assignment
+   caching, `planning_days()` (raises `NotImplementedError` for `"Unbounded"`).
+   **Availability is structural**: `employee_days` (sparse, subtractive, omitted from
+   `input_hash` when empty) says which days each employee may work where that differs from
+   `working_days`, read through `days_of()` / `available()`. `model_builder` builds no `x`
+   or `p` outside it, so no rule forbids a holiday and no diagnostic explains a zero. It
+   carries **only dated holidays** — a bound employee's rota days off stay with the
+   `role_binding` rules, at the strength the ruleset chose. Assignment
    modes live here as `MODE_FLEXIBLE`/`MODE_EXCLUSIVE`/`MODE_COLLATERAL` plus the sparse
    `role_mode` / `role_mode_overrides` dicts (omitted from `input_hash` when empty, as are
    `role_gates_rooms` and `role_value`) and
@@ -225,7 +233,16 @@ module.
    **built-ins only** — Custom Code rules carry none of it and are exempt from every check.
    **`apply_rules` reorders specs via `order_specs`, a stable topological sort over
    `requires` — do not drop this**, see design notes.
-3. `data_loader.py` — `load(run_doc)` hydrates a `DataPackage` (bound employees' unrecorded
+3. `data_loader.py` — `load(run_doc)` hydrates a `DataPackage`. `_availability` reads the
+   calendar per employee from HR via `rota.holidays.applicable_lists` (**not** HRMS's
+   `get_holiday_dates_between_range`, which resolves a company through `Holiday List
+   Assignment` only and never falls back to `Company.default_holiday_list`):
+   the **company's** weekly offs define `working_days` (their union over employees, so a day
+   nobody works is not in the horizon), each employee's own dated holidays remove their days
+   alone. **The books outrank the calendar** — a `forced` day inside the horizon is added
+   back to that employee's availability, so a submitted assignment on somebody's holiday can
+   never crash on a missing variable or be silently dropped. Throws when a company has no
+   list assigned. It also (bound employees' unrecorded
    rota days come from `rota.materialize.settled_rows`, never from records created first); resolves the ruleset into
    `(rule_name, builtin_key, custom_code, weight)` tuples (throws on
    unimplemented/unvalidated; sorted by name for hash stability); normalizes preferences via
@@ -242,7 +259,8 @@ module.
    what the field exists to stop. Its `custom_collateral_roles` rows become
    extra `forced` combinations on the same slot, and go down with their host on a leave day.
 4. `model_builder.py` — builds the PuLP MILP. Vars `x[employee,role,shift,day,branch]` (built
-   **sparse**, over the `(employee, role)` pairs each employee actually holds),
+   **sparse**, over the `(employee, role)` pairs each employee actually holds and each
+   employee's own `days_of()`),
    `p[employee,shift,day,branch]` (**presence**: is this person in for that shift at all) and
    `active_rooms[discipline,shift,day,branch]`. The constraints tying `p` to `x` — one working
    role per presence, collateral duties beside it, never a presence spent on nothing — are
@@ -509,7 +527,10 @@ four-day week must be written down as a holiday list or a week off costs five da
 `derive` = the company's assigned calendar (verbatim — an assignment of one's own kills the
 company fallback) ∪ every unworked day of the window; `worked` is rotas expanded plus what the
 books already record. **An export, never read back** — the solver's calendar stays
-`Optimizer Settings`. Bound employees only (nobody else has a pattern to derive from);
+`Optimizer Settings`. **Partly read back**: `data_loader._availability` takes these lists'
+dated holidays (and the *company's* weekly offs), never the rota-derived days off — those
+lag, and binding is a ruleset choice. Bound employees only (nobody else has a pattern to
+derive from);
 whole days only (`Holiday.is_half_day` exists but `get_holidays` counts dates, so a
 morning-only week is inexpressible). Lists are named by content digest and shared; the window
 is the base list's own. Succession needs no end date — HLA is latest-`from_date`-wins — and

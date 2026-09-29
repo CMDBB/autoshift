@@ -240,6 +240,10 @@ def conflict_scan(data: DataPackage) -> list[Conflict]:
 			or r not in data.employee_roles.get(e, ())
 			or s not in data.shift_types
 			or d not in day_set
+			# Their own calendar, not just the horizon: availability is structural, so a
+			# day an employee's holidays remove has no variable either. The loader lets the
+			# books outrank a holiday precisely so this cannot happen to a real package.
+			or not data.available(e, d)
 			or b not in data.branches
 		)
 		if missing:

@@ -39,6 +39,10 @@ from .types import DataPackage
 def presence_variables(data: DataPackage, prob: pulp.LpProblem) -> dict[tuple, pulp.LpVariable]:
 	"""The `p[e, s, d, b]` variables, without the constraints that tie them to `x`.
 
+	Over `days_of(e)`, not `working_days`: a day the employee's own calendar calls a
+	holiday gets no presence variable at all, so nothing can put them there. Availability
+	is structural here for the same reason role eligibility is — see `build`.
+
 	Split out so a throwaway problem can recreate them under the same names — that is how
 	`sandbox.helpers.objective_breakdown` re-runs an objective rule against an already-solved
 	model.
@@ -47,7 +51,7 @@ def presence_variables(data: DataPackage, prob: pulp.LpProblem) -> dict[tuple, p
 		key: variable
 		for e in data.employees
 		for key, variable in prob.add_variable_dict(
-			"p", ([e], data.shift_types, data.working_days, data.branches), cat=pulp.LpBinary
+			"p", ([e], data.shift_types, data.days_of(e), data.branches), cat=pulp.LpBinary
 		).items()
 	}
 
@@ -88,15 +92,21 @@ def build(data: DataPackage) -> tuple[pulp.LpProblem, dict, dict, str, RuleConte
 
 	# ── Decision variables ────────────────────────────────────────────────────
 	# x is indexed by the (employee, role) pairs each employee actually holds, not by the
-	# full employee x role product. Role eligibility is therefore structural: a variable
-	# for a role somebody cannot work simply does not exist, so no rule has to forbid it
-	# and the model is no larger than it was before roles. This mirrors active_rooms
-	# below, whose branch room cap likewise lives in the variable bound rather than in a
-	# constraint (see rules.room_coverage).
+	# full employee x role product, and over each employee's own days rather than the whole
+	# horizon. Role eligibility and availability are therefore structural: a variable for a
+	# role somebody cannot work, or a day their calendar calls a holiday, simply does not
+	# exist, so no rule has to forbid it and no diagnostic has to explain a zero. This
+	# mirrors active_rooms below, whose branch room cap likewise lives in the variable bound
+	# rather than in a constraint (see rules.room_coverage).
+	#
+	# `active_rooms` stays on the full `D`: a room is open when *somebody* can staff it,
+	# and `working_days` is already the union of everyone's days (see data_loader), so a
+	# day nobody works is not in it to begin with.
 	x: dict[tuple, pulp.LpVariable] = {}
 	for e in E:
+		days = data.days_of(e)
 		for r in data.employee_roles.get(e, ()):
-			x |= prob.add_variable_dict("x", ([e], [r], S, D, B), cat=pulp.LpBinary)
+			x |= prob.add_variable_dict("x", ([e], [r], S, days, B), cat=pulp.LpBinary)
 
 	if not x:
 		raise ValueError(

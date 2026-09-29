@@ -780,13 +780,12 @@ split as `cycle.py`/`materialize.py`.
 
 Four decisions worth keeping:
 
-- **It is an export, and never read back.** `data_loader` blocks leave by the Leave
-  Application's date range and takes its working calendar from `Optimizer Settings`; neither
-  consults a per-employee list. Reading one would make the solver's view depend on
-  bookkeeping the solver's own inputs produced.
-- **The company's assigned list is the base, not `Optimizer Settings`.** Those two settings
-  fields are the planner's calendar — one weekends-only, one weekends plus closures — not a
-  statement about what the company observes. And the base is unioned in *verbatim*, not
+- **Read back only in part.** The optimizer takes these lists' *dated* holidays and the
+  company's weekly offs; the rota-derived days off written here it deliberately ignores. See
+  "Availability is structure" below for why the line falls there.
+- **The company's assigned list is the base.** Not `Optimizer Settings`, whose two fields
+  were the app's own second opinion about the calendar and are now gone. The base is unioned
+  in *verbatim*, not
   supplemented: an employee with any assignment of their own stops falling back to the
   company's entirely, so a public holiday missing from the generated list simply vanishes for
   them. A base holiday also survives a rota that covers that day, since a pattern knows
@@ -815,6 +814,61 @@ generated list cannot reach past the dates the company has published, and "the c
 extended into next year" is then drift that shows up on the next check rather than a range to
 invent. Triggered on demand only (the Rota Editor's menu, or `bench update-holiday-lists`),
 never as a side effect of applying a rota edit: it submits HR documents.
+
+---
+
+## Availability is structure, not a constraint (2026-09-29)
+
+Per-employee holiday lists had to reach the optimizer once they existed, and the obvious
+route — a `leave_blocked`-shaped set and a rule that fixes those variables to zero — is the
+wrong one. A public holiday is not a preference the model weighs against something else; it
+is a day that does not exist for that person. So it belongs where role eligibility already
+lives: in which variables get built at all.
+
+`DataPackage.employee_days` is sparse and subtractive — an entry only where an employee
+deviates from `working_days`, `days_of(e)` falling back to it otherwise — so a site where
+everybody shares one calendar builds the same model, hashes the same and keeps every cached
+run it had. `model_builder` indexes `x` and `p` over `days_of(e)`; every per-employee loop in
+`rules.py` follows, and the handful of loops keyed on (discipline, shift, day, branch) that
+sum across employees gained an `available(e, d)` guard. Nothing fixes a variable to zero,
+nothing has to explain one, and `elastic_analysis` cannot blame a holiday for an
+infeasibility because there is no constraint there to relax.
+
+**Optimizer Settings' two holiday lists are gone.** They were the app keeping its own opinion
+about which days are worked, next to the one Frappe HR already maintains through
+`Holiday List Assignment` — and the bounded one described itself as weekends-only, so dated
+public holidays were not honoured at all. `data_loader._availability` now reads HR per
+employee. The singleton stays, fieldless, as the place a future global setting would land.
+
+The split inside that read is the load-bearing part:
+
+- **The company's weekly offs** make a week five days rather than seven. Everybody's, so
+  they define `working_days` — taken as the union of what each employee has left, which means
+  a day nobody can work is simply not in the horizon and the model is no larger than when one
+  settings list said the same thing.
+- **Each employee's own dated holidays** remove their days and nobody else's.
+- Both reads resolve through `rota.holidays.applicable_lists`, which is HRMS's own
+  resolution **plus `Company.default_holiday_list`**. HRMS dropped that fallback when
+  `hrms.utils.holiday_list.get_holiday_list_for_employee` took the `employee_holiday_list`
+  hook over from erpnext's version, so a site that set the company default and never created
+  an assignment reads as having no calendar at all through its helpers — and every day of
+  the week comes back working. Using its range helper directly is what made the first
+  version of this refuse to start.
+- **A bound employee's rota days off are not read**, although their generated holiday list
+  records them. Two reasons, and the second is the important one. Those lists are regenerated
+  on demand, so they lag a rota edit — and lag that deletes variables is lag that breaks a
+  settled run. More fundamentally, which days the books put somebody on is what the
+  `role_binding` rules decide, at the strength a ruleset picked (`soft_bind_role_assignments`
+  proposes, `bind_role_assignments` nails down, `binding_rule_gap` warns when neither is
+  chosen). Deleting their non-rota variables would make binding unconditional and quietly
+  retire that choice.
+
+**The books outrank the calendar.** A submitted `Shift Assignment` on somebody's holiday is a
+fact about a day they worked, so `load` adds every `forced` day back into that employee's
+availability before building the package. Without it a stale or wrong calendar would either
+crash `bind_role_assignments` on a missing variable or drop a settled half-day in silence.
+Only within the horizon, though: a day *nobody* works has no place in the model to put it,
+which is the pre-existing behaviour for weekend assignments and unchanged here.
 
 ---
 

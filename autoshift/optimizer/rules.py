@@ -307,11 +307,14 @@ def _vname(*parts) -> str:
 )
 def one_shift_per_day(ctx: RuleContext) -> None:
 	data = ctx.data
-	for e, d in itertools.product(data.employees, data.working_days):
-		ctx.prob += (
-			pulp.lpSum(ctx.presence[(e, s, d, b)] for s in data.shift_types for b in data.branches) <= 1,
-			_cname("one_shift", e, d),
-		)
+	for e in data.employees:
+		# `days_of`, not `working_days`: an unavailable day has no presence variable to
+		# constrain. Every per-employee loop below reads the same way.
+		for d in data.days_of(e):
+			ctx.prob += (
+				pulp.lpSum(ctx.presence[(e, s, d, b)] for s in data.shift_types for b in data.branches) <= 1,
+				_cname("one_shift", e, d),
+			)
 
 
 @builtin_rule(
@@ -350,6 +353,8 @@ def leave_blocklist(ctx: RuleContext) -> None:
 	for e, d in data.leave_blocked:
 		if e not in data.employees or d not in day_set:
 			continue
+		if not data.available(e, d):
+			continue  # a holiday they were also on leave for: no variable to block
 		for s in data.shift_types:
 			for b in data.branches:
 				for r in data.employee_roles.get(e, ()):
@@ -496,11 +501,12 @@ def soft_bind_role_assignments(ctx: RuleContext) -> None:
 )
 def one_branch_per_shift(ctx: RuleContext) -> None:
 	data = ctx.data
-	for e, s, d in itertools.product(data.employees, data.shift_types, data.working_days):
-		ctx.prob += (
-			pulp.lpSum(ctx.presence[(e, s, d, b)] for b in data.branches) <= 1,
-			_cname("one_branch", e, s, d),
-		)
+	for e in data.employees:
+		for s, d in itertools.product(data.shift_types, data.days_of(e)):
+			ctx.prob += (
+				pulp.lpSum(ctx.presence[(e, s, d, b)] for b in data.branches) <= 1,
+				_cname("one_branch", e, s, d),
+			)
 
 
 def _gating_holders(data: DataPackage) -> dict[str, dict[str, list[str]]]:
@@ -540,8 +546,12 @@ def room_coverage(ctx: RuleContext) -> None:
 		r_es = k_r_es.get(k, {})
 		for r, es in r_es.items():
 			# active_rooms[k] is the minimum staffing of all the roles that work in k at that time
+			# Only holders who are available that day have a variable to count; somebody on
+			# a public holiday is not short-staffing the room, they are simply not in it.
 			ctx.prob += (
-				pulp.lpSum(data.max_rpe.get((e, r), 1) * ctx.x[(e, r, s, d, b)] for e in es)
+				pulp.lpSum(
+					data.max_rpe.get((e, r), 1) * ctx.x[(e, r, s, d, b)] for e in es if data.available(e, d)
+				)
 				>= ctx.active_rooms[(k, s, d, b)],
 				_cname("room_coverage", k, s, d, b, r),
 			)
@@ -588,6 +598,9 @@ def room_coverage_matched_rooms(ctx: RuleContext) -> None:
 
 		occ_by_role_room: dict[tuple[str, int], object] = {}
 		for r, es in r_es.items():
+			# Availability is structural here too: an unavailable holder gets no room
+			# occupancy variable, so they cannot be matched into a room they cannot attend.
+			es = [e for e in es if data.available(e, d)]
 			for n in range(1, n_rooms + 1):
 				occ_vars = []
 				for e in es:
@@ -650,7 +663,7 @@ def fte_ceiling(ctx: RuleContext) -> None:
 		total_assigned = pulp.lpSum(
 			ctx.presence[(e, s, d, b)]
 			for s in data.shift_types
-			for d in data.working_days
+			for d in data.days_of(e)
 			for b in data.branches
 		)
 		if target > 0:
@@ -677,7 +690,7 @@ def role_fte_ceiling(ctx: RuleContext) -> None:
 		if target <= 0:
 			continue
 		assigned = pulp.lpSum(
-			ctx.x[(e, r, s, d, b)] for s in data.shift_types for d in data.working_days for b in data.branches
+			ctx.x[(e, r, s, d, b)] for s in data.shift_types for d in data.days_of(e) for b in data.branches
 		)
 		ctx.prob += (assigned <= (1 + tol) * target, _cname("role_fte_max", e, r))
 
@@ -704,7 +717,7 @@ def exclusive_role_purity(ctx: RuleContext) -> None:
 		collateral = data.collateral_roles(e)
 		if not exclusive or not collateral:
 			continue
-		for s, d, b in itertools.product(data.shift_types, data.working_days, data.branches):
+		for s, d, b in itertools.product(data.shift_types, data.days_of(e), data.branches):
 			ctx.prob += (
 				pulp.lpSum(ctx.x[(e, r, s, d, b)] for r in collateral)
 				<= len(collateral) * (1 - pulp.lpSum(ctx.x[(e, r, s, d, b)] for r in exclusive)),
@@ -923,6 +936,8 @@ def room_load_objective(ctx: RuleContext) -> None:
 		for r, es in k_r_es.get(k, {}).items():
 			load = []
 			for e in es:
+				if not data.available(e, d):
+					continue
 				x = ctx.x[(e, r, s, d, b)]
 				load.append(x)
 				m = data.max_rpe.get((e, r), 1)
@@ -995,7 +1010,10 @@ def collateral_room_value_objective(ctx: RuleContext) -> None:
 		value = ctx.prob.add_variable(_vname("collateral_value", k, s, d, b), lowBound=0)
 		ctx.prob += (value <= rooms, _cname("collateral_rooms", k, s, d, b))
 		ctx.prob += (
-			value <= pulp.lpSum(data.max_rpe.get((e, r), 1) * ctx.x[(e, r, s, d, b)] for e, r in pairs),
+			value
+			<= pulp.lpSum(
+				data.max_rpe.get((e, r), 1) * ctx.x[(e, r, s, d, b)] for e, r in pairs if data.available(e, d)
+			),
 			_cname("collateral_span", k, s, d, b),
 		)
 		ctx.add_objective(value, path(Discipline=k, Branch=b, Day=d, Shift=s))
@@ -1039,7 +1057,7 @@ def fte_soft_ceiling(ctx: RuleContext) -> None:
 		assigned = pulp.lpSum(
 			ctx.presence[(e, s, d, b)]
 			for s in data.shift_types
-			for d in data.working_days
+			for d in data.days_of(e)
 			for b in data.branches
 		)
 		over = ctx.prob.add_variable(_vname("fte_over", e), lowBound=0)
@@ -1070,7 +1088,7 @@ def role_fte_target_objective(ctx: RuleContext) -> None:
 	data = ctx.data
 	for (e, r), target in data.role_target_shifts.items():
 		assigned = pulp.lpSum(
-			ctx.x[(e, r, s, d, b)] for s in data.shift_types for d in data.working_days for b in data.branches
+			ctx.x[(e, r, s, d, b)] for s in data.shift_types for d in data.days_of(e) for b in data.branches
 		)
 		over = ctx.prob.add_variable(_vname("role_dev_over", e, r), lowBound=0)
 		under = ctx.prob.add_variable(_vname("role_dev_under", e, r), lowBound=0)
@@ -1179,7 +1197,10 @@ def collateral_capacity_value_objective(ctx: RuleContext) -> None:
 			_vname("collateral_capacity_value", k, s, d, b), lowBound=0, upBound=capacity
 		)
 		ctx.prob += (
-			value <= pulp.lpSum(data.max_rpe.get((e, r), 1) * ctx.x[(e, r, s, d, b)] for e, r in pairs),
+			value
+			<= pulp.lpSum(
+				data.max_rpe.get((e, r), 1) * ctx.x[(e, r, s, d, b)] for e, r in pairs if data.available(e, d)
+			),
 			_cname("collateral_capacity", k, s, d, b),
 		)
 		ctx.add_objective(value, path(Discipline=k, Branch=b, Day=d, Shift=s))

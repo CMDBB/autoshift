@@ -522,24 +522,37 @@ def leaves(monday: datetime.date, speculated: set[str] | None = None) -> dict[st
 
 
 def holidays(monday: datetime.date, mode: str = "Bounded") -> dict[str, str]:
-	"""ISO date -> holiday description, for the week, from Optimizer Settings.
+	"""ISO date -> holiday description, for the week, from the companies' own calendars.
+
+	A column header is shared by everyone on the chart, so this is the *company*
+	calendar — the same one `optimizer.data_loader` takes its weekly offs from. A holiday
+	that applies to one employee and not another is a per-person fact and belongs on their
+	chip, not on the day.
 
 	The chart dims a non-working day rather than dropping the column, so an
 	assignment that landed on one is still visible — which is exactly the kind of
 	thing worth seeing.
+
+	`mode` is accepted and ignored: it selected between the two `Optimizer Settings` lists
+	that used to live here, and there is only one calendar now.
 	"""
-	settings = frappe.get_single("Optimizer Settings")
-	list_name = settings.get("unbounded_holiday_list" if mode == "Unbounded" else "bounded_holiday_list")
-	if not list_name:
+	from autoshift.rota.holidays import base_list_for
+
+	lists = {
+		name
+		for company in frappe.get_all("Company", pluck="name")
+		if (name := base_list_for(company, monday))
+	}
+	if not lists:
 		return {}
 	days = {day.isoformat() for day in week_dates(monday)}
 	out: dict[str, str] = {}
 	for row in frappe.get_all(
 		"Holiday",
-		filters={"parent": list_name, "parenttype": "Holiday List"},
+		filters={"parent": ["in", sorted(lists)], "parenttype": "Holiday List"},
 		fields=["holiday_date", "description"],
 	):
 		iso = frappe.utils.getdate(row["holiday_date"]).isoformat()
 		if iso in days:
-			out[iso] = row["description"] or ""
+			out.setdefault(iso, row["description"] or "")
 	return out

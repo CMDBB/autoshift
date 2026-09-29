@@ -2177,3 +2177,98 @@ def test_active_rooms_stays_tied_to_matched_rooms():
 	prob, _x, ar = solve(_paired_pkg(room_value={("D1", "B1"): 4.0}))
 	assert status(prob) == "Optimal"
 	assert pulp.value(ar[("D1", "AM", MON, "B1")]) == 1
+
+
+# ── Per-employee availability ────────────────────────────────────────────────
+# Holidays are structural: an unavailable day gets no variable at all, rather than a
+# variable held at zero. See `DataPackage.employee_days` and `data_loader._availability`.
+
+
+def test_an_unavailable_day_creates_no_variables():
+	data = pkg(
+		employees=["E1", "E2"],
+		employee_roles={"E1": ("R1",), "E2": ("R1",)},
+		max_rpe={("E1", "R1"): 1, ("E2", "R1"): 1},
+		target_shifts={"E1": 2, "E2": 2},
+		working_days=days_from(2),
+		employee_days={"E1": frozenset(days_from(1))},
+	)
+	_prob, x, _ar, _log, ctx = build(data)
+
+	tuesday = days_from(2)[1]
+	assert ("E1", "R1", "AM", tuesday, "B1") not in x
+	assert ("E2", "R1", "AM", tuesday, "B1") in x
+	assert ("E1", "AM", tuesday, "B1") not in ctx.presence
+	assert ("E1", "R1", "AM", days_from(1)[0], "B1") in x
+
+
+def test_an_employee_absent_from_employee_days_keeps_the_whole_horizon():
+	"""The field is sparse and subtractive: no entry means no deviation."""
+	data = pkg(working_days=days_from(3), target_shifts={"E1": 3})
+	_prob, x, _ar, _log, _ctx = build(data)
+
+	assert len(x) == 3
+	assert set(data.days_of("E1")) == set(days_from(3))
+
+
+def test_a_room_is_not_held_shut_by_a_holder_on_holiday():
+	"""`room_coverage` sums only the holders who have a variable that day, so somebody's
+	public holiday does not read as them failing to staff the room."""
+	data = pkg(
+		employees=["E1", "E2"],
+		employee_roles={"E1": ("R1",), "E2": ("R1",)},
+		max_rpe={("E1", "R1"): 1, ("E2", "R1"): 1},
+		target_shifts={"E1": 2, "E2": 2},
+		working_days=days_from(2),
+		rooms={("D1", "B1"): 1},
+		employee_days={"E1": frozenset(days_from(1))},
+		rules=builtin_specs("room_coverage", "room_utilization_objective", "warm_start"),
+	)
+	(
+		prob,
+		_x,
+		ar,
+	) = solve(data)
+
+	assert status(prob) == "Optimal"
+	# Both days can still open their room — Tuesday on E2 alone.
+	assert ar[("D1", "AM", days_from(2)[1], "B1")].value() == 1
+
+
+def test_availability_does_not_change_the_hash_when_empty():
+	"""Sites with one shared calendar keep every cache hit they had before the field."""
+	assert pkg().input_hash() == pkg(employee_days={}).input_hash()
+
+
+def test_availability_changes_the_hash_when_present():
+	data = pkg(working_days=days_from(2), target_shifts={"E1": 2})
+	narrowed = pkg(
+		working_days=days_from(2),
+		target_shifts={"E1": 2},
+		employee_days={"E1": frozenset(days_from(1))},
+	)
+
+	assert data.input_hash() != narrowed.input_hash()
+
+
+def test_availability_survives_a_payload_round_trip():
+	data = pkg(working_days=days_from(2), employee_days={"E1": frozenset(days_from(1))})
+	restored = DataPackage.loads(data.dumps())
+
+	assert restored.employee_days == data.employee_days
+	assert restored.input_hash() == data.input_hash()
+
+
+def test_a_leave_day_that_is_also_a_holiday_is_skipped_not_crashed():
+	"""`leave_blocklist` fixes variables to zero; there are none to fix on a holiday."""
+	tuesday = days_from(2)[1]
+	data = pkg(
+		working_days=days_from(2),
+		target_shifts={"E1": 2},
+		employee_days={"E1": frozenset(days_from(1))},
+		leave_blocked={("E1", tuesday)},
+		rules=builtin_specs("warm_start", "leave_blocklist"),
+	)
+	prob, _x, _ar = solve(data)
+
+	assert status(prob) == "Optimal"
