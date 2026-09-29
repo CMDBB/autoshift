@@ -38,9 +38,11 @@ run measured them (gh#9, `room_coverage_matched_rooms`):
   **pairing** — a genuine cross-lane match (see above) is the only thing that
   puts two lanes' slots on the same row on purpose; anything else landing
   together is `_order_lane`'s incidental fill order, same as it always was.
-  A multi-room slot whose solved indices are not contiguous (nothing in the model
-  requires a holder's rooms to be adjacent) falls back to the incidental
-  placement, rather than draw a chip with a gap in it.
+  A holder covering several rooms is drawn as **one chip per room**, never as one
+  chip spanning several lines: nothing ties a holder's rooms together, so two
+  holders' rooms interlace freely (rooms 1 and 3 against rooms 2 and 4) and a
+  single tall chip cannot express that at all. Adjacent rooms are left as two
+  chips too — merging them back would only reintroduce the case.
 
 Both stay stable across rebuilds of the same data — real room identity because
 `room_index` is itself stable across rebuilds of one solved run, and incidental
@@ -82,10 +84,10 @@ class Slot:
 	label: str
 	branch: str | None
 	scheduling_role: str | None
-	#: Rooms this person covers in this half-day. The chip is drawn that many rows
-	#: tall, because a practitioner covering two rooms occupies two of the band's
-	#: lines and the paper sheet has always drawn them that way. From a run whose
-	#: ruleset measured it (`room_load_objective`), the rooms actually taken;
+	#: Rooms this person covers in this half-day, drawn as that many chips — one per
+	#: line they hold, because a practitioner covering two rooms occupies two of the
+	#: band's lines and the paper sheet has always drawn them that way. From a run
+	#: whose ruleset measured it (`room_load_objective`), the rooms actually taken;
 	#: otherwise `Scheduling Role.max_rooms`, or the holder's own override.
 	rooms: int = 1
 	#: The holder's max-rooms figure, where `rooms` is the measured load and may be
@@ -189,7 +191,11 @@ class Layout:
 
 @dataclass(frozen=True)
 class Placement:
-	"""One filled cell."""
+	"""One filled cell: one chip, on one line.
+
+	A holder covering several rooms gets one placement per room rather than one
+	placement drawn several lines tall — see `_fill`.
+	"""
 
 	section: str
 	band: str
@@ -197,9 +203,10 @@ class Placement:
 	lane: str
 	day_index: int
 	slot: Slot
-	#: Rows this placement occupies, starting at `row`. `slot.rooms`, except where
-	#: it would run past what the band can draw.
-	span: int = 1
+	#: The solved room number this chip stands for, where the run measured one
+	#: (`room_coverage_matched_rooms`). 0 when it didn't: the line is then a chair
+	#: index, not a room. Reporting only — `row` already places the chip.
+	room: int = 0
 
 
 @dataclass
@@ -429,7 +436,9 @@ def build(layout: Layout, slots: list[Slot], monday: datetime.date) -> Chart:
 		if used:
 			chart.heights[(section.shift_type, OVERFLOW)] = used
 
-	uncertain = sum(1 for p in chart.placements if not p.slot.role_certain)
+	# Half-days, not chips: a two-room holder is drawn twice (see `_fill`) and is
+	# still one assignment whose role had to be inferred.
+	uncertain = len({p.slot.match_key for p in chart.placements if not p.slot.role_certain})
 	if uncertain:
 		chart.warnings.append(
 			f"{uncertain} placements use a role the source did not record, inferred from the "
@@ -448,21 +457,28 @@ def _fill(
 ) -> int:
 	"""Stack one band's claimed slots into rows. Returns the rows used.
 
-	A slot covering more than one room occupies that many consecutive lines, so
-	the next person in the lane starts below it rather than beside it. The rows a
-	lane reaches on a day are therefore its slots' rooms added up, which is the
-	same sum `room_coverage` puts on the left of its inequality — so the coverage
-	`_coverage` reads back out of this is the chart's own arithmetic, not a second
-	opinion about it. Where the run measured each holder's load
-	(`room_load_objective`) that sum is the rooms actually open, not merely an
-	upper bound on them.
+	**One chip per room, one room per line.** A slot covering more than one room
+	yields that many placements, so the lines a lane holds on a day are its slots'
+	rooms added up — the same sum `room_coverage` puts on the left of its
+	inequality, which is what makes the coverage `_coverage` reads back out of this
+	the chart's own arithmetic rather than a second opinion about it. Where the run
+	measured each holder's load (`room_load_objective`) that sum is the rooms
+	actually open, not merely an upper bound on them.
 
-	Slots carrying a `room_index` (`room_coverage_matched_rooms` measured it) are
-	placed first, at exactly that room's row rather than by fill order, so two
-	lanes' slots sharing an index land on the same row (a real pairing) and a room
-	nobody was matched into stays an empty line — see the module docstring for why
-	that hole is the truth and not a gap to close. Everything else fills the
-	remaining rows exactly as it always has.
+	A room the run measured (`room_coverage_matched_rooms`) claims its own line
+	first: room 3 is line 3, so two lanes' slots in the same room land on the same
+	line (a real pairing), a room nobody was matched into stays an empty line — see
+	the module docstring for why that hole is the truth and not a gap to close —
+	and two holders' rooms may interlace as freely as the solver interlaced them.
+	Chips with no measured room then take the lines left over, top to bottom, in
+	`_order_lane`'s order: the chair-index behaviour from before rooms had
+	identity, now stepping over any line a measured room already holds.
+
+	A measured room whose line is already taken *in the same lane* falls back to
+	the leftovers with everything else. Only the unplaced band can produce that —
+	its lanes pool slots from every band, so two of them can name room 1 and mean
+	different rooms — and dropping the chip instead would be the one thing this
+	chart never does.
 	"""
 	used = 0
 	#: (day index, lane key) -> the rows this lane *staffs* that day
@@ -470,37 +486,41 @@ def _fill(
 	for index in range(days):
 		for lane in lanes:
 			here = _order_lane(pool.get((band_key, lane.key, index, shift_type), []), lane.sort_descending)
-			pinned: list[tuple[int, Slot]] = []
-			unpinned: list[Slot] = []
-			for slot in here:
-				rows = sorted(slot.room_index)
-				if rows and rows[-1] - rows[0] + 1 == len(rows):
-					pinned.append((rows[0], slot))
-				else:
-					unpinned.append(slot)
-
 			occupied: set[int] = set()
+			#: (row, slot, room) — built in two passes, measured rooms before leftovers,
+			#: then appended in one go.
+			chips: list[tuple[int, Slot, int]] = []
+			#: What each slot still owes after its measured rooms took their lines.
+			leftover: list[tuple[Slot, int]] = []
+
+			for slot in here:
+				owed = max(int(slot.rooms or 1), 1)
+				for room in sorted(slot.room_index):
+					if room in occupied:
+						continue
+					occupied.add(room)
+					chips.append((room, slot, room))
+					owed -= 1
+				if owed > 0:
+					leftover.append((slot, owed))
+
+			row = 1
+			for slot, owed in leftover:
+				for _ in range(owed):
+					while row in occupied:
+						row += 1
+					occupied.add(row)
+					chips.append((row, slot, 0))
+					row += 1
+
 			#: `occupied` minus what the run sent home — see `_order_lane`. A dropped
 			#: chip holds its line on the chart and staffs nothing, which is why the
 			#: two sets are tracked apart rather than one being derived from the other.
 			staffed: set[int] = set()
-			for row, slot in pinned:
-				span = max(int(slot.rooms or 1), 1)
-				chart.placements.append(Placement(shift_type, band_key, row, lane.key, index, slot, span))
-				occupied.update(range(row, row + span))
+			for at, slot, room in chips:
+				chart.placements.append(Placement(shift_type, band_key, at, lane.key, index, slot, room))
 				if slot.kind != KIND_DROPPED:
-					staffed.update(range(row, row + span))
-
-			row = 1
-			for slot in unpinned:
-				span = max(int(slot.rooms or 1), 1)
-				while occupied.intersection(range(row, row + span)):
-					row += 1
-				chart.placements.append(Placement(shift_type, band_key, row, lane.key, index, slot, span))
-				occupied.update(range(row, row + span))
-				if slot.kind != KIND_DROPPED:
-					staffed.update(range(row, row + span))
-				row += span
+					staffed.add(at)
 
 			reach[(index, lane.key)] = frozenset(staffed)
 			used = max(used, max(occupied, default=0))

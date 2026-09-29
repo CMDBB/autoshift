@@ -16,7 +16,7 @@ from autoshift.optimizer.rules import _vname as vname
 
 def _custom_rule_scratchpad(ctx: RuleContext) -> None:
 	# Prototype: force employee E1 to be scheduled only in room 2
-	employee = "E1"
+	employee = "1"
 
 	for (e, role, shift, day, branch, room_idx), var in ctx.room_occupancy.items():
 		if e == employee and room_idx != 2:

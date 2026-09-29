@@ -139,10 +139,6 @@ autoshift.wall_chart.inject_styles = function () {
 
 const esc = (value) => frappe.utils.escape_html(String(value == null ? "" : value));
 
-// `autoshift.wallchart.api.SPANNED`: a line a chip above it already covers. Not the
-// same as an empty cell — the chip's rowspan is occupying it, so nothing is drawn.
-const SPANNED = "spanned";
-
 function day_label(day) {
 	const dt = frappe.datetime.str_to_obj(day.date);
 	const name = dt.toLocaleDateString(undefined, { weekday: "short" });
@@ -163,7 +159,7 @@ function day_classes(day, run, today) {
 }
 
 function cell_markup(cell) {
-	if (!cell || cell === SPANNED) return "";
+	if (!cell) return "";
 	const classes = ["awc-who", `awc-${cell.kind}`];
 	if (cell.uncertain) classes.push("awc-uncertain");
 	if (cell.virtual) classes.push("awc-virtual");
@@ -172,8 +168,8 @@ function cell_markup(cell) {
 		cell.role,
 		cell.branch,
 		cell.changed,
-		cell.room_index ? __("Room {0}", [cell.room_index.join(", ")]) : "",
-		cell.max_rooms ? __("{0} of {1} rooms", [cell.span, cell.max_rooms]) : "",
+		cell.room ? __("Room {0}", [cell.room]) : "",
+		cell.max_rooms ? __("{0} of {1} rooms", [cell.rooms, cell.max_rooms]) : "",
 		cell.uncertain ? __("role inferred, not recorded") : "",
 		cell.virtual ? __("from the Shift Schedule; no Shift Assignment records it yet") : "",
 		cell.kind === "dropped" ? __("on the books; this run does not schedule it") : "",
@@ -258,19 +254,17 @@ function band_markup(band, days, run, width, today) {
 			// a hole, so the open lines do not have to start at the top.
 			const open_rows = new Set((band.open_rows || [])[day_index] || []);
 			lanes.forEach((lane, lane_index) => {
+				// One cell per line, always: somebody covering two rooms holds two
+				// lines and arrives here as two chips, never as one spanning cell.
 				const cell = (band.rows[row][lane_index] || [])[day_index];
-				// A line swallowed by the chip above it gets no <td> at all — that is
-				// what the chip's rowspan is standing in for.
-				if (cell === SPANNED) return;
 				const cls = ["awc-cell", ...day_classes(day, run, today)];
 				if (day_index && !lane_index) cls.push("awc-day-start");
 				if (lane.gates_rooms === false) cls.push("awc-aside");
 				if (band.numbered && !open_rows.has(row + 1)) cls.push("awc-uncovered");
-				const rowspan = cell && cell.span > 1 ? ` rowspan="${cell.span}"` : "";
 				cells.push(
-					`<td class="${cls.join(" ")}"${rowspan} colspan="${
-						spans[lane_index]
-					}">${cell_markup(cell)}</td>`
+					`<td class="${cls.join(" ")}" colspan="${spans[lane_index]}">${cell_markup(
+						cell
+					)}</td>`
 				);
 			});
 		});

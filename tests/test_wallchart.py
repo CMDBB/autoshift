@@ -370,31 +370,35 @@ def placement(chart, row, lane, day=0, shift=AM, band_key="C1"):
 	)
 
 
-def test_a_chip_is_as_tall_as_the_rooms_it_covers():
+def test_a_two_room_holder_gets_a_chip_per_room():
+	"""One chip per line, never one chip drawn two lines tall — see `_fill`."""
 	chart = build(layout(band(rooms=3)), [slot(rooms=2)], MONDAY)
-	assert placement(chart, 1, "R1").span == 2
+	assert placement(chart, 1, "R1").slot.employee == "E1"
+	assert placement(chart, 2, "R1").slot.employee == "E1"
+	assert placement(chart, 3, "R1") is None
 
 
-def test_the_next_person_in_a_lane_starts_below_the_chip_above():
+def test_the_next_person_in_a_lane_starts_below_the_chips_above():
 	slots = [slot(employee="E1", rooms=2), slot(employee="E2", rooms=1)]
 	chart = build(layout(band(rooms=4)), slots, MONDAY)
 	assert placement(chart, 1, "R1").slot.employee == "E1"
-	assert placement(chart, 2, "R1") is None  # covered by the chip above it
+	assert placement(chart, 2, "R1").slot.employee == "E1"  # their second room
 	assert placement(chart, 3, "R1").slot.employee == "E2"
 
 
-def test_a_kept_chip_is_as_tall_as_the_rooms_the_run_measured():
+def test_a_kept_half_day_draws_the_rooms_the_run_measured():
 	"""The books only know a holder's ceiling; a run under `room_load_objective` knows the
 	rooms they take, and a kept half-day is drawn at the run's figure, ceiling kept aside."""
 	existing = slot(rooms=3)
 	proposed = slot(kind=KIND_ADDED, rooms=2, max_rooms=3)
 	(kept,) = merge([existing], [proposed])
 	chart = build(layout(band(rooms=3)), [kept], MONDAY)
-	assert placement(chart, 1, "R1").span == 2
+	assert placement(chart, 2, "R1").slot.employee == "E1"
+	assert placement(chart, 3, "R1") is None  # the third room is the ceiling, not the load
 	assert placement(chart, 1, "R1").slot.max_rooms == 3
 
 
-def test_a_band_grows_for_spans_as_well_as_for_heads():
+def test_a_band_grows_for_rooms_as_well_as_for_heads():
 	"""Two people covering two rooms each need four lines, however few heads that is."""
 	slots = [slot(employee="E1", rooms=2), slot(employee="E2", rooms=2)]
 	chart = build(layout(band(rooms=2)), slots, MONDAY)
@@ -424,7 +428,8 @@ def test_a_non_gating_lane_neither_opens_a_room_nor_holds_one_shut():
 	]
 	chart = build(layout(band(rooms=2, lanes=lanes)), slots, MONDAY)
 	assert chart.covered_rooms(AM, "C1", 0) == 1  # the practitioner and the assistant, not the lead
-	assert placement(chart, 1, "RC").span == 3  # still drawn over the rooms it oversees
+	# still drawn over every room it oversees, a chip per room
+	assert [placement(chart, row, "RC").slot.employee for row in (1, 2, 3)] == ["E3"] * 3
 
 
 def test_a_band_with_no_gating_lane_covers_nothing():
@@ -502,18 +507,31 @@ def test_a_room_nobody_was_matched_into_stays_an_empty_line():
 	assert chart.covered_rooms(AM, "C1", 0) == 2
 
 
-def test_a_noncontiguous_multi_room_slot_falls_back_to_incidental_placement():
-	"""Nothing ties a multi-room holder's rooms together, so a chip that would have to
-	be drawn with a gap in it (rooms 1 and 3) is not pinned at all — the slot is
-	placed exactly as it would be with no room_index."""
+def test_interlaced_rooms_each_draw_at_their_own_room():
+	"""Nothing ties a multi-room holder's rooms together, so rooms 1 and 3 with somebody
+	else's room 2 between them is an ordinary answer — and the reason a chip can no
+	longer be one tall cell: there is nothing contiguous to span."""
 	slots = [
 		slot(employee="E1", role="R1", rooms=2, room_index=(1, 3)),
-		slot(employee="E2", role="R2", room_index=(2,)),
+		slot(employee="E2", role="R1", room_index=(2,)),
 	]
 	chart = build(layout(band(rooms=3)), slots, MONDAY)
-	placed = placement(chart, 1, "R1")
-	assert placed.slot.employee == "E1"
-	assert placed.span == 2
+	assert [placement(chart, row, "R1").slot.employee for row in (1, 2, 3)] == ["E1", "E2", "E1"]
+	assert [placement(chart, row, "R1").room for row in (1, 2, 3)] == [1, 2, 3]
+
+
+def test_a_room_claimed_twice_in_one_lane_pushes_the_second_chip_to_a_free_line():
+	"""Only the unplaced band can pool two bands' room 1 into one lane. The chip that
+	cannot have the line it names takes a leftover one — it is never dropped."""
+	slots = [
+		slot(employee="E1", role="R1", room_index=(1,)),
+		slot(employee="E2", role="R1", room_index=(1,)),
+	]
+	chart = build(layout(band(rooms=2)), slots, MONDAY)
+	assert placement(chart, 1, "R1").slot.employee == "E1"
+	second = placement(chart, 2, "R1")
+	assert second.slot.employee == "E2"
+	assert second.room == 0  # placed as a chair index, not as room 2
 
 
 def test_lanes_matched_into_different_rooms_open_neither_of_them():
