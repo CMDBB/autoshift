@@ -14,7 +14,7 @@ and nothing more. The shape is nested to match the drawing order:
                     bands: [{key, discipline, branch, numbered, rooms, height,
                              open_rows: [[rows open, …], …7],
                              lanes: [{key, label, gates_rooms}],
-                             rows: [ [ [cell|null|SPANNED, …7], …lanes ], …height ] }]}],
+                             rows: [ [ [cell|null, …7], …lanes ], …height ] }]}],
       "leaves":   {"YYYY-MM-DD": [{employee, label, leave_type, speculative}]},
       "warnings": [str],
       "totals":   {staffed, capacity, kept, added, dropped},
@@ -27,10 +27,10 @@ and nothing more. The shape is nested to match the drawing order:
 `virtual` cells, because the optimizer reads them as on the books; the summary
 backs an on-demand "Create them" for a planner who wants them recorded.
 
-`rows[row][lane][day]` is a cell, null, or `SPANNED`. A cell carries `span`: the
-rooms that person covers, drawn as `<td rowspan>`, so the lines it swallows are
-`SPANNED` and the renderer emits no cell for them at all. Null is a room nobody
-is in, which is the thing the chart exists to show.
+`rows[row][lane][day]` is a cell or null. One cell is one chip on one line, so
+somebody covering two rooms appears as two cells — see `chart._fill`; `rooms` on the
+cell is how many they cover in all, for the tooltip. Null is a room nobody is in,
+which is the thing the chart exists to show.
 
 `open_rows` is *which* of a band's rows are genuinely open on each weekday — the
 lines every gating lane staffs. Any other row is empty, or staffed by somebody but
@@ -65,14 +65,10 @@ def _resolve_week(week: str | None, run_doc=None) -> datetime.date:
 	return monday_of(frappe.utils.getdate(frappe.utils.today()))
 
 
-#: Marks a line swallowed by the `rowspan` of a cell above it. Distinct from
-#: null, which is an empty room the chart must still draw.
-SPANNED = "spanned"
-
-
-def _cell(slot, span: int) -> dict:
+def _cell(slot, room: int) -> dict:
 	return {
-		"span": span,
+		# rooms this half-day covers in all, however many lines it is drawn on
+		"rooms": slot.rooms,
 		"employee": slot.employee,
 		"employee_name": slot.employee_name,
 		"label": slot.label,
@@ -85,21 +81,20 @@ def _cell(slot, span: int) -> dict:
 		"virtual": slot.virtual,
 		# only where the run measured a load below the holder's ceiling
 		"max_rooms": slot.max_rooms if slot.max_rooms > slot.rooms else 0,
-		# the solved room number(s), only where room_coverage_matched_rooms measured
-		# them — the row this cell is drawn at is already placed from this, so it is
+		# this chip's solved room number, only where room_coverage_matched_rooms
+		# measured it — the row it is drawn at is already placed from this, so it is
 		# reporting-only here, for a tooltip to say "Room 3" instead of just showing it.
-		"room_index": list(slot.room_index) or None,
+		"room": room or None,
 	}
 
 
-def _index(chart) -> dict[tuple, dict | str]:
-	"""(section, band, row, lane, day) -> cell, or SPANNED. One pass, not a scan per cell."""
-	cells: dict[tuple, dict | str] = {}
-	for p in chart.placements:
-		cells[(p.section, p.band, p.row, p.lane, p.day_index)] = _cell(p.slot, p.span)
-		for offset in range(1, p.span):
-			cells[(p.section, p.band, p.row + offset, p.lane, p.day_index)] = SPANNED
-	return cells
+def _index(chart) -> dict[tuple, dict]:
+	"""(section, band, row, lane, day) -> cell. One pass, not a scan per cell.
+
+	One placement, one cell: `chart._fill` already gave a multi-room holder a
+	placement per room, so nothing here has to reserve the lines below a chip.
+	"""
+	return {(p.section, p.band, p.row, p.lane, p.day_index): _cell(p.slot, p.room) for p in chart.placements}
 
 
 def _band_payload(chart, cells, band_key, shift_type, lanes, rooms) -> dict:
@@ -282,8 +277,10 @@ def _totals(chart, structure, days: list[dict]) -> dict:
 	"""
 	kinds = {KIND_KEPT: 0, KIND_ADDED: 0, KIND_DROPPED: 0}
 	working = {index for index, day in enumerate(days) if day["working"]}
-	for placement in chart.placements:
-		kinds[placement.slot.kind] = kinds.get(placement.slot.kind, 0) + 1
+	# Counted over half-days, not chips: a two-room holder is drawn twice (see
+	# `chart._fill`) and is still one kept — or dropped — assignment.
+	for _half_day, kind in {(p.slot.match_key, p.slot.kind) for p in chart.placements}:
+		kinds[kind] = kinds.get(kind, 0) + 1
 	staffed = sum(
 		chart.covered_rooms(section.shift_type, band.key, day)
 		for section in structure.sections

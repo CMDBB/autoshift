@@ -493,6 +493,10 @@ another, so a run may well work rooms 2 and 3 and leave room 1 shut: that shows
 as an empty top row, and it is not a mistake. Shuffling the chips up to close
 the gap would show you a schedule the run did not produce.
 
+Somebody covering more than one room appears **once per room** rather than as one
+chip stretched over several rows, for the same reason: their rooms need not be
+next to each other, and two practitioners' rooms can interlace.
+
 Before the run is solved the chart shows the
 **Shift Assignments already on the books**. Once it is solved, each cell says
 what the run did with that half-day:

@@ -9,6 +9,9 @@ app-specific config, and produces a schedule a user reviews, approves and commit
 - **Using the app:** `README.md`.
 - **Why a decision was made:** `docs/design-notes.md`. Keep rationale, postmortems and
   superseded design there, not here.
+- **The exact arithmetic a rule puts into the model:** `docs/formulation.md` — every
+  built-in's constraints and objective terms as formulas, with the notation and the
+  definitional `p`/`active_rooms` constraints. Formulas only; no rationale.
 
 **Early-stage, single-developer WIP.** Check "Not built yet" below before assuming something
 is broken rather than simply absent. **Ask the user about design intentions early and
@@ -341,10 +344,14 @@ are *disabled with a tooltip* rather than hidden; Solver Log needs only a run, s
   morning covered", which the per-employee roster grid structurally cannot.
   Layout is **derived** by `layout.derive()` from Discipline Branch Config + Scheduling Role +
   Shift Type; anything no band claims lands in an `Unplaced` band with the reason stated.
-  A chip is **as tall as the rooms it covers** (`Slot.rooms` = the run's measured `rooms`
-  where it has one, else the holder's `max_rooms`,
-  drawn as `<td rowspan>`; the lines it swallows arrive as the `SPANNED` sentinel rather
-  than as cells), and any line **not** in `covered` — the rows *every* gating lane staffs,
+  A holder gets **one chip per room they cover** (`Slot.rooms` = the run's measured
+  `rooms` where it has one, else the holder's `max_rooms`) — one `Placement`, and so one
+  payload cell, per line; there is no `rowspan` and no `SPANNED` sentinel any more, because
+  two holders' rooms interlace (rooms 1+3 against 2+4) and a single tall chip cannot draw
+  that. `Placement.room` carries the solved room number that chip stands for, 0 where none
+  was measured. Anything counting half-days therefore counts distinct `Slot.match_key`, not
+  placements (`_totals`' kept/added/dropped, `build`'s inferred-role warning).
+  Any line **not** in `covered` — the rows *every* gating lane staffs,
   the chart's own reading of `room_coverage`'s minimum — is hatched, because a half-staffed
   room is not an open room. `dropped` chips sink to the bottom of their lane and count
   toward neither. The headline counts fully-staffed rooms for the same reason.

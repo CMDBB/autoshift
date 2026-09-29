@@ -209,10 +209,11 @@ earned.
 
 Two changes, both following from the same arithmetic the solver uses:
 
-- **A chip is as tall as the rooms it covers.** A practitioner covering two rooms occupies
-  two lines of the band, which is how the paper sheet has always drawn it, and it makes a
-  lane's height the sum `room_coverage` puts on the left of its inequality rather than a
-  headcount that happens to look like one.
+- **A practitioner covering two rooms occupies two lines of the band**, which is how the
+  paper sheet has always drawn it, and it makes a lane's height the sum `room_coverage` puts
+  on the left of its inequality rather than a headcount that happens to look like one. Those
+  two lines started out as one chip with a `rowspan`; see "One chip per room" below for why
+  they are now two chips.
 - **Lines that are not open rooms are hatched.** Coverage is the minimum over the band's
   *gating* lanes, so a line with a practitioner and no assistant is not an open room, and
   the chart no longer implies it is. `dropped` chips sort to the bottom of their lane and
@@ -762,6 +763,29 @@ So a measured `room_index` **is** the row. Two consequences worth naming:
   `_order_lane` sinking them below the proposal; with holes allowed, "below" no longer means
   "outside the count", so `_fill` tracks the rows a lane *staffs* separately from the rows it
   *occupies*. A dropped chip still holds its line on the chart and still staffs nothing.
+
+### One chip per room, not one chip spanning rooms (2026-09-24)
+
+The same symmetry that leaves room 1 shut also **interlaces** rooms: nothing ties one
+holder's rooms together, so a practitioner in rooms 1 and 3 beside one in rooms 2 and 4 is an
+ordinary co-optimal answer. A chip drawn as a `<td rowspan>` over the rooms it covers cannot
+express that — there is nothing contiguous to span — and the first cut handled it by refusing
+to pin such a slot at all, falling back to incidental fill order. That is the worst of both:
+the chart quietly abandons the solved rooms in exactly the case room identity was added for.
+
+So a slot covering N rooms is N placements, one per line, each carrying the room number it
+stands for (`Placement.room`). `rowspan` and the `SPANNED` sentinel are gone from the payload
+and the renderer. Adjacent rooms are deliberately *not* merged back into one chip: merging
+would reintroduce the span case for the sake of a cosmetic gain, and the two chips already
+read as one person holding two lines — which is all the paper sheet ever claimed.
+
+The one thing this costs: a chip is no longer a half-day, so anything counting assignments
+counts distinct `Slot.match_key` instead of placements (`api._totals`, `chart.build`'s
+inferred-role warning). Coverage is unaffected — it was already a fact about lines.
+
+A measured room whose line is already taken in the same lane falls back to the leftover
+lines. Only the `Unplaced` band can produce that, by pooling two bands' room 1 into one lane;
+dropping the chip would break the one promise this chart makes without exception.
 
 ---
 

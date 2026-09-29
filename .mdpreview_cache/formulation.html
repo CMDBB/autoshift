@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>formulation.md</title>
+<style>
+body { max-width: 860px; margin: 2rem auto; padding: 0 1.5rem;
+       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+       line-height: 1.6; color: #24292e; }
+pre { background: #f6f8fa; padding: 1rem; overflow-x: auto; border-radius: 6px; }
+code { background: #f6f8fa; padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.9em; }
+pre code { background: none; padding: 0; }
+blockquote { border-left: 4px solid #dfe2e5; margin-left: 0; padding-left: 1rem; color: #6a737d; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #dfe2e5; padding: 0.5em 0.8em; }
+th { background: #f6f8fa; }
+img { max-width: 100%; }
+a { color: #0366d6; }
+h1, h2 { border-bottom: 1px solid #eaecef; padding-bottom: 0.3em; }
+</style>
+</head><body>
+<h1 id="milp-formulation">MILP formulation</h1>
+<p>The exact arithmetic every built-in rule in <code>autoshift/optimizer/rules.py</code> puts into the
+model. <strong>Formulas only</strong> — what a rule is <em>for</em>, and why it is the way it is, lives on the
+rule's own <code>@builtin_rule</code> description, in <code>CLAUDE.md</code> and in <code>design-notes.md</code>.</p>
+<p>One section per built-in, in registry order — 25 of them: 11 constraint rules, <code>warm_start</code>
+(kind <code>Other</code>), and 13 objective rules. Constraint names are the <code>_cname</code> prefixes the model
+actually carries, so a row in <code>bench diagnose-model</code>'s output can be looked up here directly.</p>
+<hr />
+<h2 id="notation">Notation</h2>
+<h3 id="index-sets">Index sets</h3>
+<table>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Meaning</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>E</code></td>
+<td>employees</td>
+<td><code>DataPackage.employees</code></td>
+</tr>
+<tr>
+<td><code>S</code></td>
+<td>shift types</td>
+<td><code>shift_types</code></td>
+</tr>
+<tr>
+<td><code>D</code></td>
+<td>working days in the horizon</td>
+<td><code>working_days</code></td>
+</tr>
+<tr>
+<td><code>B</code></td>
+<td>branches</td>
+<td><code>branches</code></td>
+</tr>
+<tr>
+<td><code>K</code></td>
+<td>disciplines</td>
+<td><code>disciplines</code></td>
+</tr>
+<tr>
+<td><code>R(e)</code></td>
+<td>roles employee <code>e</code> holds</td>
+<td><code>employee_roles[e]</code></td>
+</tr>
+<tr>
+<td><code>k(r)</code></td>
+<td>the one discipline of role <code>r</code></td>
+<td><code>role_discipline[r]</code></td>
+</tr>
+<tr>
+<td><code>W(e)</code></td>
+<td>working roles of <code>e</code> — <code>{r ∈ R(e) : mode(e,r) ≠ Collateral}</code></td>
+<td><code>working_roles()</code></td>
+</tr>
+<tr>
+<td><code>C(e)</code></td>
+<td>collateral roles of <code>e</code></td>
+<td><code>collateral_roles()</code></td>
+</tr>
+<tr>
+<td><code>X(e)</code></td>
+<td>exclusive roles of <code>e</code></td>
+<td><code>exclusive_roles()</code></td>
+</tr>
+<tr>
+<td><code>Ĝ(e)</code></td>
+<td>gating roles of <code>e</code> — <code>{r ∈ R(e) : gates(r)}</code></td>
+<td><code>gating_roles()</code></td>
+</tr>
+<tr>
+<td><code>G(k)</code></td>
+<td>gating roles in discipline <code>k</code> held by somebody</td>
+<td><code>_gating_holders</code></td>
+</tr>
+<tr>
+<td><code>H(k,r)</code></td>
+<td><code>{e : r ∈ Ĝ(e), k(r) = k}</code>, the holders of gating role <code>r</code></td>
+<td><code>_gating_holders</code></td>
+</tr>
+<tr>
+<td><code>P(k)</code></td>
+<td><code>{(e,r) : r ∈ C(e), k(r) = k}</code>, collateral pairs in <code>k</code></td>
+<td><code>_collateral_holders</code></td>
+</tr>
+<tr>
+<td><code>Bd</code></td>
+<td>bound employees</td>
+<td><code>bound_employees()</code></td>
+</tr>
+<tr>
+<td><code>F</code></td>
+<td>the books: <code>(e,r,s,d,b)</code> already settled</td>
+<td><code>forced</code></td>
+</tr>
+<tr>
+<td><code>Fᵖ</code></td>
+<td><code>{(e,s,d,b) : (e,r,s,d,b) ∈ F}</code> — settled <em>presence</em></td>
+<td><code>forced_presence()</code></td>
+</tr>
+<tr>
+<td><code>L</code></td>
+<td><code>(e,d)</code> pairs blocked by leave</td>
+<td><code>leave_blocked</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="parameters">Parameters</h3>
+<table>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Meaning</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>N(k,b)</code></td>
+<td>configured rooms in discipline <code>k</code> at branch <code>b</code></td>
+<td><code>rooms[(k,b)]</code>, 0</td>
+</tr>
+<tr>
+<td><code>m(e,r)</code></td>
+<td>max rooms <code>(e,r)</code> covers in one slot</td>
+<td><code>max_rpe[(e,r)]</code>, 1</td>
+</tr>
+<tr>
+<td><code>T(e)</code></td>
+<td>FTE-derived shift target over the horizon</td>
+<td><code>target_shifts[e]</code>, 0</td>
+</tr>
+<tr>
+<td><code>T(e,r)</code></td>
+<td>agreed role FTE as a shift count</td>
+<td><code>role_target_shifts[(e,r)]</code>, absent</td>
+</tr>
+<tr>
+<td><code>pref(e,s)</code></td>
+<td>normalized shift preference weight</td>
+<td><code>shift_preferences[e][s]</code>, 0</td>
+</tr>
+<tr>
+<td><code>suit(e,r)</code></td>
+<td>substitution suitability, <code>≥ 1</code></td>
+<td><code>suitability()</code>, 1</td>
+</tr>
+<tr>
+<td><code>v(r)</code></td>
+<td>objective points one shift in role <code>r</code> is worth</td>
+<td><code>value_of()</code>, 0</td>
+</tr>
+<tr>
+<td><code>V(k,b)</code></td>
+<td>objective points a staffed room in <code>(k,b)</code> is worth</td>
+<td><code>room_value_of()</code>, 0</td>
+</tr>
+<tr>
+<td><code>μ(e,r)</code></td>
+<td>this holder's value multiplier in a staffed room</td>
+<td><code>value_multiplier()</code>, 1</td>
+</tr>
+<tr>
+<td><code>σ(e,e′)</code></td>
+<td>synergy multiplier of a pair sharing a room (symmetric)</td>
+<td><code>synergy_multiplier()</code>, 1</td>
+</tr>
+<tr>
+<td><code>wρ</code></td>
+<td>ruleset row weight of rule <code>ρ</code></td>
+<td>1</td>
+</tr>
+</tbody>
+</table>
+<h3 id="decision-variables">Decision variables</h3>
+<pre class="codehilite"><code>x[e,r,s,d,b] ∈ {0,1}     e works shift s on day d at branch b in role r
+                         built only for r ∈ R(e) — role eligibility is structural,
+                         a variable for a role somebody cannot work does not exist
+
+p[e,s,d,b]   ∈ {0,1}     e is present for shift s on day d at branch b, whatever
+                         they do during it
+
+a[k,s,d,b]   ∈ ℤ,        rooms staffed in discipline k at branch b, shift s, day d
+  0 ≤ a ≤ N(k,b)         the branch room cap is the variable bound, not a constraint
+</code></pre>
+
+<p>Rule-owned variables, created only by the rule named and absent otherwise:</p>
+<pre class="codehilite"><code>y[e,r,s,d,b,n] ∈ {0,1}   room_coverage_matched_rooms — e holds room number n in role r
+ρ[k,s,d,b,n]   ∈ {0,1}   room_coverage_matched_rooms — room n is genuinely matched
+t_j[e,r,s,d,b] ∈ [0,1]   room_load_objective — this holder's j-th room tranche
+z, u, o        ≥ 0        auxiliary continuous variables (linearizations, below)
+</code></pre>
+
+<h3 id="objective">Objective</h3>
+<pre class="codehilite"><code>maximize   Σ_ρ  wρ · Σ (terms ρ contributed)
+</code></pre>
+
+<p>An empty term set is a constant-0 objective (pure feasibility). Rules file terms one per
+slot rather than as one sum so the run's breakdown can be drilled into; the model sees the
+same total either way, and <code>path(...)</code> never reaches the solver.</p>
+<h3 id="definitional-constraints-model_builder-not-a-rule">Definitional constraints (<code>model_builder</code>, not a rule)</h3>
+<p>What <code>p</code> <em>means</em>. Built for every <code>(e,s,d,b)</code>:</p>
+<pre class="codehilite"><code>presence_role:        Σ_{r ∈ W(e)}  x[e,r,s,d,b]  ≤  p[e,s,d,b]        (if W(e) ≠ ∅)
+presence_collateral:  x[e,r,s,d,b]  ≤  p[e,s,d,b]           ∀ r ∈ C(e)
+presence_idle:        p[e,s,d,b]  ≤  Σ_{r ∈ W(e) ∪ C(e)} x[e,r,s,d,b]
+</code></pre>
+
+<p>So at most one working role per presence, collateral duties beside it, and no presence spent
+on nothing.</p>
+<hr />
+<h2 id="constraint-rules">Constraint rules</h2>
+<h3 id="one_shift_per_day-one-shift-per-employee-per-day"><code>one_shift_per_day</code> — One shift per employee per day</h3>
+<pre class="codehilite"><code>∀ e ∈ E, d ∈ D:     Σ_{s ∈ S} Σ_{b ∈ B}  p[e,s,d,b]  ≤  1
+</code></pre>
+
+<p><code>one_shift</code>. Standard.</p>
+<h3 id="warm_start-use-existing-shift-assignments-as-a-baseline"><code>warm_start</code> — Use existing Shift Assignments as a baseline</h3>
+<p>Not a constraint: an initial value on every variable, which is what the <code>fixValue()</code> rules
+below pin against.</p>
+<pre class="codehilite"><code>x⁰[e,r,s,d,b] = 1 if (e,r,s,d,b) ∈ F  else 0
+p⁰[e,s,d,b]   = 1 if (e,s,d,b)   ∈ Fᵖ else 0
+</code></pre>
+
+<p>Raises when <code>(e,r,s,d,b) ∈ F</code> and <code>(e,d) ∈ L</code> — the books and leave cannot both hold.</p>
+<h3 id="leave_blocklist-respect-approved-leaves"><code>leave_blocklist</code> — Respect approved leaves</h3>
+<pre class="codehilite"><code>∀ (e,d) ∈ L, s ∈ S, b ∈ B:     x[e,r,s,d,b] = 0   ∀ r ∈ R(e)
+                               p[e,s,d,b]   = 0
+</code></pre>
+
+<p>Fixed at the warm-start value, which <code>warm_start</code> has already guaranteed to be 0 on a leave
+day — hence <code>requires warm_start</code>. Standard.</p>
+<h3 id="use_existing_assignments-honor-existing-shift-assignments"><code>use_existing_assignments</code> — Honor existing Shift Assignments</h3>
+<pre class="codehilite"><code>∀ (e,r,s,d,b) ∈ F:     x[e,r,s,d,b] = 1
+</code></pre>
+
+<p>Group <code>existing_assignments</code>, non-standard. Requires <code>warm_start</code>.</p>
+<h3 id="bind_role_assignments-bind-settled-schedules-strictly"><code>bind_role_assignments</code> — Bind settled schedules (strictly)</h3>
+<p>Let <code>Fᵒ = {(e,s,d) : (e,s,d,b) ∈ Fᵖ}</code> be the booked half-days. For <code>e ∈ Bd</code> only:</p>
+<pre class="codehilite"><code>bind_presence:   Σ_{b ∈ B} p[e,s,d,b]  =  1            ∀ (e,s,d) ∈ Fᵒ
+                 p[e,s,d,b]            =  0            ∀ (s,d) with (e,s,d) ∉ Fᵒ, ∀ b
+                 x[e,r,s,d,b]          =  1            ∀ (e,r,s,d,b) ∈ F,
+                                                         mode(e,r) ∈ {Exclusive, Collateral}
+                 x[e,r,s,d,b]          =  0            ∀ r ∈ C(e), (e,r,s,d,b) ∉ F
+</code></pre>
+
+<p>Group <code>role_binding</code>, non-standard. Requires <code>warm_start</code>. Inert when <code>Bd = ∅</code>.</p>
+<h3 id="soft_bind_role_assignments-bind-settled-schedules"><code>soft_bind_role_assignments</code> — Bind settled schedules</h3>
+<p>The ceiling without the floor. For <code>e ∈ Bd</code> only:</p>
+<pre class="codehilite"><code>                      p[e,s,d,b]  =  0                     ∀ (s,d) with (e,s,d) ∉ Fᵒ, ∀ b
+
+soft_bind_exclusive:  Σ_{b′ ∈ B} p[e,s,d,b′]  ≤  x[e,r,s,d,b]
+                                      ∀ (e,r,s,d,b) ∈ F with mode(e,r) = Exclusive
+</code></pre>
+
+<p>A booked half-day keeps its warm-start value of 1 but is otherwise free. Group
+<code>role_binding</code>, standard. Requires <code>warm_start</code>; inert when <code>Bd = ∅</code>.</p>
+<h3 id="one_branch_per_shift-one-branch-per-shift"><code>one_branch_per_shift</code> — One Branch per Shift</h3>
+<pre class="codehilite"><code>∀ e ∈ E, s ∈ S, d ∈ D:     Σ_{b ∈ B}  p[e,s,d,b]  ≤  1
+</code></pre>
+
+<p><code>one_branch</code>. Non-standard; redundant while <code>one_shift_per_day</code> is selected.</p>
+<h3 id="room_coverage-room-coverage-per-discipline-pooled"><code>room_coverage</code> — Room coverage per discipline (pooled)</h3>
+<p><code>a</code> is the minimum, over the discipline's gating roles, of the room-slots that role's
+assignees contribute; the branch cap is already <code>a</code>'s upper bound.</p>
+<pre class="codehilite"><code>room_coverage:   Σ_{e ∈ H(k,r)}  m(e,r) · x[e,r,s,d,b]   ≥   a[k,s,d,b]
+                                            ∀ (k,s,d,b), ∀ r ∈ G(k)
+</code></pre>
+
+<p>Group <code>room_coverage</code>, standard.</p>
+<h3 id="room_coverage_matched_rooms-room-coverage-per-discipline-matched-pairing"><code>room_coverage_matched_rooms</code> — Room coverage per discipline (matched pairing)</h3>
+<p>For each <code>(k,s,d,b)</code> with <code>G(k) ≠ ∅</code> and <code>N = N(k,b) &gt; 0</code>, rooms <code>n ∈ {1..N}</code>, writing
+<code>occ(r,n) = Σ_{e ∈ H(k,r)} y[e,r,s,d,b,n]</code>:</p>
+<pre class="codehilite"><code>room_occ_unique:         occ(r,n)  ≤  1                              ∀ r ∈ G(k), n
+
+room_occ_cap:            Σ_{n=1}^{N} y[e,r,s,d,b,n]  ≤  m(e,r) · x[e,r,s,d,b]
+                                                                     ∀ r ∈ G(k), e ∈ H(k,r)
+
+room_active_le:          ρ[k,s,d,b,n]  ≤  occ(r,n)                   ∀ r ∈ G(k), n
+room_active_ge:          ρ[k,s,d,b,n]  ≥  Σ_{r ∈ G(k)} occ(r,n) − (|G(k)| − 1)     ∀ n
+
+active_rooms_eq_matched: a[k,s,d,b]  =  Σ_{n=1}^{N} ρ[k,s,d,b,n]
+</code></pre>
+
+<p>The two <code>room_active</code> rows are the standard linearization of <code>ρ = ⋀_{r ∈ G(k)} occ(r,n)</code>.
+Group <code>room_coverage</code>, non-standard.</p>
+<h3 id="fte_ceiling-fte-ceiling"><code>fte_ceiling</code> — FTE ceiling</h3>
+<p>With tolerance <code>tol = 0.05</code>, for every <code>e</code> with <code>T(e) &gt; 0</code>:</p>
+<pre class="codehilite"><code>fte_max:     Σ_{s ∈ S} Σ_{d ∈ D} Σ_{b ∈ B}  p[e,s,d,b]   ≤   (1 + tol) · T(e)
+</code></pre>
+
+<p>Group <code>workload_ceiling</code>, standard.</p>
+<h3 id="role_fte_ceiling-agreed-role-fte-ceiling"><code>role_fte_ceiling</code> — Agreed role FTE ceiling</h3>
+<p>With <code>tol = 0.05</code>, for every <code>(e,r)</code> with <code>T(e,r) &gt; 0</code>:</p>
+<pre class="codehilite"><code>role_fte_max:     Σ_{s,d,b}  x[e,r,s,d,b]   ≤   (1 + tol) · T(e,r)
+</code></pre>
+
+<p>Non-standard, no group — the hard reading of what <code>role_fte_target_objective</code> expresses
+softly.</p>
+<h3 id="exclusive_role_purity-exclusive-roles-admit-no-collateral-duty"><code>exclusive_role_purity</code> — Exclusive roles admit no collateral duty</h3>
+<p>For every <code>e</code> with <code>X(e) ≠ ∅</code> and <code>C(e) ≠ ∅</code>, and every <code>(s,d,b)</code>:</p>
+<pre class="codehilite"><code>exclusive_purity:  Σ_{r ∈ C(e)} x[e,r,s,d,b]  ≤  |C(e)| · ( 1 − Σ_{r ∈ X(e)} x[e,r,s,d,b] )
+</code></pre>
+
+<p>One row per slot, not per <code>(exclusive, collateral)</code> pair: the right-hand side switches every
+collateral duty off at once. <code>Σ_{r ∈ X(e)} x ≤ 1</code> already holds from <code>presence_role</code>, since
+<code>X(e) ⊆ W(e)</code>. Standard; inert unless somebody holds both an exclusive and a collateral role.</p>
+<hr />
+<h2 id="objective-rules">Objective rules</h2>
+<p>Every term below is added to the maximized sum and multiplied by that rule's ruleset weight
+<code>wρ</code>; <code>default_weight</code> is the figure a freshly-seeded ruleset row carries.</p>
+<h3 id="room_utilization_objective-room-utilization"><code>room_utilization_objective</code> — Room utilization</h3>
+<pre class="codehilite"><code>+ Σ_{(k,s,d,b)}  a[k,s,d,b]
+</code></pre>
+
+<p>Group <code>room_value_choice</code>, standard, <code>default_weight = 3</code>. Requires <code>room_coverage</code>.</p>
+<h3 id="room_value_objective-room-value"><code>room_value_objective</code> — Room value</h3>
+<pre class="codehilite"><code>+ Σ_{(k,s,d,b,n)}  V(k,b) · ρ[k,s,d,b,n]                 (terms with V(k,b) ≠ 0 only)
+</code></pre>
+
+<p>Group <code>room_value_choice</code>, non-standard. Requires <code>room_coverage_matched_rooms</code>.</p>
+<h3 id="employee_value_objective-employee-value"><code>employee_value_objective</code> — Employee value</h3>
+<p>For every <code>y[e,r,s,d,b,n]</code> with <code>μ(e,r) ≠ 1</code>, <code>V(k,b) ≠ 0</code> (where <code>k = k(r)</code>) and
+<code>ρ[k,s,d,b,n]</code> existing, one continuous <code>z ≥ 0</code>:</p>
+<pre class="codehilite"><code>emp_value_le_y:       z  ≤  y[e,r,s,d,b,n]
+emp_value_le_active:  z  ≤  ρ[k,s,d,b,n]
+emp_value_ge:         z  ≥  y[e,r,s,d,b,n] + ρ[k,s,d,b,n] − 1
+
++ (−1 + μ(e,r)) · V(k,b) · z
+</code></pre>
+
+<p><code>z</code> appears in no other term, so its sign in the objective alone drives it to
+<code>y ⋀ ρ</code> — up to <code>min(y,ρ)</code> for a bonus, down to <code>max(0, y+ρ−1)</code> for a penalty; both equal
+the AND of two binaries. Requires <code>room_value_objective</code>.</p>
+<h3 id="synergy_value_objective-synergy-value"><code>synergy_value_objective</code> — Synergy value</h3>
+<p>Writing <code>occ(e,k,s,d,b,n) = Σ_{r : y[e,r,s,d,b,n] exists, k(r)=k} y[e,r,s,d,b,n]</code>, then for
+each configured pair <code>(eₐ,e_b)</code> with <code>σ(eₐ,e_b) ≠ 1</code> and each room <code>(k,s,d,b,n)</code> both can
+occupy, with <code>V(k,b) ≠ 0</code> and <code>ρ</code> existing, one continuous <code>z ≥ 0</code>:</p>
+<pre class="codehilite"><code>synergy_le_a:       z  ≤  occ(eₐ,k,s,d,b,n)
+synergy_le_b:       z  ≤  occ(e_b,k,s,d,b,n)
+synergy_le_active:  z  ≤  ρ[k,s,d,b,n]
+synergy_ge:         z  ≥  occ(eₐ,…) + occ(e_b,…) + ρ[k,s,d,b,n] − 2
+
++ (−1 + σ(eₐ,e_b)) · V(k,b) · z
+</code></pre>
+
+<p>The 3-way analogue of the employee bonus. Requires <code>room_value_objective</code>. Inert while
+<code>employee_synergy</code> is empty.</p>
+<h3 id="room_load_objective-spread-room-load"><code>room_load_objective</code> — Spread room load</h3>
+<p>For each <code>(k,s,d,b)</code>, each <code>r ∈ G(k)</code> and each <code>e ∈ H(k,r)</code>, with <code>m = m(e,r)</code>; tranches
+<code>t_j ∈ [0,1]</code> for <code>j = 2..m</code> exist only where <code>m &gt; 1</code>:</p>
+<pre class="codehilite"><code>room_load:        Σ_{j=2}^{m}  t_j[e,r,s,d,b]   ≤   (m − 1) · x[e,r,s,d,b]
+
+room_load_cover:  Σ_{e ∈ H(k,r)} ( x[e,r,s,d,b] + Σ_{j=2}^{m(e,r)} t_j[e,r,s,d,b] )
+                      ≥   a[k,s,d,b]                          ∀ r ∈ G(k)
+
+−  Σ_{j=2}^{m}  ((j − 1) / (m − 1)) · t_j[e,r,s,d,b]
+</code></pre>
+
+<p>A convex per-holder cost, so tranche order needs no binaries and no SOS2: tranche <code>j</code> costs
+<code>(j−1)/(m−1)</code>, cheapest first. <code>room_load_cover</code> restates coverage over the tranches and
+binds tighter than <code>room_coverage</code>'s <code>m·x</code> whenever the tranches are not full. Standard,
+<code>default_weight = 1</code>. Requires <code>room_coverage</code>. Inert where every <code>m(e,r) ≤ 1</code>.</p>
+<h3 id="collateral_room_value_objective-collateral-duties"><code>collateral_room_value_objective</code> — Collateral duties</h3>
+<p><code>min( a, Σ m·x )</code>, linearized. For each <code>(k,s,d,b)</code> with <code>P(k) ≠ ∅</code>, one continuous
+<code>u ≥ 0</code>:</p>
+<pre class="codehilite"><code>collateral_rooms:  u  ≤  a[k,s,d,b]
+collateral_span:   u  ≤  Σ_{(e,r) ∈ P(k)}  m(e,r) · x[e,r,s,d,b]
+
++ u
+</code></pre>
+
+<p>The objective only pushes <code>u</code> up, so it is squeezed to exactly the minimum — two
+inequalities, no binaries. Group <code>collateral_value</code>, non-standard. Requires <code>room_coverage</code>.</p>
+<h3 id="fte_soft_ceiling-fte-soft-ceiling"><code>fte_soft_ceiling</code> — FTE soft ceiling</h3>
+<p><code>max(0, assigned − T(e))</code>, linearized. For each <code>e</code> with <code>T(e) &gt; 0</code>, one continuous
+<code>o ≥ 0</code>:</p>
+<pre class="codehilite"><code>fte_over:  o  ≥  Σ_{s,d,b} p[e,s,d,b]  −  T(e)
+
+− o
+</code></pre>
+
+<p>The negative coefficient squeezes <code>o</code> down to exactly that maximum, so no equality and no
+second slack. Group <code>workload_ceiling</code>, non-standard, <code>default_weight = 4</code>.</p>
+<h3 id="role_fte_target_objective-agreed-role-fte-split"><code>role_fte_target_objective</code> — Agreed role FTE split</h3>
+<p><code>|assigned − T(e,r)|</code>, linearized. For each <code>(e,r)</code> with an agreed figure, two continuous
+slacks <code>o, u ≥ 0</code>:</p>
+<pre class="codehilite"><code>role_dev:  Σ_{s,d,b} x[e,r,s,d,b]  −  T(e,r)   =   o  −  u
+
+− (o + u)
+</code></pre>
+
+<p>Both carry a negative coefficient, so exactly one ends up non-zero and equals the absolute
+deviation. Standard.</p>
+<h3 id="shift_preference_objective-shift-preferences"><code>shift_preference_objective</code> — Shift preferences</h3>
+<pre class="codehilite"><code>+ Σ_{(e,s,d,b)}  (−1 + pref(e,s)) · p[e,s,d,b]
+</code></pre>
+
+<p><code>≤ 0</code> for every presence (uniform <code>pref</code> is <code>1/|S|</code>), so it doubles as a per-half-day cost
+proxy. Group <code>shift_preference</code>, non-standard.</p>
+<h3 id="suitability_preference_objective-shift-preferences-and-role-suitability"><code>suitability_preference_objective</code> — Shift preferences and role suitability</h3>
+<pre class="codehilite"><code>+ Σ_{(e,s,d,b)}    (−1 + pref(e,s)) · p[e,s,d,b]
++ Σ_{(e,r,s,d,b)}  (1 − suit(e,r))  · x[e,r,s,d,b]
+</code></pre>
+
+<p>The two sum to <code>(−1 + pref(e,s)) · suit(e,r)</code> whenever a presence is spent on exactly one
+role, and reduce to <code>shift_preference_objective</code> when every <code>suit(e,r) = 1</code>. Group
+<code>shift_preference</code>, standard.</p>
+<h3 id="collateral_capacity_value_objective-collateral-duties-by-configured-rooms"><code>collateral_capacity_value_objective</code> — Collateral duties (by configured rooms)</h3>
+<p><code>min( N(k,b), Σ m·x )</code>, linearized. For each <code>(k,s,d,b)</code> with <code>P(k) ≠ ∅</code> and <code>N(k,b) &gt; 0</code>,
+one continuous <code>u</code> whose upper bound carries the constant half of the minimum:</p>
+<pre class="codehilite"><code>                     0  ≤  u  ≤  N(k,b)
+collateral_capacity:  u  ≤  Σ_{(e,r) ∈ P(k)}  m(e,r) · x[e,r,s,d,b]
+
++ u
+</code></pre>
+
+<p>Reads no <code>a</code> at all. Group <code>collateral_value</code>, standard.</p>
+<h3 id="role_value_objective-value-of-working-a-role"><code>role_value_objective</code> — Value of working a role</h3>
+<pre class="codehilite"><code>+ Σ_{(e,r,s,d,b)}  v(r) · x[e,r,s,d,b]                    (terms with v(r) ≠ 0 only)
+</code></pre>
+
+<p>Per assignment, not per presence. Standard; inert while every <code>v(r) = 0</code>.</p>
+<h3 id="weigh_assignments_objective-conserve-existing-assignments"><code>weigh_assignments_objective</code> — Conserve Existing Assignments</h3>
+<p>With <code>ε = 2⁻¹⁰</code>:</p>
+<pre class="codehilite"><code>− ε · Σ_{(e,r,s,d,b) ∉ F}  x[e,r,s,d,b]
+</code></pre>
+
+<p>A penalty on everything the books do not have, which is a tie-break toward what they do have
+up to an additive constant. Group <code>existing_assignments</code>, non-standard.</p>
+<hr />
+<h2 id="rule-interaction-as-arithmetic">Rule interaction, as arithmetic</h2>
+<ul>
+<li><strong>Choice groups</strong> — at most one member of each may appear in a ruleset
+  (<code>BuiltinRule.check_ruleset</code>): <code>existing_assignments</code>, <code>role_binding</code>,
+  <code>workload_ceiling</code>, <code>collateral_value</code>, <code>shift_preference</code>, <code>room_coverage</code>,
+  <code>room_value_choice</code>. "None of them" is always legal.</li>
+<li><strong><code>requires</code></strong> — <code>leave_blocklist</code>, <code>use_existing_assignments</code> and both binding rules
+  require <code>warm_start</code>, because <code>fixValue()</code> pins a variable at its initial value and is a
+  silent no-op without one. <code>apply_rules</code> therefore applies specs in topological order over
+  <code>requires</code> (<code>order_specs</code>), not in the order they arrive.</li>
+<li>Rules that count somebody's workload or freeze their week key on <code>p</code>; rules that price
+  <em>what</em> is worked key on <code>x</code>.</li>
+</ul>
+</body></html>
