@@ -51,12 +51,14 @@ Two consequences of that stance, both deliberate:
   that generator would run it wrongly. Generated assignments are always `Active`
   — they are shifts the person genuinely works — and link back via
   `Shift Assignment.shift_schedule_assignment`, so the provenance is on the record.
-- `create_shifts_after` is **never moved forward**. It is the phase anchor as well
-  as the handover boundary, and moving it by less than a cycle is the upstream
-  bug. It is only ever set at least `cycle.ANCHOR_LEAD_WEEKS` in the past, pulled
-  back by whole cycles (`cycle.backdated_anchor`, the Rota Editor and the
-  `backdate_rota_anchors` patch), which keeps the phase. Idempotency comes from
-  checking what is already on the books instead, which needs no state.
+- `create_shifts_after` is **never moved, in either direction**. It is the phase
+  anchor as well as the handover boundary — moving it forward by less than a cycle
+  is the upstream bug, and moving it backward (as this app briefly did, to make a
+  pattern visible in the current week) is a claim that somebody always worked what
+  they work now. A rota is instead an **interval**: `create_shifts_after` opens it
+  and the app's own `custom_create_shifts_until` closes it, so a pattern that
+  changes is ended and succeeded rather than rewritten. Idempotency comes from
+  checking what is already on the books, which needs no state either way.
 
 Nothing here is practice-specific: which roles are binding is
 `Scheduling Role.assignments_binding`, site data (see CLAUDE.md, "App boundary").
@@ -79,7 +81,11 @@ row** (enforced there, not here).
 
 A planner confirms a pattern by editing it, which replaces it wholesale with a fresh,
 unflagged `Shift Schedule Assignment` (+ a private `Shift Schedule` backing it, tagged
-`Shift Schedule.custom_manually_edited` so the editor knows it may delete it later). An
+`Shift Schedule.custom_manually_edited` so the editor knows it may delete it later).
+Replaced is not deleted: the superseded row is **ended** at the first day of the view the
+edit was made in (`custom_create_shifts_until`) and the fresh one starts the next day, so
+the weeks somebody actually worked under the old pattern stay on the books. Only a row
+that had not begun by then is deleted, having recorded nothing. An
 employee's untouched silver patterns are confirmed as they stand with **Promote all**,
 which clears the flag in place. A shared, zawin2frappe-owned `Shift Schedule` is never
 edited or deleted, only unlinked by removing the one `Shift Schedule Assignment` row that

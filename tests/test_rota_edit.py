@@ -22,6 +22,28 @@ from autoshift.rota.edit import (
 
 MON, TUE, WED, THU, FRI, SAT, SUN = range(7)
 ANCHOR = datetime.date(2026, 8, 30)  # a Sunday
+#: An explicit view start for the tests that care where a succession lands. Most do not —
+#: they are about how changes fold into groups — and let `apply_changes` pick its own.
+VIEW = datetime.date(2026, 10, 5)  # a Monday
+ONE_DAY = datetime.timedelta(days=1)
+
+
+def plan_start(plan) -> datetime.date:
+	"""The view start a plan was folded against, read back off its own arithmetic — the
+	day after the turning point every termination names. Lets a test assert where a
+	replacement begins without having to know which Monday `apply_changes` defaulted to.
+	"""
+	return plan.terminate[0].last_day + ONE_DAY
+
+
+def superseded(plan) -> tuple[str, ...]:
+	"""Every assignment the plan replaces, however it disposes of it.
+
+	`terminate` and `delete` are one question (which patterns did this batch supersede?)
+	split by another (did that pattern have a past worth keeping?). Tests about folding
+	ask the first; the succession tests below ask the second.
+	"""
+	return tuple(sorted([t.assignment for t in plan.terminate] + list(plan.delete)))
 
 
 def rota(
@@ -35,6 +57,7 @@ def rota(
 	unconfirmed=False,
 	role=None,
 	collateral=(),
+	until=None,
 ) -> Rota:
 	return Rota(
 		assignment=name,
@@ -45,6 +68,7 @@ def rota(
 		weekdays=frozenset(weekdays),
 		cycle_weeks=cycle,
 		anchor=anchor,
+		until=until,
 		unconfirmed=unconfirmed,
 		scheduling_role=role,
 		collateral_roles=tuple(collateral),
@@ -70,12 +94,12 @@ def test_move_within_the_same_pattern_replaces_one_assignment():
 
 	plan = apply_changes([r], [change])
 
-	assert plan.delete == ("SSA1",)
+	assert superseded(plan) == ("SSA1",)
 	assert len(plan.create) == 1
 	created = plan.create[0]
 	assert created.weekdays == frozenset({TUE, FRI})
 	assert created.shift_type == "AM" and created.branch == "B1"
-	assert created.cycle_weeks == 1 and created.anchor is None
+	assert created.cycle_weeks == 1 and created.anchor == plan_start(plan) - ONE_DAY
 
 
 def test_move_across_shift_type_touches_both_patterns():
@@ -92,7 +116,7 @@ def test_move_across_shift_type_touches_both_patterns():
 
 	plan = apply_changes([am, pm], [change])
 
-	assert set(plan.delete) == {"SSA-AM", "SSA-PM"}
+	assert set(superseded(plan)) == {"SSA-AM", "SSA-PM"}
 	by_shift_type = {c.shift_type: c for c in plan.create}
 	assert by_shift_type["AM"].weekdays == frozenset({TUE})
 	assert by_shift_type["PM"].weekdays == frozenset({THU, WED})
@@ -106,7 +130,7 @@ def test_move_across_branch_carries_the_new_branch():
 
 	plan = apply_changes([r], [change])
 
-	assert plan.delete == ("SSA1",)
+	assert superseded(plan) == ("SSA1",)
 	assert plan.create[0].branch == "B2"
 	assert plan.create[0].weekdays == frozenset({TUE})
 
@@ -127,7 +151,7 @@ def test_move_onto_an_existing_pattern_merges_into_it():
 
 	plan = apply_changes([source, target], [change])
 
-	assert set(plan.delete) == {"SSA-A", "SSA-B"}
+	assert set(superseded(plan)) == {"SSA-A", "SSA-B"}
 	assert len(plan.create) == 1
 	assert plan.create[0].weekdays == frozenset({FRI, WED})
 
@@ -143,7 +167,7 @@ def test_move_preserves_multiweek_cadence_and_realigns_the_anchor():
 	assert plan.create[0].cycle_weeks == 4
 	# Recreated wholesale like every edited pattern (see the module docstring) — a
 	# different anchor date is fine as long as it resolves to the same phase-0 week.
-	assert plan.create[0].anchor == view_start - datetime.timedelta(weeks=1)
+	assert plan.create[0].anchor == view_start - ONE_DAY
 
 
 def test_move_that_nets_to_nothing_leaves_the_assignment_alone():
@@ -153,7 +177,7 @@ def test_move_that_nets_to_nothing_leaves_the_assignment_alone():
 
 	plan = apply_changes([r], [change])
 
-	assert plan.delete == ()
+	assert superseded(plan) == ()
 	assert plan.create == ()
 
 
@@ -164,7 +188,7 @@ def test_unrelated_assignment_is_never_touched():
 
 	plan = apply_changes([touched, untouched], [change])
 
-	assert plan.delete == ("SSA1",)
+	assert superseded(plan) == ("SSA1",)
 	assert len(plan.create) == 1
 	assert plan.create[0].shift_type == "AM"
 
@@ -178,7 +202,7 @@ def test_remove_the_only_day_deletes_with_no_replacement():
 
 	plan = apply_changes([r], [change])
 
-	assert plan.delete == ("SSA1",)
+	assert superseded(plan) == ("SSA1",)
 	assert plan.create == ()
 
 
@@ -188,7 +212,7 @@ def test_remove_one_of_several_days_recreates_the_rest():
 
 	plan = apply_changes([r], [change])
 
-	assert plan.delete == ("SSA1",)
+	assert superseded(plan) == ("SSA1",)
 	assert plan.create[0].weekdays == frozenset({TUE, FRI})
 
 
@@ -198,14 +222,14 @@ def test_remove_one_of_several_days_recreates_the_rest():
 def test_add_creates_a_fresh_weekly_assignment():
 	change = Change(op="add", employee="E1", company="C1", to_shift_type="AM", to_weekday=MON, to_branch="B1")
 
-	plan = apply_changes([], [change])
+	plan = apply_changes([], [change], view_start=VIEW)
 
-	assert plan.delete == ()
+	assert superseded(plan) == ()
 	assert len(plan.create) == 1
 	created = plan.create[0]
 	assert created.employee == "E1" and created.company == "C1"
 	assert created.weekdays == frozenset({MON})
-	assert created.cycle_weeks == 1 and created.anchor is None
+	assert created.cycle_weeks == 1 and created.anchor == VIEW - ONE_DAY
 
 
 def test_add_onto_an_existing_pattern_extends_it_instead_of_duplicating():
@@ -214,7 +238,7 @@ def test_add_onto_an_existing_pattern_extends_it_instead_of_duplicating():
 
 	plan = apply_changes([existing], [change])
 
-	assert plan.delete == ("SSA1",)
+	assert superseded(plan) == ("SSA1",)
 	assert plan.create[0].weekdays == frozenset({TUE, WED, FRI})
 
 
@@ -240,7 +264,7 @@ def test_a_batch_folds_changes_in_order():
 
 	plan = apply_changes([r], changes)
 
-	assert plan.delete == ("SSA1",)
+	assert superseded(plan) == ("SSA1",)
 	assert plan.create[0].weekdays == frozenset({TUE, THU})
 
 
@@ -271,7 +295,7 @@ def test_a_second_move_on_a_still_pending_chip_resolves_by_pattern_not_assignmen
 
 	plan = apply_changes([r], changes)
 
-	assert plan.delete == ("SSA1",)
+	assert superseded(plan) == ("SSA1",)
 	assert len(plan.create) == 1
 	assert plan.create[0].weekdays == frozenset({TUE, FRI})
 
@@ -284,7 +308,7 @@ def test_removing_a_still_pending_add_nets_to_nothing():
 
 	plan = apply_changes([], changes)
 
-	assert plan.delete == ()
+	assert superseded(plan) == ()
 	assert plan.create == ()
 
 
@@ -309,7 +333,7 @@ def test_a_still_pending_add_can_be_moved_to_a_different_pattern():
 
 	plan = apply_changes([], changes)
 
-	assert plan.delete == ()
+	assert superseded(plan) == ()
 	assert len(plan.create) == 1
 	created = plan.create[0]
 	assert created.shift_type == "PM" and created.branch == "B2"
@@ -340,7 +364,7 @@ def test_promote_confirms_every_silver_pattern_of_that_employee_in_place():
 	plan = apply_changes(rows, [Change(op="promote", employee="E1")])
 
 	assert plan.promote == ("S1", "S2")
-	assert plan.delete == ()
+	assert superseded(plan) == ()
 	assert plan.create == ()
 
 
@@ -355,7 +379,7 @@ def test_promote_skips_a_pattern_the_same_batch_replaces():
 
 	plan = apply_changes(rows, changes)
 
-	assert plan.delete == ("S1",)
+	assert superseded(plan) == ("S1",)
 	assert plan.promote == ("S2",)
 
 
@@ -458,12 +482,12 @@ def test_removing_one_occurrence_in_a_wider_view_promotes_the_cadence():
 
 	plan = apply_changes([r], [change], view_start=view_start, view_weeks=2)
 
-	assert plan.delete == ("SSA1",)
+	assert superseded(plan) == ("SSA1",)
 	assert len(plan.create) == 1
 	created = plan.create[0]
 	assert created.cycle_weeks == 2
 	assert created.weekdays == frozenset({FRI})
-	assert created.anchor == view_start - datetime.timedelta(weeks=1)
+	assert created.anchor == view_start - ONE_DAY
 	assert plan.cadence_changes == ("E1: AM (B1) periodicity changed from Every Week to Every 2 Weeks",)
 
 
@@ -477,10 +501,12 @@ def test_converging_a_two_week_rota_back_to_uniform_demotes_the_cadence():
 
 	plan = apply_changes([week1_only], [change], view_start=view_start, view_weeks=2)
 
-	assert plan.delete == ("SSA1",)
+	# Its first covered week *is* the view start, so it had nothing to preserve and is
+	# dropped rather than ended — see the succession tests below.
+	assert plan.delete == ("SSA1",) and plan.terminate == ()
 	assert len(plan.create) == 1
 	created = plan.create[0]
-	assert created.cycle_weeks == 1 and created.anchor is None
+	assert created.cycle_weeks == 1 and created.anchor == view_start - ONE_DAY
 	assert created.weekdays == frozenset({FRI})
 	assert plan.cadence_changes == ("E1: AM (B1) periodicity changed from Every 2 Weeks to Every Week",)
 
@@ -648,7 +674,7 @@ def test_two_roles_at_one_shift_and_branch_are_two_patterns_not_one():
 	plan = apply_changes(
 		rotas, [Change(op="move", employee="E1", from_assignment="A1", from_weekday=TUE, to_weekday=THU)]
 	)
-	assert plan.delete == ("A1",)
+	assert superseded(plan) == ("A1",)
 	assert [(sorted(n.weekdays), n.scheduling_role) for n in plan.create] == [([MON, THU], "R1")]
 
 
@@ -658,7 +684,7 @@ def test_two_collateral_duty_sets_at_one_shift_and_branch_stay_apart():
 	plan = apply_changes(
 		rotas, [Change(op="move", employee="E1", from_assignment="A2", from_weekday=TUE, to_weekday=WED)]
 	)
-	assert plan.delete == ("A2",)
+	assert superseded(plan) == ("A2",)
 	assert [(sorted(n.weekdays), n.collateral_roles) for n in plan.create] == [([WED], ())]
 
 
@@ -669,7 +695,7 @@ def test_moving_onto_a_day_another_role_already_works_does_not_merge_them():
 	plan = apply_changes(
 		rotas, [Change(op="move", employee="E1", from_assignment="A1", from_weekday=MON, to_weekday=TUE)]
 	)
-	assert plan.delete == ("A1",)
+	assert superseded(plan) == ("A1",)
 	assert [(sorted(n.weekdays), n.scheduling_role) for n in plan.create] == [([TUE], "R1")]
 
 
@@ -716,7 +742,7 @@ def test_retag_moves_one_occurrence_into_another_role():
 			)
 		],
 	)
-	assert plan.delete == ("A1",)
+	assert superseded(plan) == ("A1",)
 	assert sorted((sorted(n.weekdays), n.scheduling_role) for n in plan.create) == [
 		([MON], "R1"),
 		([TUE], "R2"),
@@ -737,7 +763,7 @@ def test_retagging_a_single_day_pattern_replaces_it_wholesale():
 			)
 		],
 	)
-	assert plan.delete == ("A1",)
+	assert superseded(plan) == ("A1",)
 	assert [(sorted(n.weekdays), n.scheduling_role, n.branch) for n in plan.create] == [([WED], "R2", "B1")]
 
 
@@ -755,7 +781,7 @@ def test_retagging_into_a_role_that_already_has_a_pattern_merges_into_it():
 			)
 		],
 	)
-	assert plan.delete == ("A1", "A2")
+	assert superseded(plan) == ("A1", "A2")
 	assert sorted((sorted(n.weekdays), n.scheduling_role) for n in plan.create) == [
 		([MON], "R1"),
 		([TUE, THU], "R2"),
@@ -859,3 +885,105 @@ def test_a_retag_in_a_wider_view_promotes_the_cadence_like_any_other_edit():
 		([MON], "R1", 2),
 		([MON], "R2", 2),
 	]
+
+
+# ── apply_changes: succession ────────────────────────────────────────────────
+
+
+def test_a_running_pattern_is_ended_at_the_view_start_not_deleted():
+	"""The bookkeeping rule: what somebody worked before the turning point stays on the
+	books, and the replacement picks up the next day."""
+	running = rota("SSA1", [TUE, WED], anchor=VIEW - datetime.timedelta(weeks=6))
+	change = Change(op="move", employee="E1", from_assignment="SSA1", from_weekday=WED, to_weekday=FRI)
+
+	plan = apply_changes([running], [change], view_start=VIEW)
+
+	assert plan.delete == ()
+	assert [(t.assignment, t.last_day) for t in plan.terminate] == [("SSA1", VIEW - ONE_DAY)]
+	assert plan.create[0].anchor == VIEW - ONE_DAY, "the successor starts where the old one ended"
+
+
+def test_a_pattern_that_has_not_started_yet_is_deleted_outright():
+	"""No day was ever generated from it, so a tombstone would record nothing."""
+	future = rota("SSA1", [TUE, WED], anchor=VIEW + datetime.timedelta(weeks=2))
+	change = Change(op="move", employee="E1", from_assignment="SSA1", from_weekday=WED, to_weekday=FRI)
+
+	plan = apply_changes([future], [change], view_start=VIEW)
+
+	assert plan.delete == ("SSA1",) and plan.terminate == ()
+
+
+def test_an_anchorless_pattern_always_has_a_past():
+	"""No handover boundary means it claims every week there has ever been."""
+	change = Change(op="move", employee="E1", from_assignment="SSA1", from_weekday=WED, to_weekday=FRI)
+
+	plan = apply_changes([rota("SSA1", [TUE, WED], anchor=None)], [change], view_start=VIEW)
+
+	assert [t.assignment for t in plan.terminate] == ["SSA1"]
+
+
+def test_a_pattern_already_ended_is_never_touched_again():
+	"""History, and outside the batch's business — which starts at the turning point."""
+	historic = rota(
+		"OLD",
+		[TUE, WED],
+		anchor=VIEW - datetime.timedelta(weeks=20),
+		until=VIEW - datetime.timedelta(weeks=8),
+	)
+	current = rota("SSA1", [TUE, WED], anchor=VIEW - datetime.timedelta(weeks=8))
+	change = Change(op="move", employee="E1", from_assignment="SSA1", from_weekday=WED, to_weekday=FRI)
+
+	plan = apply_changes([historic, current], [change], view_start=VIEW)
+
+	assert superseded(plan) == ("SSA1",)
+
+
+def test_removing_a_running_pattern_ends_it_with_no_replacement():
+	running = rota("SSA1", [WED], anchor=VIEW - datetime.timedelta(weeks=3))
+	change = Change(op="remove", employee="E1", from_assignment="SSA1", from_weekday=WED)
+
+	plan = apply_changes([running], [change], view_start=VIEW)
+
+	assert [t.assignment for t in plan.terminate] == ["SSA1"]
+	assert plan.create == ()
+	assert plan.successions == (f"E1: AM (B1) ends {(VIEW - ONE_DAY).isoformat()} and is not replaced",)
+
+
+def test_a_succession_is_stated_in_the_transcript():
+	running = rota("SSA1", [TUE, WED], anchor=VIEW - datetime.timedelta(weeks=3))
+	change = Change(op="move", employee="E1", from_assignment="SSA1", from_weekday=WED, to_weekday=FRI)
+
+	plan = apply_changes([running], [change], view_start=VIEW)
+
+	assert plan.successions == (
+		f"E1: AM (B1) ends {(VIEW - ONE_DAY).isoformat()}, replaced from {VIEW.isoformat()}",
+	)
+
+
+def test_a_multiweek_replacement_starts_each_phase_on_its_own_week():
+	"""Every phase row anchors the day before the week it covers, so none of them reaches
+	back past the turning point — the reason a phase offset cannot double as a start."""
+	running = rota("SSA1", [MON], anchor=VIEW - datetime.timedelta(weeks=4))
+	change = Change(
+		op="add", employee="E1", company="C1", to_shift_type="AM", to_branch="B1", to_weekday=WED, to_phase=1
+	)
+
+	plan = apply_changes([running], [change], view_start=VIEW, view_weeks=2)
+
+	anchors = sorted(n.anchor for n in plan.create)
+	assert anchors == [VIEW - ONE_DAY, VIEW + datetime.timedelta(weeks=1) - ONE_DAY]
+	assert all(n.cycle_weeks == 2 for n in plan.create)
+	assert min(anchors) == plan.terminate[0].last_day
+
+
+def test_retroactive_is_set_only_when_the_view_starts_before_today():
+	running = rota("SSA1", [TUE, WED], anchor=VIEW - datetime.timedelta(weeks=3))
+	change = Change(op="move", employee="E1", from_assignment="SSA1", from_weekday=WED, to_weekday=FRI)
+
+	def plan_on(today):
+		return apply_changes([running], [change], view_start=VIEW, today=today)
+
+	assert plan_on(VIEW + datetime.timedelta(days=1)).retroactive is True
+	assert plan_on(VIEW).retroactive is False
+	assert plan_on(VIEW - datetime.timedelta(days=1)).retroactive is False
+	assert plan_on(None).retroactive is False

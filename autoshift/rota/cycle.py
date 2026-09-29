@@ -11,16 +11,19 @@ this the day upstream fixes it.
 The rule, stated once:
 
     a Shift Schedule covers the weekdays in `repeat_on_days`, in one week out of
-    every `cycle_weeks`, counting weeks from the one after `create_shifts_after`.
+    every `cycle_weeks`, counting weeks from the one after `create_shifts_after`,
+    and stops after `custom_create_shifts_until`.
 
 `create_shifts_after` is both the **handover boundary** — everything up to and
 including it belongs to whoever wrote the records already on the books, and
 nothing is generated on or before it — and the **phase anchor** for a rota.
 HRMS's generator moves it forward as it goes, by less than a cycle, and that is
-precisely the bug. This app only ever moves it *back*, and only by whole cycles
-(:func:`backdated_anchor`), which leaves the phase untouched: a rota whose
-boundary sits in the future is otherwise simply absent from the weeks before it,
-which the optimizer and the wall chart both read.
+precisely the bug. **This app never moves it at all.** A pattern that changes is
+ended (`custom_create_shifts_until`) and succeeded by a new row starting the next
+day, which is the only way a date field doing double duty as a phase carrier can
+also be a truthful record of when something took effect: move it and you either
+lose the phase or rewrite history. See `autoshift.rota.edit` for the succession
+rule and the design notes for what this replaced.
 
 One deliberate divergence: weeks here are ISO weeks (Monday-based), where
 `create_shifts` chops arbitrary seven-day blocks off whatever date it was handed.
@@ -85,6 +88,11 @@ class Rota:
 	#: schedule has no boundary — every week in the window is fair game and a
 	#: rota's phase falls back to the window's own first week.
 	anchor: datetime.date | None = None
+	#: `custom_create_shifts_until`: the last day the pattern is in force, None meaning
+	#: open-ended. Together with :attr:`anchor` this makes a rota an **interval**,
+	#: `(anchor, until]`, which is what lets a superseded pattern be ended rather than
+	#: rewritten or deleted — see `autoshift.rota.edit` for the succession rule.
+	until: datetime.date | None = None
 	#: `custom_unconfirmed`: an importer inferred this pattern and nobody has confirmed
 	#: it yet (silver standard). Never changes which days it covers.
 	unconfirmed: bool = False
@@ -124,8 +132,9 @@ def first_covered_week(rota: Rota, window_start: datetime.date) -> datetime.date
 def occurrences(rota: Rota, first: datetime.date, last: datetime.date) -> list[datetime.date]:
 	"""The days in `[first, last]` this rota puts the employee on `rota.shift_type`.
 
-	Empty when the window falls entirely on or before the handover boundary: the
-	records covering those days are somebody else's to write.
+	Empty when the window falls entirely outside the rota's own interval — on or before
+	the handover boundary, where the records are somebody else's to write, or after
+	:attr:`Rota.until`, where a successor pattern has taken over.
 	"""
 	if not rota.weekdays or last < first:
 		return []
@@ -134,6 +143,8 @@ def occurrences(rota: Rota, first: datetime.date, last: datetime.date) -> list[d
 	start = first
 	if rota.anchor is not None:
 		start = max(start, rota.anchor + datetime.timedelta(days=1))
+	if rota.until is not None:
+		last = min(last, rota.until)
 	if start > last:
 		return []
 
@@ -150,8 +161,16 @@ def occurrences(rota: Rota, first: datetime.date, last: datetime.date) -> list[d
 	return days
 
 
-#: How far before today a rota's anchor must lie, so a pattern always covers the
-#: weeks immediately around now — the ones the wall chart and a solve look at first.
+#: How far before today a rota's anchor was once forced to lie, so a pattern always
+#: covered the weeks immediately around now.
+#:
+#: **Historical.** Nothing calls this on new data any more: an anchor is a record of
+#: when a pattern started, and pulling it back to make the pattern *visible* was a
+#: bookkeeping lie that also back-filled weeks the person worked differently. The
+#: Rota Editor now anchors a created pattern at the view it was laid out in and ends
+#: its predecessor there; a pattern starting after the window on screen is surfaced as
+#: a prompt instead of being silently dragged backwards. Retained only because
+#: `patches.backdate_rota_anchors` already ran with it on every existing site.
 ANCHOR_LEAD_WEEKS = 4
 
 
@@ -164,6 +183,9 @@ def backdated_anchor(
 	counts from moves by a multiple of `cycle_weeks` weeks, so every later week lands
 	on the same phase it did. Only the handover boundary moves, and only earlier.
 	An anchor already early enough, or none at all, is returned unchanged.
+
+	**Historical** — see :data:`ANCHOR_LEAD_WEEKS`. Live only through the patch that
+	already ran; no current write path calls it.
 	"""
 	if anchor is None or anchor <= not_after:
 		return anchor
@@ -173,5 +195,5 @@ def backdated_anchor(
 
 
 def anchor_cutoff(today: datetime.date) -> datetime.date:
-	"""The latest anchor :func:`backdated_anchor` lets stand, as of `today`."""
+	"""The latest anchor :func:`backdated_anchor` lets stand, as of `today`. Historical."""
 	return today - datetime.timedelta(weeks=ANCHOR_LEAD_WEEKS)

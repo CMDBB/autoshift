@@ -653,6 +653,108 @@ double-booking on an unfamiliar shift invisible rather than merely uneditable.
 
 ---
 
+## A rota is an interval, and a changed pattern is succeeded rather than rewritten (2026-09-29)
+
+`Shift Schedule Assignment` has one date on it, `create_shifts_after`, and it carries two
+facts: **when the pattern started** (everything up to it belongs to whoever wrote the records
+already on the books) and **what phase it is in** (`cycle.first_covered_week` counts from the
+week after it, which is how several same-cadence rows sit at different offsets). Two facts,
+one field.
+
+That overload is what produced the bug this note replaces. A pattern whose anchor sat in the
+future was simply absent from the weeks a planner and a solve look at first, so the app pulled
+the anchor *backwards* by whole cycles — `cycle.backdated_anchor`, applied by the editor on
+every create and once to existing rows by `patches.backdate_rota_anchors`. Whole cycles keep
+the phase exactly, so as a rendering trick it worked. As bookkeeping it was false in two ways:
+the record then claimed a pattern had been in force since before it was agreed, and
+`materialize` would back-fill `Shift Assignment`s for weeks the person had actually worked
+differently (mitigated only by `_covered` skipping days a record already existed for, which
+says nothing about weeks that were simply never recorded). Applying an edit then
+`frappe.delete_doc`'d the superseded row outright, so even a correct anchor left no trace of
+what came before.
+
+Upstream agrees, for what it is worth: `ShiftScheduleAssignment.validate` throws if
+`create_shifts_after` changes on a row that already has `Shift Assignment`s past the new date.
+The patch only got away with it by writing through `frappe.db.set_value`, which skips
+`validate`.
+
+**The fix is a second date, not a cleverer use of the first.** A rota now runs over
+`(create_shifts_after, custom_create_shifts_until]`. A pattern that changes is *ended* on the
+day before the turning point and a fresh row starts on it; `create_shifts_after` is written
+once, at insert, and never touched again.
+
+### Why the end has to be stored
+
+The obvious economy is to skip the custom field and read each row's end off its successor's
+start, the way `Holiday List Assignment` works — `from_date <= as_on`, latest wins, no end
+date anywhere. It does not survive contact with the phase overload:
+
+- An employee has **one** applicable holiday list at a time, so for HLA "the next one" is
+  well defined. They have **many** concurrent SSAs, so succession has to be keyed on
+  something — `edit.group_key` is the natural candidate.
+- But a cadence longer than a week is *one row per phase within the same key*, and those rows
+  deliberately carry **different** anchors a week apart. Under "end = the next
+  `create_shifts_after` in this key", a fortnightly pattern's phase-1 row terminates its own
+  phase-0 sibling one week in. The rule needs the start date to be a clean generation
+  boundary; it is a phase offset.
+- Nothing supersedes a pattern that is simply **removed**, and nothing in the old key
+  supersedes one that is **retagged** or moved to another branch (both change `group_key`).
+  HLA never meets this case because an employee always has *some* holiday list.
+
+Three ways round it were considered and rejected. A weekday-less **marker row** at each
+boundary works uniformly (only markers terminate, phase rows do not) but
+`Shift Schedule.repeat_on_days` is `reqd = 1`, so it inserts only with `ignore_mandatory` or a
+weekday that is a lie, and it costs an extra SSA + Shift Schedule per edited pattern per edit.
+Moving **phase into its own field** is still a custom field, and a worse one — an Int with no
+meaning outside our arithmetic, against a Date any HR user can read. Restricting to **weekly
+cycles** is the one thing this package exists to avoid.
+
+So: `custom_create_shifts_until`, autoshift-owned, blank meaning open-ended. It is less of an
+invention than it looks — `ShiftScheduleAssignment.create_shifts(start_date, end_date=None)`
+already accepts an end; the doctype simply never stored one.
+
+### The turning point is the view, even when the view is in the past
+
+`edit.apply_changes` ends every superseded row at `view_start - 1 day` and starts every
+replacement at `view_start`, because the window on screen is how a planner says *which weeks
+they mean*. Editing a window that has already passed therefore really does rewrite from that
+date. That is deliberate: correcting a pattern that was wrong last month is a real thing to
+want, and the alternatives (clamping silently forward, or refusing) either lie about what the
+edit did or remove the only retroactive-correction path there is. `EditPlan.retroactive` says
+when it is happening, the editor's Apply dialog says so before the fact and `apply_draft`
+`msgprint`s it after.
+
+Two consequences fall out of the same rule:
+
+- **A row with no past is deleted, not ended.** It never generated a day, so a tombstone for
+  it records nothing. `edit._runs_before` asks the question of the rota's own arithmetic
+  rather than of the books, because a pattern that was in force and happened to generate
+  nothing (a fortnight of leave) is still a true statement about what was arranged.
+- **A row that already ended before the turning point is left out of grouping entirely**, so
+  no later edit can end or delete it a second time.
+
+`_phase_anchor` is now set for **every** cadence, weekly included. It used to be `None` for a
+weekly pattern — harmless when nothing was ever ended, since a rota claiming every week there
+has ever been overlapped nothing. Once it supersedes a predecessor on a specific day it has to
+start there, so the anchor is the day before its own first week (a Sunday, `view_start` being a
+Monday — which is also the alignment zawin2frappe's phase anchoring produces).
+
+`cycle.backdated_anchor` / `anchor_cutoff` / `ANCHOR_LEAD_WEEKS` survive as dead-but-documented
+code: `patches.backdate_rota_anchors` already ran with them on every existing site. The
+anchors it moved are **not** restored — there is no record of what they were, so everything
+before today is one epoch and correctness starts here.
+
+### What this does not solve yet
+
+A pattern anchored after the window on screen is now genuinely absent from it instead of being
+dragged backwards, and there is not yet a prompt offering to start it earlier ("an SSA exists
+for a future date but not for the displayed window — push it back?"). Editor-created rows are
+anchored at the view they were laid out in, so they are visible by construction; the gap shows
+up only for rows an importer wrote with a future anchor. Filed as a follow-up, not a
+regression.
+
+---
+
 ## Optimizer Studio: a failing ruleset should be unreachable, not rejected
 
 The rule-toggle panel is designed so all three of `check_ruleset`'s failure modes are

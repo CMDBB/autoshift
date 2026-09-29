@@ -167,6 +167,12 @@ class RoleContext:
 def load_rotas(employees: set[str] | None = None, roles: "RoleContext | None" = None) -> list[Rota]:
 	"""Every Shift Schedule Assignment for `employees`, joined to its schedule.
 
+	**Every one**, superseded ones included: a row ended by
+	`custom_create_shifts_until` is still the truth about the weeks it ran, and
+	`cycle.occurrences` clips it to them. Callers wanting only what is in force now
+	filter on the dates; nobody filters here, because "now" is not a fact this
+	function has.
+
 	`enabled` and `shift_status` are deliberately not filtered on — see the
 	package docstring. A schedule that never got submitted is skipped, because an
 	unsubmitted rule is one nobody has agreed to yet.
@@ -197,6 +203,7 @@ def load_rotas(employees: set[str] | None = None, roles: "RoleContext | None" = 
 			"shift_schedule",
 			"shift_location",
 			"create_shifts_after",
+			"custom_create_shifts_until",
 			"custom_unconfirmed",
 			"custom_scheduling_role",
 		],
@@ -253,6 +260,7 @@ def load_rotas(employees: set[str] | None = None, roles: "RoleContext | None" = 
 				weekdays=frozenset(days_by_schedule.get(schedule.name, ())),
 				cycle_weeks=cycle,
 				anchor=_getdate(row.create_shifts_after),
+				until=_getdate(row.custom_create_shifts_until),
 				unconfirmed=bool(row.custom_unconfirmed),
 				scheduling_role=role,
 				collateral_roles=tuple(collateral.get(row.name, ())),

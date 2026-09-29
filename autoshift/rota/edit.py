@@ -18,6 +18,26 @@ if this app created it (`Shift Schedule.custom_manually_edited`) — a shared,
 zawin2frappe-owned schedule is never touched, only unlinked (the one `Shift Schedule
 Assignment` row pointing at it for this employee is what changes).
 
+**A superseded pattern is ended, not deleted.** The turning point is the first day of the
+view the edit was made in (`view_start`): every source row that was already running before
+it is *terminated* there (`EditPlan.terminate` -> `custom_create_shifts_until`), and the
+replacement starts the next day. What somebody worked last year therefore stays on the
+books, readable and expandable, instead of being replaced by a claim that they always
+worked what they work now. Only a row with no life before the turning point is deleted
+outright (`EditPlan.delete`): it never generated a day, so a tombstone for it says nothing.
+
+That rule is why `create_shifts_after` is never moved. It carries the pattern's phase as
+well as its start (see `_phase_anchor`), so it cannot also absorb "and now it means
+something else from here" — moving it either loses the phase or rewrites when the pattern
+began. Ending the old row and starting a new one keeps both facts true, and is the same
+shape HRMS's own `Holiday List Assignment` uses, minus the end date it gets for free from
+being single-valued per employee.
+
+Editing a view that **starts in the past** therefore really does rewrite from that date —
+the turning point is wherever the planner is looking, on the principle that what you see is
+what you change. `EditPlan.retroactive` says when that is happening so the caller can say
+so out loud.
+
 The one edit that replaces nothing is a "promote": it confirms every silver pattern one
 employee still has, as they stand, by clearing the flag in place (`EditPlan.promote`).
 
@@ -45,7 +65,7 @@ import datetime
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from .cycle import FREQUENCY_LABEL, WEEKDAY_LABEL, Rota, occurrences
+from .cycle import FREQUENCY_LABEL, WEEKDAY_LABEL, Rota, monday_of, occurrences
 
 
 def weekday_range_label(weekdays: Iterable[int]) -> str:
@@ -153,26 +173,54 @@ class NewAssignment:
 
 
 @dataclass(frozen=True)
+class Termination:
+	"""One superseded `Shift Schedule Assignment`, and the last day it stays in force.
+
+	Applied as `custom_create_shifts_until = last_day`; the row is otherwise left exactly
+	as it is, so the pattern it describes keeps expanding correctly over every week it
+	actually ran.
+	"""
+
+	assignment: str
+	last_day: datetime.date
+
+
+@dataclass(frozen=True)
 class EditPlan:
-	"""What a batch of `Change`s resolves to: assignments to delete, and their
+	"""What a batch of `Change`s resolves to: assignments to end or delete, and their
 	replacements to create. An assignment untouched by any change, and one whose net
-	effect is a no-op (e.g. a move immediately undone), appears in neither list.
+	effect is a no-op (e.g. a move immediately undone), appears in none of the lists.
+
+	`terminate` and `delete` split the superseded rows by whether they have a past to
+	keep (see the module docstring): a row already running before the turning point is
+	ended there, one that had not started yet is removed. Every source row of a changed
+	group lands in exactly one of the two.
 
 	`promote` lists silver assignments to confirm in place, i.e. to keep exactly as they are
 	but clear `custom_unconfirmed` on. It never names an assignment that is also in
-	`delete`: that one is being replaced, and every replacement is gold anyway.
+	`terminate` or `delete`: that one is being superseded, and every replacement is gold
+	anyway.
 
-	`cadence_changes` is separate from all three: informational lines for a pattern whose
-	*cadence* moved as a side effect of folding the batch (a 1-week rota that just
-	picked up a second, differing phase; or one that converged back to weekly) — see the
-	module docstring. Never itself a reason to delete or create anything beyond what the
-	`delete`/`create` lists already say.
+	`cadence_changes` and `successions` are informational, and never themselves a reason
+	to end, delete or create anything beyond what the lists above already say.
+	`cadence_changes` covers a pattern whose *cadence* moved as a side effect of folding
+	the batch (a 1-week rota that just picked up a second, differing phase; or one that
+	converged back to weekly) — see the module docstring. `successions` states each
+	ending in the transcript's own terms, because "this pattern stops on the 4th and
+	another starts on the 5th" is a fact about the books that no single staged change
+	mentions.
+
+	`retroactive` is set when the turning point is in the past — see the module
+	docstring. Purely a flag to warn on; it changes nothing about the plan.
 	"""
 
 	delete: tuple[str, ...] = ()
 	create: tuple[NewAssignment, ...] = ()
 	promote: tuple[str, ...] = ()
 	cadence_changes: tuple[str, ...] = ()
+	terminate: tuple[Termination, ...] = ()
+	successions: tuple[str, ...] = ()
+	retroactive: bool = False
 
 
 def _divisors(n: int) -> list[int]:
@@ -194,12 +242,43 @@ def minimal_cycle(phases: dict[int, frozenset[int]], view_weeks: int) -> int:
 
 
 def _phase_anchor(view_start: datetime.date, phase: int) -> datetime.date:
-	"""`create_shifts_after` for a freshly created phase-`phase` row, anchored against
-	the editor's current view: the Monday one week before `view_start`'s own phase-`phase`
-	week, so `cycle.first_covered_week` resolves back to exactly that week. Only called
-	for `cycle_weeks > 1` — a weekly pattern needs no anchor, see `minimal_cycle`.
+	"""`create_shifts_after` for a freshly created phase-`phase` row, anchored against the
+	editor's current view: the day before that phase's own first week, so
+	`cycle.first_covered_week` resolves back to exactly that week — `view_start` is a
+	Monday, so this is the Sunday before it, which is also the alignment zawin2frappe's
+	own phase anchoring produces (see `cycle`'s module docstring).
+
+	Set for **every** cadence, weekly included, which is the difference succession makes.
+	A weekly row used to be created with no anchor at all, because with nothing ever
+	being ended there was no harm in a pattern claiming to run since the beginning of
+	time; now that it supersedes a predecessor on a specific day, it has to start there
+	and not before, or the two overlap across the whole of history.
 	"""
-	return view_start + datetime.timedelta(weeks=phase - 1)
+	return view_start + datetime.timedelta(weeks=phase) - datetime.timedelta(days=1)
+
+
+def _runs_before(rota: Rota, day: datetime.date) -> bool:
+	"""Was this pattern already in force at some point before `day`?
+
+	The question that decides whether a superseded row is ended or deleted: a row with a
+	past is a record of weeks somebody actually worked, a row without one is a plan that
+	never happened. Answered from the rota's own start rather than from the books,
+	because a pattern that was in force and generated nothing (a week fully covered by
+	leave, say) is still a true statement about what was arranged.
+
+	A rota with no handover boundary at all claims every week there has ever been, so it
+	always has a past.
+	"""
+	if not rota.weekdays:
+		return False
+	if rota.anchor is None:
+		return True
+	# The earliest day it can reach: the Monday of its first covered week, and never
+	# on or before the boundary itself.
+	start = max(
+		monday_of(rota.anchor) + datetime.timedelta(weeks=1), rota.anchor + datetime.timedelta(days=1)
+	)
+	return start < day
 
 
 def group_key(
@@ -280,15 +359,22 @@ def apply_changes(
 	changes: Iterable[Change],
 	view_start: datetime.date | None = None,
 	view_weeks: int = 1,
+	today: datetime.date | None = None,
 ) -> EditPlan:
 	"""Fold a batch of `Change`s onto the current `Rota`s, and say what must change in
 	the DB to match.
 
 	`view_start`/`view_weeks` are the editor's current view — the window every `Change`'s
 	`from_phase`/`to_phase` is relative to, and the span `minimal_cycle` resamples a
-	group's actual weekday-per-week content over. `view_start` may be omitted (any Monday
-	will do) when every touched pattern is, and stays, weekly: a cadence that never
-	exceeds one week is invariant to which week you sample it from.
+	group's actual weekday-per-week content over. `view_start` is also **the turning
+	point**: every superseded row runs to the day before it and every replacement starts
+	on it (see the module docstring). It may be omitted (any Monday will do) when every
+	touched pattern is, and stays, weekly *and* nothing needs ending — a cadence that
+	never exceeds one week is invariant to which week you sample it from, but the date a
+	succession happens on is not, so a real caller always passes one.
+
+	`today` only decides `EditPlan.retroactive`; omitted, the plan simply never claims to
+	be rewriting the past.
 
 	A "group" is the unit a single `Shift Schedule Assignment` can represent — one
 	:func:`group_key`, though a cadence wider than one week needs one row per phase.
@@ -306,6 +392,12 @@ def apply_changes(
 	by_name = {r.assignment: r for r in rotas}
 	by_key: dict[tuple, list[Rota]] = {}
 	for r in rotas:
+		if r.until is not None and r.until < view_start:
+			# Already ended before the turning point: history, and this batch's business
+			# starts at `view_start`. Left out of `sources` so no edit can end or delete
+			# it a second time. It contributes no occurrences to the view either, so the
+			# phase resampling below is unaffected by the omission.
+			continue
 		by_key.setdefault(rota_key(r), []).append(r)
 
 	def week_bounds(phase: int) -> tuple[datetime.date, datetime.date]:
@@ -386,15 +478,27 @@ def apply_changes(
 			dst.company = dst.company or change.company
 
 	deletes: list[str] = []
+	terminations: list[Termination] = []
 	creates: list[NewAssignment] = []
 	cadence_changes: list[str] = []
+	successions: list[str] = []
+	last_day = view_start - datetime.timedelta(days=1)
 
 	for group in groups.values():
 		final_phases = {p: frozenset(s) for p, s in group.phases.items()}
 		if final_phases == group.original_phases:
 			continue  # net no-op — e.g. a move immediately undone
 
-		deletes.extend(group.sources)
+		ended: list[str] = []
+		for name in sorted(group.sources):
+			source = by_name.get(name)
+			if source is not None and _runs_before(source, view_start):
+				terminations.append(Termination(assignment=name, last_day=last_day))
+				ended.append(name)
+			else:
+				# Never ran a day before the turning point, and everything from the
+				# turning point on is what this plan is replacing: nothing to preserve.
+				deletes.append(name)
 
 		had_content = any(group.original_phases.values())
 		has_content = any(final_phases.values())
@@ -418,11 +522,17 @@ def apply_changes(
 						branch=group.branch,
 						weekdays=weekdays,
 						cycle_weeks=new_cycle,
-						anchor=_phase_anchor(view_start, phase) if new_cycle > 1 else None,
+						anchor=_phase_anchor(view_start, phase),
 						scheduling_role=group.scheduling_role,
 						collateral_roles=group.collateral_roles,
 					)
 				)
+
+		if ended:
+			successions.append(
+				f"{group.employee}: {group.label()} ends {last_day.isoformat()}"
+				+ (f", replaced from {view_start.isoformat()}" if has_content else " and is not replaced")
+			)
 
 		if had_content and has_content:
 			old_cycle = minimal_cycle(group.original_phases, view_weeks)
@@ -432,7 +542,7 @@ def apply_changes(
 					f"{_cadence_label(old_cycle)} to {_cadence_label(new_cycle)}"
 				)
 
-	replaced = set(deletes)
+	replaced = set(deletes) | {t.assignment for t in terminations}
 	promote = sorted(
 		r.assignment
 		for r in rotas
@@ -444,6 +554,9 @@ def apply_changes(
 		create=tuple(creates),
 		promote=tuple(promote),
 		cadence_changes=tuple(cadence_changes),
+		terminate=tuple(sorted(terminations, key=lambda t: t.assignment)),
+		successions=tuple(successions),
+		retroactive=today is not None and view_start < today,
 	)
 
 

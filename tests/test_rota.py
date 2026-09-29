@@ -38,7 +38,7 @@ WEEK_5 = WEEK_1 + datetime.timedelta(weeks=4)
 ANCHOR = WEEK_1 - datetime.timedelta(days=1)
 
 
-def rota(weekdays, cycle=1, anchor=ANCHOR, shift_type="AM") -> Rota:
+def rota(weekdays, cycle=1, anchor=ANCHOR, shift_type="AM", until=None) -> Rota:
 	return Rota(
 		assignment="SSA1",
 		employee="E1",
@@ -48,6 +48,7 @@ def rota(weekdays, cycle=1, anchor=ANCHOR, shift_type="AM") -> Rota:
 		weekdays=frozenset(weekdays),
 		cycle_weeks=cycle,
 		anchor=anchor,
+		until=until,
 	)
 
 
@@ -204,3 +205,39 @@ def test_an_anchor_already_early_enough_is_left_alone():
 def test_the_cutoff_leaves_four_weeks_before_today():
 	today = WEEK_3 + datetime.timedelta(days=2)
 	assert anchor_cutoff(today) == today - datetime.timedelta(weeks=4)
+
+
+# ── the interval: create_shifts_after .. custom_create_shifts_until ──────────
+
+
+def test_a_rota_stops_after_its_end_date():
+	"""A superseded pattern keeps describing the weeks it ran and none after — which is
+	what lets the Rota Editor end one rather than rewrite or delete it."""
+	window_end = WEEK_5 + datetime.timedelta(days=6)
+	open_ended = occurrences(rota([MON, WED]), WEEK_1, window_end)
+	ended = occurrences(rota([MON, WED], until=WEEK_3 - datetime.timedelta(days=1)), WEEK_1, window_end)
+
+	assert ended == [day for day in open_ended if day < WEEK_3]
+	assert weeks_of(ended) == [WEEK_1, WEEK_2]
+
+
+def test_an_end_date_mid_week_cuts_that_week_short():
+	"""The end is a day, not a week: a pattern ended on Tuesday worked that Tuesday."""
+	days = occurrences(rota([MON, WED, FRI], until=WEEK_1 + datetime.timedelta(days=2)), WEEK_1, WEEK_3)
+
+	assert days == [WEEK_1, WEEK_1 + datetime.timedelta(days=2)]
+
+
+def test_a_rota_ended_before_the_window_covers_nothing():
+	assert occurrences(rota([MON, WED], until=ANCHOR), WEEK_1, WEEK_5) == []
+
+
+def test_an_end_date_never_changes_the_phase():
+	"""Ending a 4-week rota clips its days; it does not re-anchor the ones that remain,
+	which is exactly what moving `create_shifts_after` instead would have done."""
+	window_end = WEEK_5 + datetime.timedelta(weeks=8)
+	full = occurrences(rota([TUE], cycle=4), WEEK_1, window_end)
+	clipped = occurrences(rota([TUE], cycle=4, until=WEEK_5 + datetime.timedelta(days=6)), WEEK_1, window_end)
+
+	assert clipped == [day for day in full if day <= WEEK_5 + datetime.timedelta(days=6)]
+	assert len(clipped) == 2  # week 1 and week 5, the phase untouched

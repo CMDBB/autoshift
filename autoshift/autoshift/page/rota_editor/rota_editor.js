@@ -86,6 +86,7 @@ function inject_rota_editor_styles() {
 			background: transparent !important; padding-top: 0.6rem; text-align: left;
 		}
 		.rota-editor .re-periodicity-notes { color: var(--orange-600, #b35900); }
+		.rota-editor .re-succession-notes { color: var(--text-muted); }
 		.rota-editor .re-trash {
 			display: inline-block; margin: 0.5rem 0; padding: 0.4rem 0.8rem;
 			border: 1px dashed var(--border-color); border-radius: var(--border-radius-md);
@@ -884,7 +885,8 @@ autoshift.RotaEditor = class RotaEditor {
 		const $t = this.$body.find(".re-transcript");
 		const changes = this.state.pending_changes || [];
 		const notes = this.state.periodicity_notes || [];
-		if (!changes.length && !notes.length) {
+		const successions = this.state.succession_notes || [];
+		if (!changes.length && !notes.length && !successions.length) {
 			$t.html(`<div class="text-muted">${__("No pending edits.")}</div>`);
 			return;
 		}
@@ -903,6 +905,16 @@ autoshift.RotaEditor = class RotaEditor {
 					.map((n) => `<li>${frappe.utils.escape_html(n)}</li>`)
 					.join("")}</ul>`;
 		}
+		// What Apply does to the books rather than to the week on screen: a superseded
+		// pattern is ended on the day before this view starts and a successor takes over,
+		// so last year's rota stays readable. Derived server-side, never stored.
+		if (successions.length) {
+			html +=
+				`<div class="re-transcript-title">${__("Pattern changes")}</div>` +
+				`<ul class="re-succession-notes">${successions
+					.map((n) => `<li>${frappe.utils.escape_html(n)}</li>`)
+					.join("")}</ul>`;
+		}
 		$t.html(html);
 	}
 
@@ -917,8 +929,17 @@ autoshift.RotaEditor = class RotaEditor {
 		const list = changes
 			.map((c) => `<li>${frappe.utils.escape_html(c.description)}</li>`)
 			.join("");
+		// The turning point is this view's own first day, so editing a window that has
+		// already passed really does rewrite from there. Said before Apply, not after.
+		const from = frappe.datetime.str_to_user(this.state.turning_point);
+		const effect = this.state.retroactive
+			? `<p class="text-warning">${__(
+					"These take effect from {0}, which has already passed. Weeks before it keep the patterns they were worked under.",
+					[from]
+			  )}</p>`
+			: `<p class="text-muted">${__("Taking effect from {0}.", [from])}</p>`;
 		frappe.confirm(
-			`<p>${__("Apply {0} staged edit(s)?", [changes.length])}</p><ul>${list}</ul>`,
+			`<p>${__("Apply {0} staged edit(s)?", [changes.length])}</p><ul>${list}</ul>${effect}`,
 			() => {
 				frappe
 					.call({
@@ -933,9 +954,9 @@ autoshift.RotaEditor = class RotaEditor {
 					})
 					.then(({ message }) => {
 						frappe.show_alert({
-							message: __("Created {0}, replaced {1}, confirmed {2}.", [
+							message: __("Created {0}, ended {1}, confirmed {2}.", [
 								message.created,
-								message.deleted,
+								message.ended + message.deleted,
 								message.confirmed,
 							]),
 							indicator: "green",

@@ -39,6 +39,7 @@ Three apps split the responsibility; keep them separate.
 - **Custom field ownership.** This app owns (module `Autoshift`, in
   `autoshift/fixtures/custom_field.json`): `Shift Location.custom_discipline`,
   `Shift Location.custom_branch`, `Employee.custom_fte`, `Shift Schedule Assignment.custom_unconfirmed`,
+  `Shift Schedule Assignment.custom_create_shifts_until`,
   `Shift Schedule.custom_manually_edited`, and — on both `Shift Assignment` and
   `Shift Schedule Assignment` — `custom_scheduling_role` (Link) plus `custom_collateral_roles`
   (Table MultiSelect over the **Collateral Scheduling Role** child doctype). `zawin2frappe` owns
@@ -475,10 +476,13 @@ package is deleted.
 
 - `cycle.py` — Frappe-free (`Rota` + `occurrences`, `tests/test_rota.py`). Weekdays in
   `repeat_on_days`, one week in every `cycle_weeks`, counting from the week after
-  `create_shifts_after`. Weeks are ISO (Monday-based). `backdated_anchor` pulls an anchor
-  back by whole cycles (phase kept) to at least `ANCHOR_LEAD_WEEKS` (4) before today; the
-  editor applies it to every anchor it writes, and the `backdate_rota_anchors` patch did it
-  once to existing `enabled = 0` rows (never enabled ones: HRMS would back-fill them).
+  `create_shifts_after`, stopping after `custom_create_shifts_until`. Weeks are ISO
+  (Monday-based). **A rota is an interval** — `create_shifts_after` is written once and
+  never moved, in either direction, because it carries the phase as well as the start.
+  `backdated_anchor`/`anchor_cutoff`/`ANCHOR_LEAD_WEEKS` are **historical**: nothing calls
+  them on new data, they survive only because `backdate_rota_anchors` already ran with them
+  (on `enabled = 0` rows only — HRMS would back-fill enabled ones). Those anchors are not
+  restored; everything before today is one epoch. See design notes.
 - `materialize.py` — `pending` / `materialize`. Records carry the rota's own
   `custom_scheduling_role` and `custom_collateral_roles`, which is why it builds the
   `Shift Assignment` itself rather than calling HRMS's `create_shift_assignment`: the role
@@ -511,6 +515,16 @@ package is deleted.
 - **Promote all** (per employee) stages a `promote` `Change`; `EditPlan.promote` lists that
   employee's silver assignments not already being replaced, and Apply clears the flag in
   place. Silver chips draw with a grey dotted border (`re-chip-unconfirmed`).
+- **A superseded pattern is ended, not deleted.** The turning point is the first day of the
+  view the edit was made in: every source row already running then gets
+  `custom_create_shifts_until = view_start - 1` (`EditPlan.terminate`) and its replacement
+  starts on `view_start`; a row that had not begun is deleted (`EditPlan.delete`), having
+  recorded nothing. `edit._runs_before` decides which, off the rota's own arithmetic rather
+  than the books. Editing a past window genuinely rewrites from that date —
+  `EditPlan.retroactive` drives a warning in the Apply dialog and an `apply_draft` msgprint,
+  not a refusal. `EditPlan.successions` states each ending in the transcript ("Pattern
+  changes"), recomputed like `cadence_changes` and never stored. Deriving the end from the
+  successor's `create_shifts_after` instead does **not** work — see design notes.
 - **The role is part of a pattern's identity, and a `move` never changes it.**
   `edit.group_key` is `(employee, shift_type, branch, scheduling_role, collateral_roles)` —
   `Shift Schedule Assignment.custom_scheduling_role` is single-valued, so two differently-roled

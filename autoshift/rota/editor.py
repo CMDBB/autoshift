@@ -29,8 +29,6 @@ from .cycle import (
 	WEEKDAY_INDEX,
 	WEEKDAY_LABEL,
 	Rota,
-	anchor_cutoff,
-	backdated_anchor,
 	monday_of,
 	occurrences,
 )
@@ -189,20 +187,12 @@ def _rotas_by_branch(employees: list[str], roles: materialize.RoleContext | None
 				"Shift Location", filters={"name": ["in", list(locations)]}, fields=["name", "custom_branch"]
 			)
 		}
+	# `replace` rather than a field-by-field rebuild: the branch is the only thing
+	# changing, and a copy that has to list every field silently drops the next one added.
 	return [
-		Rota(
-			assignment=r.assignment,
-			employee=r.employee,
-			company=r.company,
-			shift_type=r.shift_type,
-			shift_location=branch_of.get(r.shift_location, r.shift_location) if r.shift_location else None,
-			weekdays=r.weekdays,
-			cycle_weeks=r.cycle_weeks,
-			anchor=r.anchor,
-			unconfirmed=r.unconfirmed,
-			scheduling_role=r.scheduling_role,
-			collateral_roles=r.collateral_roles,
-			discipline=r.discipline,
+		dataclasses.replace(
+			r,
+			shift_location=(branch_of.get(r.shift_location, r.shift_location) if r.shift_location else None),
 		)
 		for r in rotas
 	]
@@ -297,6 +287,10 @@ def _view_start(start) -> datetime.date:
 	return monday_of(frappe.utils.getdate(start)) + datetime.timedelta(days=7)
 
 
+def _today() -> datetime.date:
+	return frappe.utils.getdate(frappe.utils.today())
+
+
 def editor_start_for(day) -> str:
 	"""The toolbar `start` value whose view opens on `day`'s week — the inverse of
 	`_view_start`, for a link into the editor from elsewhere."""
@@ -352,13 +346,22 @@ def unconfirmed_rotas(first=None, last=None) -> dict:
 def _effective_rotas(rotas: list[Rota], plan: edit.EditPlan, discipline: str | None = None) -> list[Rota]:
 	"""What the grid should draw: the current rotas with the draft's plan folded in,
 	its creations given placeholder names so a chip can still be dragged again before
-	Apply ever runs. A staged promotion already draws gold, and so does every creation."""
+	Apply ever runs. A staged promotion already draws gold, and so does every creation.
+
+	A row the plan *ends* is not dropped but given its `until`, which is the honest
+	drawing: the pattern is still real up to the turning point and gone after it."""
 	promoted = set(plan.promote)
-	kept = [
-		dataclasses.replace(r, unconfirmed=False) if r.assignment in promoted else r
-		for r in rotas
-		if r.assignment not in plan.delete
-	]
+	ends = {t.assignment: t.last_day for t in plan.terminate}
+	kept = []
+	for r in rotas:
+		if r.assignment in plan.delete:
+			continue
+		if r.assignment in ends:
+			# Ended at the turning point rather than removed, so it keeps drawing over
+			# whatever part of the view precedes that — normally none of it, the turning
+			# point being the view's own first day.
+			r = dataclasses.replace(r, until=ends[r.assignment])
+		kept.append(dataclasses.replace(r, unconfirmed=False) if r.assignment in promoted else r)
 	created = [
 		Rota(
 			assignment=f"NEW-{index}",
@@ -369,6 +372,7 @@ def _effective_rotas(rotas: list[Rota], plan: edit.EditPlan, discipline: str | N
 			weekdays=new.weekdays,
 			cycle_weeks=new.cycle_weeks,
 			anchor=new.anchor,
+			until=None,
 			scheduling_role=new.scheduling_role,
 			collateral_roles=new.collateral_roles,
 			# Staged edits are only ever made from the discipline's own view, and
@@ -520,7 +524,9 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 	native_rotas, foreign_rotas = split_by_discipline(rotas, discipline)
 	draft = _existing_draft(discipline)
 	staged = [_change_from_row(row) for row in (draft.changes if draft else [])]
-	plan = edit.apply_changes(native_rotas, staged, view_start=start_date, view_weeks=view_weeks)
+	plan = edit.apply_changes(
+		native_rotas, staged, view_start=start_date, view_weeks=view_weeks, today=_today()
+	)
 	effective = _effective_rotas(native_rotas, plan, discipline) + foreign_rotas
 
 	by_employee: dict[str, list[Rota]] = {}
@@ -635,6 +641,16 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 		# edit.EditPlan.cadence_changes. Recomputed fresh every call, never stored:
 		# it is a derived fact about the current draft + view, not itself an edit.
 		"periodicity_notes": list(plan.cadence_changes),
+		# Which patterns Apply would end, and from when their replacements run — the
+		# bookkeeping half of the transcript. Derived like the notes above.
+		"succession_notes": list(plan.successions),
+		# The turning point every succession happens on: this view's own first day.
+		"turning_point": start_date.isoformat(),
+		# ...which is in the past, so applying would rewrite weeks that have already
+		# happened. Offered as a warning, not a refusal: correcting a pattern that was
+		# wrong last month is a real thing to want, and the view is where the planner
+		# says which month they mean.
+		"retroactive": plan.retroactive,
 	}
 
 
@@ -799,10 +815,21 @@ def discard_draft(discipline: str, start: str, view_weeks: int | str) -> dict:
 
 @frappe.whitelist()
 def apply_draft(discipline: str, start: str, view_weeks: int | str) -> dict:
-	"""Commit the draft's `EditPlan`: delete the assignments it supersedes, create its
+	"""Commit the draft's `EditPlan`: end the assignments it supersedes, create its
 	replacements (gold, i.e. without `custom_unconfirmed`), clear the flag on every
 	assignment a "promote" confirms, and clean up any private Shift Schedule an edit
 	emptied out.
+
+	**Superseding is ending, not deleting.** A pattern that was already running gets
+	`custom_create_shifts_until` set to the day before this view starts and is otherwise
+	left alone; its replacement starts the next day. Only a row that had not begun yet is
+	deleted, because it never generated a day and leaving a tombstone for it would say
+	nothing. See `edit`'s module docstring for why the alternative — moving
+	`create_shifts_after` — cannot work on a field that also carries the phase.
+
+	Editing a view that starts in the past therefore genuinely rewrites from that date.
+	That is the intent (the view is how a planner says which weeks they mean), and it is
+	said out loud here rather than prevented.
 
 	`start`/`view_weeks` are the editor's current toolbar state — the same view every
 	staged `Change`'s `from_phase`/`to_phase` was recorded against (see `edit.apply_changes`
@@ -815,10 +842,9 @@ def apply_draft(discipline: str, start: str, view_weeks: int | str) -> dict:
 
 	Created assignments are `enabled = 0` / `shift_status = "Inactive"` like every rota
 	this app materialises by hand — HRMS's own generator staying off them is exactly the
-	point, see `autoshift.rota`. `create_shifts_after` is only ever a phase anchor here,
-	and is set at least `cycle.ANCHOR_LEAD_WEEKS` before today (moved back by whole
-	cycles, so the phase is unchanged): a boundary in the future would leave the pattern
-	missing from exactly the weeks a planner and a solve look at first.
+	point, see `autoshift.rota`. `create_shifts_after` is the day before this view began,
+	offset by the phase (`edit._phase_anchor`) — a real start date, written once and never
+	touched again.
 	"""
 	frappe.has_permission("Shift Schedule Assignment", "write", throw=True)
 	frappe.has_permission("Shift Schedule", "create", throw=True)
@@ -831,15 +857,38 @@ def apply_draft(discipline: str, start: str, view_weeks: int | str) -> dict:
 	roles = materialize.RoleContext(set(employees))
 	native_rotas, _foreign = split_by_discipline(_rotas_by_branch(employees, roles), discipline)
 	changes = [_change_from_row(row) for row in draft.changes]
+	view_start = _view_start(start)
 	plan = edit.apply_changes(
-		native_rotas, changes, view_start=_view_start(start), view_weeks=int(view_weeks)
+		native_rotas, changes, view_start=view_start, view_weeks=int(view_weeks), today=_today()
 	)
+	if plan.retroactive and (plan.terminate or plan.delete or plan.create):
+		frappe.msgprint(
+			frappe._(
+				"These edits take effect from {0}, which has already passed. Patterns in force "
+				"before then keep the weeks they already ran; everything from {0} onwards is "
+				"replaced."
+			).format(frappe.utils.format_date(view_start)),
+			title=frappe._("Applied retroactively"),
+			indicator="orange",
+		)
 
 	# Clear the draft's rows before deleting anything they reference: each row's
 	# `from_assignment` is a live Link, and Frappe refuses to delete a document another
 	# one still points at.
 	draft.changes = []
 	draft.save(ignore_permissions=True)
+
+	# Ended, not removed: the row keeps describing the weeks it actually ran, and
+	# `cycle.occurrences` clips it there. Nothing else about it changes — including its
+	# `create_shifts_after`, which is the whole point of having somewhere else to put
+	# the end.
+	for termination in plan.terminate:
+		frappe.db.set_value(
+			"Shift Schedule Assignment",
+			termination.assignment,
+			"custom_create_shifts_until",
+			termination.last_day,
+		)
 
 	orphaned_schedules: set[str] = set()
 	for name in plan.delete:
@@ -880,13 +929,10 @@ def apply_draft(discipline: str, start: str, view_weeks: int | str) -> dict:
 		)
 		for role in new.collateral_roles:
 			assignment.append("custom_collateral_roles", {"scheduling_role": role})
-		if new.anchor:
-			# `edit` anchors on the view the planner happens to be looking at, which may be
-			# this week or later; pulled back by whole cycles so the pattern also covers the
-			# weeks around now, in the phase the planner laid it out in.
-			assignment.create_shifts_after = backdated_anchor(
-				new.anchor, new.cycle_weeks, anchor_cutoff(frappe.utils.getdate(frappe.utils.today()))
-			)
+		# The day before this pattern's first week, offset by its phase — so it starts
+		# exactly where its predecessor was ended and not a day earlier. Never moved
+		# afterwards: see the docstring.
+		assignment.create_shifts_after = new.anchor
 		assignment.insert(ignore_permissions=True)
 		created.append(assignment.name)
 
@@ -906,4 +952,9 @@ def apply_draft(discipline: str, start: str, view_weeks: int | str) -> dict:
 			doc.cancel()
 		frappe.delete_doc("Shift Schedule", schedule_name, ignore_permissions=True)
 
-	return {"created": len(created), "deleted": len(plan.delete), "confirmed": len(plan.promote)}
+	return {
+		"created": len(created),
+		"ended": len(plan.terminate),
+		"deleted": len(plan.delete),
+		"confirmed": len(plan.promote),
+	}
