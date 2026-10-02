@@ -58,7 +58,8 @@ function inject_studio_styles() {
 			font-size: var(--text-xs); margin-left: 1.4rem; margin-top: 0.1rem;
 		}
 		.optimizer-studio .op-weight { margin-left: 0.6rem; }
-		.optimizer-studio .op-leave-picker { max-width: 24rem; }
+		.optimizer-studio .op-leave-row { display: flex; align-items: center; gap: 0.5rem; }
+		.optimizer-studio .op-leave-picker { max-width: 24rem; flex: 1 1 auto; }
 		.optimizer-studio .op-pill {
 			display: inline-flex; align-items: center; gap: 0.3rem;
 			border: 1px solid var(--border-color); border-radius: var(--border-radius);
@@ -146,7 +147,10 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 				<div class="op-result"></div>
 				<div class="op-config">
 					<div class="op-section-title">${__("Treat as approved (pending leaves)")}</div>
-					<div class="op-leave-picker"></div>
+					<div class="op-leave-row">
+						<div class="op-leave-picker"></div>
+						<button class="btn btn-default btn-xs op-add-all-leaves">${__("Add all pending…")}</button>
+					</div>
 					<div class="op-leave-pills">
 						<span class="text-muted">${__("None selected")}</span>
 					</div>
@@ -177,9 +181,52 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 			parent: this.$body.find(".op-leave-picker"),
 			render_input: 1,
 		});
+
+		this.$body.find(".op-add-all-leaves").on("click", () => this.add_all_pending_leaves());
 	}
 
 	// ── pending leaves ────────────────────────────────────────────────────────
+
+	// Pulls in every Open Leave Application for a role-holding employee that overlaps
+	// the chosen planning window (autoshift.optimizer_studio.get_pending_leaves) — the
+	// same relevance the Link field's own get_query narrows to one at a time. Adds
+	// straight into the existing pill set rather than opening a review dialog: a pill
+	// already removes with one click, so there is nothing a dialog would do better.
+	add_all_pending_leaves() {
+		const mode = this.mode_field.get_value();
+		const date = this.date_field.get_value();
+		if (!mode || !date) {
+			frappe.msgprint(__("Set Planning Mode and Start Date first."));
+			return;
+		}
+		frappe
+			.call({
+				method: "autoshift.optimizer_studio.get_pending_leaves",
+				args: { mode, date },
+			})
+			.then(({ message }) => {
+				const rows = message || [];
+				if (!rows.length) {
+					frappe.show_alert({
+						message: __("No pending leaves found for this window."),
+						indicator: "orange",
+					});
+					return;
+				}
+				let added = 0;
+				rows.forEach((row) => {
+					if (!this.leaves.has(row.name)) added++;
+					this.leaves.add(row.name);
+				});
+				this.render_leave_pills();
+				frappe.show_alert({
+					message: added
+						? __("Added {0} pending leave(s).", [added])
+						: __("All {0} pending leave(s) already added.", [rows.length]),
+					indicator: "green",
+				});
+			});
+	}
 
 	render_leave_pills() {
 		const $pills = this.$body.find(".op-leave-pills");

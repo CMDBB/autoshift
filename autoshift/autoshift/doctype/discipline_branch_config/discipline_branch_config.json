@@ -10,7 +10,9 @@
   "branch",
   "column_break_1",
   "rooms_num",
+  "barebones",
   "room_value",
+  "display_order_key",
   "section_break_qjqo",
   "shift_types"
  ],
@@ -43,14 +45,27 @@
    "reqd": 1
   },
   {
+   "default": "0",
+   "description": "This discipline staffs its rooms at this branch and nothing beside them: no shift is scheduled here in any Scheduling Role that is not \"Required To Staff A Room\" — a floater, a lead duty, an administrative post — whatever mode it is worked in. The gating roles the rooms wait on are untouched; to close the rooms themselves, set Number of Rooms to 0. Enforced by the \"Barebones branches\" optimization rule, which is in the Standard Ruleset; a ruleset without it ignores this flag.",
+   "fieldname": "barebones",
+   "fieldtype": "Check",
+   "label": "Barebones"
+  },
+  {
    "default": "3",
-   "description": "Objective points a staffed room in this discipline and branch is worth, before any employee or synergy bonus \u2014 the same scale a staffed room pays under \"Objective: Room utilization\". 0 leaves the room-level value mechanism off for this branch. Read only by \"Objective: Room value\" and the employee/synergy value objectives built on it.",
+   "description": "Objective points a staffed room in this discipline and branch is worth, before any employee or synergy bonus — the same scale a staffed room pays under \"Objective: Room utilization\". 0 leaves the room-level value mechanism off for this branch. Read only by \"Objective: Room value\" and the employee/synergy value objectives built on it.",
    "fieldname": "room_value",
    "fieldtype": "Float",
    "in_list_view": 1,
    "label": "Value Of A Staffed Room",
    "non_negative": 1,
    "precision": "2"
+  },
+  {
+   "description": "Where this band sits among bands the wall chart cannot otherwise order: a tiebreak used only between discipline-branches whose roles carry no \"Display Order Key\" of their own (or share the same one). 0 is the default; the chart falls back to branch then discipline name where this also ties.",
+   "fieldname": "display_order_key",
+   "fieldtype": "Int",
+   "label": "Display Order Key"
   },
   {
    "fieldname": "section_break_qjqo",
@@ -65,7 +80,7 @@
   }
  ],
  "links": [],
- "modified": "2026-09-22 14:24:00.585086",
+ "modified": "2026-10-01 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Discipline Branch Config",

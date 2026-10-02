@@ -101,7 +101,14 @@ Three apps split the responsibility; keep them separate.
   branch in objective points — the per-branch override `room_value_objective` reads in place
   of `room_utilization_objective`'s flat weight; 0 (unconfigured) leaves the room-level value
   mechanism off. Existing rows are **not** backfilled to 3 on migrate — the field is inert
-  until a row is deliberately configured.
+  until a row is deliberately configured. `barebones` (Check, default off) says this
+  discipline staffs its rooms at this branch and nothing beside them: `barebones_branches`
+  then forbids every shift here in a role that **gates no room**, whatever mode it is worked
+  in — a floater, a lead duty, an administrative post. Per (discipline, branch), so a branch
+  can be barebones in one discipline and fully staffed in another; gating roles are out of
+  scope, because closing the rooms themselves is `rooms_num = 0`. The flag is inert in a
+  ruleset without the rule, and the wall chart still draws the suppressed lanes — empty,
+  which is what the chart's derived-and-empty columns are for.
 - **Scheduling Role** — the optimizer's unit of *capability* and the scheduling axis that
   replaced designation: names exactly one discipline (Link to `Department`) plus a
   max-rooms-per-holder figure. `assignments_binding` (Check, default off) marks a role whose
@@ -178,7 +185,7 @@ module.
    `role_binding` rules, at the strength the ruleset chose. Assignment
    modes live here as `MODE_FLEXIBLE`/`MODE_EXCLUSIVE`/`MODE_COLLATERAL` plus the sparse
    `role_mode` / `role_mode_overrides` dicts (omitted from `input_hash` when empty, as are
-   `role_gates_rooms` and `role_value`) and
+   `role_gates_rooms`, `role_value` and `barebones`) and
    the helpers every rule reads them through: `mode()`, `working_roles()`,
    `collateral_roles()`, `exclusive_roles()`, `bound_employees()`, `forced_presence()`.
    Room gating is its own sparse dict, `role_gates_rooms` (+ `gates_rooms()` /
@@ -186,11 +193,11 @@ module.
    captured before the flag read as they did.
 2. `rules.py` — constraint groups *and* objective terms as named rules. `BUILTIN_RULES`
    registry populated by the `@builtin_rule` decorator; `STANDARD_RULES` is the
-   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 25 built-ins:
+   `standard=True` subset the seeding puts in the Standard Ruleset. Currently 26 built-ins:
    `one_shift_per_day`, `warm_start`, `leave_blocklist`, `use_existing_assignments`,
    `bind_role_assignments`, `soft_bind_role_assignments`, `one_branch_per_shift`,
-   `room_coverage`, `room_coverage_matched_rooms`, `fte_ceiling`, `role_fte_ceiling`,
-   `exclusive_role_purity`
+   `room_coverage`, `room_coverage_matched_rooms`, `barebones_branches`, `fte_ceiling`,
+   `role_fte_ceiling`, `exclusive_role_purity`
    (constraints) and `room_utilization_objective`, `fte_soft_ceiling`,
    `role_fte_target_objective`, `shift_preference_objective`,
    `suitability_preference_objective`, `weigh_assignments_objective`,

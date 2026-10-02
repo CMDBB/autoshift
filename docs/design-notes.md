@@ -184,6 +184,50 @@ Knock-on changes to the existing rules:
   breaks an agreed role split would otherwise go unreported for the single-role holders it
   most often describes.
 
+### A barebones branch opens only what gates a room (2026-10-01)
+
+Every `Discipline Branch Config` used to offer the same roles: a discipline's roles are a
+property of the discipline, and a branch running that discipline therefore ran all of them.
+A satellite branch breaks that. It runs the same two rooms as the main site and carries none
+of the posts built *around* the rooms — no floater, no lead on site, no administrative
+half-day. Nothing in the data said so, so the optimizer would happily put the floater there
+whenever `role_value_objective` made it worth a point.
+
+`Discipline Branch Config.barebones` says it, and `barebones_branches` enforces it:
+`Σ x[·,r,·,·,b] = 0` for every role `r` of that discipline that **gates no room**.
+
+- **Non-gating is the criterion, not the mode.** "Flexible or collateral" is how it was first
+  described, but the question a barebones branch is answering is "does this post exist here",
+  and `gates_rooms` is already the flag for "a room waits on this". A gating role is out of
+  scope in the other direction too: suppressing one would shut the branch's rooms rather than
+  trim what sits beside them, and `rooms_num = 0` is how a branch closes rooms.
+- **The flag is on the config row, not on `Scheduling Role` and not on a new (role, branch)
+  doctype.** `Discipline Branch Config` is already the "what does this discipline do at this
+  branch" record — it carries the room count, the Shift Types and the room value. Per
+  (discipline, branch) also means a branch can be barebones in one discipline and fully
+  staffed in another, which a branch-level flag could not express. A per-(role, branch) table
+  would be the fully general form; it is a row per combination to maintain for a distinction
+  that in practice splits cleanly along "does it gate a room", so it stays unbuilt.
+- **It is a rule, not structural.** Fixing the variables in `model_builder` — the way role
+  eligibility and the room cap are structural — would make the flag unconditional, which is
+  arguably what "the branch doesn't create openings" means. It was rejected on two counts.
+  Rules rely on `ctx.x[(e,r,s,d,b)]` existing for every held pair (`leave_blocklist`,
+  `bind_role_assignments`, `exclusive_role_purity`, `role_fte_ceiling` all index it blind),
+  so removing variables means guards in five places and a hard error wherever the books
+  already record a suppressed combination. And as a rule, a booked lead duty at a
+  newly-barebones branch degrades the way everything else does: `soft_bind_role_assignments`
+  drops that half-day instead of failing the solve, and `diagnose-model` names the
+  `barebones:` row when the strict rule is in play.
+- **One constraint per suppressed lane, not a bound per variable.** CBC presolves the two to
+  the same model. A named constraint is the difference between the elastic analysis saying
+  "this branch was asked for a duty it does not open" and silently handing back a bound,
+  which is the same reason `_cname`'s prefix convention exists at all.
+- **The wall chart still draws the suppressed lanes.** They come back empty, and empty is
+  what the chart's derived columns are *for* — "configure a discipline at a branch and its
+  band appears; add a Scheduling Role and its column appears, empty until somebody covers
+  it". Dropping them would also push a historical booked chip in one of those roles into
+  `Unplaced` under a reason ("matches no Discipline Branch Config") that is not true.
+
 ### What a supervised post is worth (2026-09-17)
 
 The first pricing valued a collateral duty at `min(active_rooms, Σ max_rooms · c)` — the
@@ -920,6 +964,14 @@ Lane order left alone is a property of the site's data rather than a claim this 
 about anyone's job; `Scheduling Role.display_order_key` is how a site overrides it.
 `source.infer_role` breaks ties on the *same* key, so an inferred role lands in the leftmost
 lane the employee could plausibly have worked.
+
+**Band order follows the minimum `display_order_key` among a discipline's roles, same
+reasoning one level up** — a discipline somebody has keyed sorts by that. But two bands can
+both be entirely unkeyed (every role still at 0), and alphabetic order of the bare
+discipline/branch pair was the only fallback, which reads as arbitrary on a chart stacking
+several such bands. `Discipline Branch Config.display_order_key` exists only to be that
+tiebreak — read after the role-based key, before branch/discipline name — rather than a
+second, competing way to move a band that *is* keyed through its roles.
 
 **`chart.merge` matches on `(employee, date, shift_type)` and deliberately not on role.** A
 Shift Assignment records no role, so `source.infer_role` guesses one; matching on the guess

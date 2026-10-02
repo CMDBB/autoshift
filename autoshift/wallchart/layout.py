@@ -22,13 +22,23 @@ empty until somebody covers it. That emptiness is the point — the chart's job 
 to show what the configuration says *should* be staffed next to what actually
 is.
 
-The one judgement here is lane order, and it is `Scheduling Role`'s optional
+The first judgement here is lane order, and it is `Scheduling Role`'s optional
 `display_order_key` first, then `max_rooms` descending, then name — see
 `lane_sort_key`. Left to itself it is a property of the site's own data, not a
 fact this package asserts about anybody's job; where the derived order reads
 wrong, the key is the site's way of saying so.
 
-A second, narrower judgement is row order *within* a lane's day — see
+Band order follows the same reasoning, one level up: the minimum
+`display_order_key` among a discipline's roles leads, so a band holding a
+keyed role sorts by it. But two bands can both hold nothing but unkeyed
+roles (every role at its default 0), and alphabetic order of a bare
+discipline/branch pair is not always what a site wants either — so
+`Discipline Branch Config` carries its own `display_order_key`, read only as
+the tiebreak between bands the role-based key cannot separate. Branch then
+discipline name is the last resort, kept only so the chart is stable between
+rebuilds.
+
+A third, narrower judgement is row order *within* a lane's day — see
 `Scheduling Role.chip_sort_field` and `chart._order_lane`. `derive()` only
 carries the direction (`chip_sort_descending`) onto each `Lane`; resolving the
 field itself into a value per employee is `source.py`'s job, since it is the
@@ -141,7 +151,7 @@ def derive() -> Layout:
 	"""Build the chart's layout out of the site's configuration."""
 	configs = frappe.get_all(
 		"Discipline Branch Config",
-		fields=["name", "discipline", "branch", "rooms_num"],
+		fields=["name", "discipline", "branch", "rooms_num", "display_order_key"],
 	)
 	roles = frappe.get_all(
 		"Scheduling Role",
@@ -169,7 +179,10 @@ def derive() -> Layout:
 	}
 
 	bands = []
-	for config in sorted(configs, key=lambda c: (min_keys[c.name], c.branch or "", c.discipline or "")):
+	for config in sorted(
+		configs,
+		key=lambda c: (min_keys[c.name], int(c.display_order_key or 0), c.branch or "", c.discipline or ""),
+	):
 		lanes = tuple(
 			Lane(
 				role.name,

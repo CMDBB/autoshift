@@ -178,6 +178,13 @@ class DataPackage:
 	# Read by `rules.synergy_value_objective`.
 	employee_synergy: dict[tuple[str, str], float] = dataclasses.field(default_factory=dict)
 
+	# Discipline Branch Config.barebones: (discipline, branch) pairs that open no shift in
+	# any role gating no room — a floater, a lead duty, an administrative role. The branch
+	# runs its rooms and nothing beside them. Sparse (empty unless a config row says so), so
+	# a site that never sets the flag hashes and solves exactly as before. Read by
+	# `rules.barebones_branches`; every other rule goes through `offers_role`, or ignores it.
+	barebones: frozenset[tuple[str, str]] = frozenset()
+
 	def suitability(self, employee: str, role: str) -> float:
 		return self.role_suitability.get((employee, role), 1.0)
 
@@ -216,6 +223,22 @@ class DataPackage:
 	def gating_roles(self, employee: str) -> tuple[str, ...]:
 		"""The employee's roles a room in their discipline actually waits on."""
 		return tuple(r for r in self.employee_roles.get(employee, ()) if self.gates_rooms(r))
+
+	def is_barebones(self, discipline: str, branch: str) -> bool:
+		"""Does this (discipline, branch) run its rooms and nothing beside them."""
+		return (discipline, branch) in self.barebones
+
+	def offers_role(self, role: str, branch: str) -> bool:
+		"""Does `branch` open shifts in `role` at all.
+
+		A barebones (discipline, branch) opens none in a role that gates no room, whatever
+		mode it is worked in: the point of the flag is a branch that staffs its rooms and
+		carries no floater, lead duty or administrative post on top. Gating roles are
+		untouched — suppressing one would simply shut the rooms.
+		"""
+		if not self.barebones or self.gates_rooms(role):
+			return True
+		return (self.role_discipline.get(role, ""), branch) not in self.barebones
 
 	def is_collateral(self, employee: str, role: str) -> bool:
 		"""A duty worked on top of a shift (or on its own), not a way of spending the shift."""
@@ -309,6 +332,7 @@ class DataPackage:
 			"room_value",
 			"employee_value_multiplier",
 			"employee_synergy",
+			"barebones",
 		):
 			if not getattr(self, name):  # idem, for sites where every role is Flexible
 				del payload[name]
@@ -374,6 +398,7 @@ class DataPackage:
 				[employee_a, employee_b, multiplier]
 				for (employee_a, employee_b), multiplier in sorted(self.employee_synergy.items())
 			],
+			"barebones": [[discipline, branch] for discipline, branch in sorted(self.barebones)],
 		}
 		return json.dumps(payload)
 
@@ -458,6 +483,8 @@ class DataPackage:
 				(employee_a, employee_b): multiplier
 				for employee_a, employee_b, multiplier in payload.get("employee_synergy", [])
 			},
+			# absent before the flag existed: every branch opened every role of its discipline
+			barebones=frozenset((discipline, branch) for discipline, branch in payload.get("barebones", [])),
 		)
 
 

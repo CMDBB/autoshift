@@ -642,6 +642,55 @@ def room_coverage_matched_rooms(ctx: RuleContext) -> None:
 
 
 @builtin_rule(
+	"Barebones branches",
+	"A discipline-branch marked <b>Barebones</b> staffs its rooms and nothing beside them: no "
+	"shift is scheduled there in any role that is not <b>Required To Staff A Room</b>. That "
+	"covers a floater, a lead duty, an administrative post — whatever mode it is worked in — "
+	"while the gating roles the rooms wait on are untouched. For a satellite branch that runs "
+	"the same disciplines as the main site but carries none of the posts built around them. "
+	"Set per (discipline, branch) on <b>Discipline Branch Config</b>, so a branch can be "
+	"barebones in one discipline and fully staffed in another. Inert until some config row "
+	"sets the flag.",
+	standard=True,
+	topic=TOPIC_COVERAGE,
+)
+def barebones_branches(ctx: RuleContext) -> None:
+	"""`Σ x[·, r, ·, ·, b] = 0` for every non-gating role `r` of a barebones `(k, b)`.
+
+	One constraint per suppressed lane rather than a bound per variable: the model is the
+	same either way once CBC presolves it, and a named constraint is what lets
+	`diagnose-model` and the elastic analysis say "this branch was asked for a duty it does
+	not open" instead of silently handing back a bound. Gating roles are deliberately out of
+	scope — suppressing one would shut the branch's rooms rather than trim what sits beside
+	them, which is `Discipline Branch Config.rooms_num = 0`'s job.
+	"""
+	data = ctx.data
+	if not data.barebones:
+		return
+	roles_of: dict[str, list[str]] = {}
+	for r in data.roles:
+		roles_of.setdefault(data.role_discipline.get(r, ""), []).append(r)
+
+	branches = set(data.branches)
+	for k, b in sorted(data.barebones):
+		if b not in branches:
+			continue
+		for r in sorted(roles_of.get(k, ())):
+			if data.gates_rooms(r):
+				continue
+			suppressed = [
+				ctx.x[(e, r, s, d, b)]
+				for e in data.employees
+				if r in data.employee_roles.get(e, ())
+				for s in data.shift_types
+				for d in data.working_days
+			]
+			if not suppressed:
+				continue
+			ctx.prob += (pulp.lpSum(suppressed) == 0, _cname("barebones", k, b, r))
+
+
+@builtin_rule(
 	"FTE ceiling",
 	"The half-days an employee is present over the horizon, whatever roles they work during "
 	"them, stay at or below "

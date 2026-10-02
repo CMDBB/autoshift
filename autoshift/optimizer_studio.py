@@ -112,6 +112,33 @@ def check_unconfirmed_rotas(mode: str, date: str) -> dict:
 
 
 @frappe.whitelist()
+def get_pending_leaves(mode: str, date: str) -> list[dict]:
+	"""Open Leave Applications worth speculating over for a mode/date pair: the employee
+	holds an active Scheduling Role, and the leave overlaps the run's planning window.
+	Backs Studio's "Add all pending" button, next to the single-pick Link field it
+	complements (whose own `get_query` filters to `status: "Open"` the same way).
+	"""
+	first, last = _planning_window(mode, date)
+	role_holders = frappe.get_all("Employee Scheduling Role", filters={"active": 1}, pluck="employee")
+	if not role_holders:
+		return []
+	employees = frappe.get_all(
+		"Employee",
+		filters={"status": "Active", "name": ["in", role_holders]},
+		pluck="name",
+	)
+	if not employees:
+		return []
+	return frappe.get_all(
+		"Leave Application",
+		filters={"employee": ["in", employees], "status": "Open"},
+		or_filters={"from_date": ["<=", str(last)], "to_date": [">=", str(first)]},
+		fields=["name", "employee", "employee_name", "from_date", "to_date"],
+		order_by="from_date asc",
+	)
+
+
+@frappe.whitelist()
 def get_ruleset_selection(ruleset: str) -> dict:
 	"""Rows of `ruleset` as {rule_name: weight}, plus whether it's app-curated."""
 	if not ruleset or not frappe.db.exists("Optimization Ruleset", ruleset):

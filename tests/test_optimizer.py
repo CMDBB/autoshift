@@ -99,15 +99,17 @@ def status(prob) -> str:
 	return pulp.LpStatus[prob.status]
 
 
-def assigned(x, employee=None, shift=None, role=None) -> int:
-	"""Count binary variables set to 1, optionally filtered by employee, shift and/or role."""
+def assigned(x, employee=None, shift=None, role=None, branch=None) -> int:
+	"""Count binary variables set to 1, optionally filtered by employee, shift, role, branch."""
 	total = 0
-	for (e, r, s, _d, _b), var in x.items():
+	for (e, r, s, _d, b), var in x.items():
 		if employee is not None and e != employee:
 			continue
 		if role is not None and r != role:
 			continue
 		if shift is not None and s != shift:
+			continue
+		if branch is not None and b != branch:
 			continue
 		if (pulp.value(var) or 0) > 0.5:
 			total += 1
@@ -1843,6 +1845,136 @@ def test_the_gating_flag_is_read_before_the_mode():
 def test_the_gating_flag_leaves_the_hash_of_a_site_without_it_alone():
 	assert pkg().input_hash() == pkg(role_gates_rooms={}).input_hash()
 	assert pkg().input_hash() != pkg(role_gates_rooms={"R1": False}).input_hash()
+
+
+# ── barebones branches ───────────────────────────────────────────────────────
+
+
+def two_branches(**overrides) -> DataPackage:
+	"""Discipline D1 at two branches: E1 gates rooms in R1, E2 floats in R2 and gates none."""
+	base: dict[str, Any] = {
+		"employees": ["E1", "E2"],
+		"branches": ["B1", "B2"],
+		"roles": ["R1", "R2"],
+		"role_discipline": {"R1": "D1", "R2": "D1"},
+		"employee_roles": {"E1": ("R1",), "E2": ("R2",)},
+		"target_shifts": {"E1": 2, "E2": 2},
+		"max_rpe": {("E1", "R1"): 1, ("E2", "R2"): 1},
+		"rooms": {("D1", "B1"): 1, ("D1", "B2"): 1},
+		"role_gates_rooms": {"R1": True, "R2": False},
+		"role_value": {"R2": 5.0},  # worth placing somewhere, so "nowhere" means suppressed
+		"rules": builtin_specs(*STANDARD_RULES, "role_value_objective"),
+	}
+	base.update(overrides)
+	return pkg(**base)
+
+
+def test_a_barebones_branch_opens_no_shift_in_a_role_that_gates_no_room():
+	prob, x, ar, _presence = solved(two_branches(barebones=frozenset({("D1", "B2")})))
+
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E2", branch="B2") == 0  # the floater is not offered B2
+	assert assigned(x, employee="E2", branch="B1") == 1  # but is still placed where it is
+	assert pulp.value(ar[("D1", "AM", MON, "B2")]) == 1  # and B2's own room is unaffected
+
+
+def pinned_at(data: DataPackage, employee: str, role: str, branch: str) -> DataPackage:
+	"""The same package with one assignment nailed on, so feasibility is the whole answer.
+
+	Which branch a floater lands at is otherwise co-optimal — the rule's effect has to be
+	read as "this placement is impossible", not as "the solver happened not to pick it".
+	"""
+	return dataclasses.replace(
+		data,
+		forced={(employee, role, "AM", MON, branch)},
+		rules=(*data.rules, *builtin_specs("use_existing_assignments")),
+	)
+
+
+def test_an_unflagged_branch_still_offers_the_same_role():
+	"""The control: pinning the floater at B2 is only impossible once the flag is set."""
+	pinned = pinned_at(two_branches(), "E2", "R2", "B2")
+	flagged = dataclasses.replace(pinned, barebones=frozenset({("D1", "B2")}))
+
+	assert status(solved(pinned)[0]) == "Optimal"
+	assert status(solved(flagged)[0]) == "Infeasible"
+
+
+def test_a_barebones_branch_still_staffs_its_rooms():
+	"""Gating roles are out of scope — the rooms are exactly what a barebones branch keeps."""
+	prob, x, ar, _presence = solved(two_branches(barebones=frozenset({("D1", "B2")})))
+
+	assert status(prob) == "Optimal"
+	assert assigned(x, employee="E1", branch="B2") == 1
+	assert pulp.value(ar[("D1", "AM", MON, "B2")]) == 1
+
+
+def test_barebones_suppresses_a_collateral_duty_too():
+	"""Mode is not the criterion: a lead duty gates no room by default, so it goes as well."""
+	data = with_collateral(
+		branches=["B1", "B2"],
+		rooms={("D1", "B1"): 1, ("D1", "B2"): 1},
+		target_shifts={"E1": 2},
+		role_value={"RC": 5.0},
+		rules=builtin_specs(*STANDARD_RULES, "role_value_objective"),
+	)
+	pinned = pinned_at(data, "E1", "RC", "B2")
+	flagged = dataclasses.replace(pinned, barebones=frozenset({("D1", "B2")}))
+
+	assert flagged.is_barebones("D1", "B2")
+	assert status(solved(pinned)[0]) == "Optimal"
+	assert status(solved(flagged)[0]) == "Infeasible"
+
+
+def test_barebones_is_per_discipline_not_per_branch():
+	"""Two disciplines at one branch: flagging one leaves the other's floater alone."""
+	data = two_branches(
+		employees=["E1", "E2", "E3"],
+		roles=["R1", "R2", "R3"],
+		role_discipline={"R1": "D1", "R2": "D1", "R3": "D2"},
+		employee_roles={"E1": ("R1",), "E2": ("R2",), "E3": ("R3",)},
+		target_shifts={"E1": 2, "E2": 2, "E3": 2},
+		max_rpe={("E1", "R1"): 1, ("E2", "R2"): 1, ("E3", "R3"): 1},
+		disciplines=["D1", "D2"],
+		rooms={("D1", "B1"): 1, ("D1", "B2"): 1, ("D2", "B1"): 1, ("D2", "B2"): 1},
+		role_gates_rooms={"R1": True, "R2": False, "R3": False},
+		role_value={"R2": 5.0, "R3": 5.0},
+		barebones=frozenset({("D1", "B2")}),
+	)
+
+	# D2's floater at the same branch is untouched; D1's own is not
+	assert status(solved(pinned_at(data, "E3", "R3", "B2"))[0]) == "Optimal"
+	assert status(solved(pinned_at(data, "E2", "R2", "B2"))[0]) == "Infeasible"
+
+
+def test_the_rule_is_what_enforces_the_flag():
+	"""Set the flag, leave the rule out, and the branch offers the role as before."""
+	without = tuple(key for key in STANDARD_RULES if key != "barebones_branches")
+	data = two_branches(
+		barebones=frozenset({("D1", "B2")}),
+		rules=builtin_specs(*without, "role_value_objective"),
+	)
+
+	assert status(solved(pinned_at(data, "E2", "R2", "B2"))[0]) == "Optimal"
+
+
+def test_offers_role_reads_the_flag_without_a_solve():
+	data = two_branches(barebones=frozenset({("D1", "B2")}))
+	assert data.offers_role("R1", "B2") is True  # gating: never suppressed
+	assert data.offers_role("R2", "B2") is False
+	assert data.offers_role("R2", "B1") is True
+	assert two_branches().offers_role("R2", "B2") is True
+
+
+def test_barebones_leaves_the_hash_of_a_site_without_it_alone():
+	assert pkg().input_hash() == pkg(barebones=frozenset()).input_hash()
+	assert pkg().input_hash() != pkg(barebones=frozenset({("D1", "B1")})).input_hash()
+
+
+def test_barebones_round_trips_through_dumps():
+	data = two_branches(barebones=frozenset({("D1", "B2")}))
+	assert DataPackage.loads(data.dumps()).barebones == frozenset({("D1", "B2")})
+	assert DataPackage.loads(data.dumps()).input_hash() == data.input_hash()
 
 
 # ── which role an existing Shift Assignment was worked in ─────────────────────

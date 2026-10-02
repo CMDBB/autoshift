@@ -295,7 +295,7 @@ def load(run_doc) -> DataPackage:
 	# ── Discipline-Branch Config ─────────────────────────────────────────────
 	config_rows = frappe.get_all(
 		"Discipline Branch Config",
-		fields=["name", "discipline", "branch", "rooms_num", "room_value"],
+		fields=["name", "discipline", "branch", "rooms_num", "room_value", "barebones"],
 	)
 	if not config_rows:
 		frappe.throw(frappe._("No Discipline Branch Config records found. Please configure them first."))
@@ -310,10 +310,15 @@ def load(run_doc) -> DataPackage:
 	# 0 (the default on an unconfigured row) means "the room-level value mechanism is off
 	# for this branch" — read only by room_value_objective and the two bonus rules built on it.
 	room_value: dict[tuple[str, str], float] = {}
+	# (discipline, branch) pairs that open no shift in a role gating no room. Sparse for the
+	# same reason: unset is the overwhelming majority, and absent keeps the hash as it was.
+	barebones: set[tuple[str, str]] = set()
 	for r in config_rows:
 		rooms[(r.discipline, r.branch)] = int(r.rooms_num or 0)
 		if r.room_value:
 			room_value[(r.discipline, r.branch)] = float(r.room_value)
+		if r.barebones:
+			barebones.add((r.discipline, r.branch))
 
 	# ── Planning horizon ─────────────────────────────────────────────────────
 	# Needed this early because role validity windows are resolved against it.
@@ -855,4 +860,5 @@ def load(run_doc) -> DataPackage:
 		role_suitability=role_suitability,
 		employee_value_multiplier=employee_value_multiplier,
 		employee_synergy=employee_synergy,
+		barebones=frozenset(barebones),
 	)

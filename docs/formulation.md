@@ -4,7 +4,7 @@ The exact arithmetic every built-in rule in `autoshift/optimizer/rules.py` puts 
 model. **Formulas only** — what a rule is *for*, and why it is the way it is, lives on the
 rule's own `@builtin_rule` description, in `CLAUDE.md` and in `design-notes.md`.
 
-One section per built-in, in registry order — 25 of them: 11 constraint rules, `warm_start`
+One section per built-in, in registry order — 26 of them: 12 constraint rules, `warm_start`
 (kind `Other`), and 13 objective rules. Constraint names are the `_cname` prefixes the model
 actually carries, so a row in `bench diagnose-model`'s output can be looked up here directly.
 
@@ -40,6 +40,7 @@ actually carries, so a row in `bench diagnose-model`'s output can be looked up h
 | Symbol | Meaning | Default |
 |---|---|---|
 | `N(k,b)` | configured rooms in discipline `k` at branch `b` | `rooms[(k,b)]`, 0 |
+| `Ω` | barebones `(k,b)` pairs — rooms and nothing beside them | `barebones`, `∅` |
 | `m(e,r)` | max rooms `(e,r)` covers in one slot | `max_rpe[(e,r)]`, 1 |
 | `T(e)` | FTE-derived shift target over the horizon | `target_shifts[e]`, 0 |
 | `T(e,r)` | agreed role FTE as a shift count | `role_target_shifts[(e,r)]`, absent |
@@ -204,6 +205,19 @@ active_rooms_eq_matched: a[k,s,d,b]  =  Σ_{n=1}^{N} ρ[k,s,d,b,n]
 
 The two `room_active` rows are the standard linearization of `ρ = ⋀_{r ∈ G(k)} occ(r,n)`.
 Group `room_coverage`, non-standard.
+
+### `barebones_branches` — Barebones branches
+
+A barebones `(k,b)` opens no shift in a role of `k` that gates no room, whatever mode it is
+worked in. One row per suppressed lane, over the whole horizon:
+
+```math
+barebones:   Σ_{e : r ∈ R(e)} Σ_{s ∈ S} Σ_{d ∈ D}  x[e,r,s,d,b]  =  0
+                              ∀ (k,b) ∈ Ω, ∀ r with k(r) = k and ¬gates(r)
+```
+
+Gating roles are untouched — `N(k,b) = 0` is how a branch closes rooms. Standard; inert
+while `Ω = ∅`.
 
 ### `fte_ceiling` — FTE ceiling
 

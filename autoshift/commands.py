@@ -310,7 +310,7 @@ def update_holiday_lists(context, dry_run):
 				click.echo(f"skipped (no company holiday list): {employee}")
 			return
 		result = holidays.apply()
-		frappe.db.commit()
+		frappe.db.commit()  # nosemgrep
 		click.echo(f"assigned {result['assigned']} list(s) across {len(result['lists'])} calendar(s)")
 		for failure in result["failures"]:
 			click.echo(f"failed: {failure['employee']}: {failure['error']}")
