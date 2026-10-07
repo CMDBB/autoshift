@@ -21,6 +21,11 @@ first run and still up after a failed one:
 
 `chart.merge` puts the two side by side, so a solved run reads as a diff against
 the books — kept, added, dropped — rather than as a second unrelated picture.
+
+:func:`leaves` reads the fourth thing on the chart, and reads two of the sources
+above a second time to do it: a leave day is a day with no slot, so the only
+evidence of *which half* it empties is the person's rota and whatever the books
+already record (:func:`_expected_shifts`).
 """
 
 from __future__ import annotations
@@ -472,57 +477,275 @@ def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 	return slots
 
 
-def leaves(monday: datetime.date, speculated: set[str] | None = None) -> dict[str, list[dict]]:
-	"""Approved (plus optionally speculated) leave in the week, per ISO date.
+LEAVE_FIELDS = ["name", "employee", "leave_type", "from_date", "to_date", "half_day", "half_day_date"]
+
+
+def _expected_shifts(
+	employees: set[str], days: list[datetime.date]
+) -> dict[tuple[str, datetime.date], set[str]]:
+	"""(employee, date) -> the Shift Types that day would otherwise have held.
+
+	What makes a day's leave attributable to one half of it rather than to the
+	whole week. Two sources, and neither is the leave itself: HRMS records a
+	half-day as a flag and a date (`Leave Application.half_day`) and never says
+	*which* half, so the evidence has to come from what the person works.
+
+	Their rota leads — a settled pattern is the only thing that says "this one
+	works Tuesday mornings" about a day nothing was ever scheduled on — and the
+	books fill in a leave filed after the assignment was made. Deliberately not
+	`rota.materialize.settled_rows`: that subtracts the days already recorded and
+	keeps bound employees only, and both of those are days this needs.
+
+	Empty for somebody with neither, which is a real answer rather than a failure:
+	the chart then reports their leave without claiming a half.
+	"""
+	if not employees:
+		return {}
+	first, last = days[0], days[-1]
+	out: dict[tuple[str, datetime.date], set[str]] = defaultdict(set)
+
+	for row in frappe.get_all(
+		"Shift Assignment",
+		filters={"employee": ["in", sorted(employees)], "docstatus": 1, "start_date": ["<=", last]},
+		or_filters=[["end_date", ">=", first], ["end_date", "is", "not set"]],
+		fields=["employee", "shift_type", "start_date", "end_date"],
+	):
+		day = max(frappe.utils.getdate(row["start_date"]), first)
+		end = min(frappe.utils.getdate(row["end_date"]), last) if row["end_date"] else last
+		while day <= end:
+			out[(row["employee"], day)].add(row["shift_type"])
+			day += datetime.timedelta(days=1)
+
+	from autoshift.rota import materialize as rota
+
+	for pattern in rota.load_rotas(employees, rota.RoleContext(employees, first, last)):
+		for day in rota.occurrences(pattern, first, last):
+			out[(pattern.employee, day)].add(pattern.shift_type)
+	return dict(out)
+
+
+def _not_working(
+	employees: set[str],
+	days: list[datetime.date],
+	worked_weekdays: set[int] | None = None,
+) -> dict[str, set[datetime.date]]:
+	"""Per employee, the days of the week they do not work.
+
+	`rota.holidays.calendars` — the same resolution the solver's availability is built on
+	(`data_loader._availability`), so the chart and the model cannot disagree about which
+	days are worked. The company's weekly offs apply to everybody, each employee's own
+	dated holidays to them alone.
+
+	Deliberately **not** a weekday test. A practice that starts opening on Saturdays says
+	so by taking Saturday out of its Holiday List, and everything here follows without a
+	code change — which is exactly what hardcoding the weekend would have cost.
+
+	A site with no resolvable calendar blocks nothing, so every leave day reads as due and
+	the chart is as noisy as it was before. That is a configuration error a solve refuses
+	to plan through; a chart has no business refusing to draw over it.
+
+	`worked_weekdays` is the reader's own answer to the same question, for a site whose
+	calendar cannot give one yet (see `api._default_worked`). It **narrows and never
+	widens**: a weekday left out closes that day for everybody, a weekday left in says
+	only "not on my account" and the calendar still has its say. So the control cannot be
+	used to open a day the calendar closed — that belongs in the Holiday List, which is
+	also the only place a solve would ever read it.
+	"""
+	if not employees or not days:
+		return {}
+	from autoshift.rota.holidays import calendars
+
+	blocked = calendars(sorted(employees), days[0], days[-1]).blocked
+	if worked_weekdays is None:
+		return blocked
+	closed = {day for day in days if day.weekday() not in worked_weekdays}
+	return {employee: blocked.get(employee, set()) | closed for employee in employees}
+
+
+def _in_disciplines(employees: set[str], days: list[datetime.date], disciplines: set[str]) -> set[str]:
+	"""Which of `employees` hold an in-window Scheduling Role in one of `disciplines`.
+
+	How the leave list follows the chart's own filter. It also drops everybody
+	holding no role at all, which is the whole of the site's non-clinical staff:
+	they never appear on the chart, so their leave was only ever noise next to it.
+	"""
+	held = _held_roles(employees)
+	role_disciplines = _role_disciplines()
+	return {
+		employee
+		for employee in employees
+		if any(
+			role_disciplines.get(row["scheduling_role"]) in disciplines
+			and any(_in_window(row, day) for day in days)
+			for row in held.get(employee, [])
+		)
+	}
+
+
+def _due(
+	employee: str,
+	day: datetime.date,
+	shift_types: list[str],
+	not_working: dict[str, set[datetime.date]],
+	scheduled: set[str],
+) -> bool:
+	"""Was this person due to work that day at all — i.e. did their leave empty anything?
+
+	A leave is recorded as a span of dates, so it covers every day in between whether or
+	not the person was ever going to be there. A Saturday nobody works, or a Wednesday a
+	four-day week never included, is emptied by nothing, and reporting it says only that
+	the leave is long.
+
+	Two pieces of evidence, both negative:
+
+	- **their calendar** — the company's weekly offs, or a dated holiday of their own
+	  (:func:`_not_working`). Decisive for everybody, and the reason a long leave no
+	  longer drags the weekend onto the chart.
+	- **their rota** — where we have a week for them at all (`scheduled`) and it puts
+	  them nowhere on that day. This is what catches a four-day week, or an alternating
+	  rota's off week.
+
+	Absence of evidence is not evidence: somebody with no rota and nothing on the books
+	is `due` on any day their calendar allows, and their leave is reported with no half
+	named. Guessing "probably off" there would hide a real absence.
+	"""
+	if day in not_working.get(employee, ()):
+		return False
+	return bool(shift_types) or employee not in scheduled
+
+
+def leaves(
+	monday: datetime.date,
+	speculated: set[str] | None = None,
+	disciplines: set[str] | None = None,
+	worked_weekdays: set[int] | None = None,
+) -> list[dict]:
+	"""Approved (plus optionally speculated) leave in the week, one entry per day.
 
 	Not a `Slot`: somebody on leave is not in a chair, so they have no cell. They
 	are the answer to "why is this chair empty", though, which is the whole point
 	of the chart, so they are reported alongside it.
+
+	Each entry names the Shift Types that day would otherwise have held
+	(`shift_types`, see :func:`_expected_shifts`), so the chart can print a day's
+	leave under the half it actually empties — morning leave below the morning
+	table — instead of once per week with no half named at all. The list is empty
+	where nothing says which half, and `half_day` is on where HRMS says the day is
+	a half one without saying which half it is.
+
+	`disciplines` narrows to employees holding a role in one of them; omitted, the
+	whole site's leave comes back. `worked_weekdays` is the reader's weekday control,
+	which closes a day for everybody — see :func:`_not_working`.
 	"""
 	days = week_dates(monday)
 	first, last = days[0], days[-1]
 	rows = frappe.get_all(
 		"Leave Application",
 		filters={"status": "Approved", "from_date": ["<=", last], "to_date": [">=", first]},
-		fields=["name", "employee", "leave_type", "from_date", "to_date"],
+		fields=LEAVE_FIELDS,
 	)
 	if speculated:
 		rows += frappe.get_all(
 			"Leave Application",
 			filters={"name": ["in", list(speculated)]},
-			fields=["name", "employee", "leave_type", "from_date", "to_date"],
+			fields=LEAVE_FIELDS,
 		)
+	# One Leave Application can arrive twice — approved *and* named as a
+	# speculation — and is one leave either way.
+	deduped = list({row["name"]: row for row in rows}.values())
 
-	people = _employees({row["employee"] for row in rows})
-	out: dict[str, list[dict]] = {}
-	seen: set[str] = set()
-	for row in rows:
-		if row["name"] in seen:
-			continue
-		seen.add(row["name"])
+	employees = {row["employee"] for row in deduped}
+	if disciplines is not None:
+		employees = _in_disciplines(employees, days, disciplines)
+		deduped = [row for row in deduped if row["employee"] in employees]
+
+	people = _employees(employees)
+	expected = _expected_shifts(employees, days)
+	not_working = _not_working(employees, days, worked_weekdays)
+	# Somebody whose week we have at all: a rota or the books put them somewhere in this
+	# window. Without that, "no shift on Tuesday" is ignorance rather than a day off, and
+	# the leave has to be reported — see `due` below.
+	scheduled = {employee for employee, _day in expected}
+	out: list[dict] = []
+	for row in deduped:
 		person = people.get(row["employee"], {})
-		entry = {
-			"employee": row["employee"],
-			"employee_name": person.get("employee_name") or "",
-			"label": short_label(
-				row["employee"], person.get("employee_name") or "", person.get(INITIALS_FIELD)
-			),
-			"leave_type": row["leave_type"],
-			"speculative": bool(speculated and row["name"] in speculated),
-		}
 		day = frappe.utils.getdate(row["from_date"])
 		end = frappe.utils.getdate(row["to_date"])
+		half_day_date = frappe.utils.getdate(row["half_day_date"]) if row["half_day_date"] else None
 		while day <= end:
 			if day in days:
-				out.setdefault(day.isoformat(), []).append(entry)
+				shift_types = sorted(expected.get((row["employee"], day), ()))
+				out.append(
+					{
+						"employee": row["employee"],
+						"employee_name": person.get("employee_name") or "",
+						"label": short_label(
+							row["employee"],
+							person.get("employee_name") or "",
+							person.get(INITIALS_FIELD),
+						),
+						"leave_type": row["leave_type"],
+						"speculative": bool(speculated and row["name"] in speculated),
+						"date": day.isoformat(),
+						# A half-day HRMS cannot place: shown under every half the
+						# person works, flagged, rather than guessed at.
+						"half_day": bool(row["half_day"]) and (half_day_date is None or half_day_date == day),
+						"shift_types": shift_types,
+						"due": _due(row["employee"], day, shift_types, not_working, scheduled),
+					}
+				)
 			day += datetime.timedelta(days=1)
-	for entries in out.values():
-		entries.sort(key=lambda e: (e["label"].upper(), e["employee"]))
+	out.sort(key=lambda e: (e["date"], e["label"].upper(), e["employee"]))
 	return out
 
 
-def holidays(monday: datetime.date, mode: str = "Bounded") -> dict[str, str]:
-	"""ISO date -> holiday description, for the week, from the companies' own calendars.
+def in_scope(
+	slots: list[Slot], disciplines: list[str] | None = None, branches: list[str] | None = None
+) -> tuple[list[Slot], list[Slot]]:
+	"""Split slots into the ones a filtered chart draws and the ones it hides.
+
+	A slot's discipline is its Scheduling Role's, which is also what decides the
+	band it lands in — so a slot surviving this is a slot `chart.build` can place,
+	and one that doesn't would otherwise have turned up under `Unplaced` as a
+	chip from a discipline the reader just asked not to see.
+
+	Both halves come back because the hidden ones are still worth *counting*: a
+	filter is an explicit act, but silently losing a scheduled person is the one
+	thing this chart never does, so the payload says how many it set aside.
+	"""
+	if not disciplines and not branches:
+		return list(slots), []
+	role_disciplines = _role_disciplines()
+	wanted_disciplines = set(disciplines or ())
+	wanted_branches = set(branches or ())
+	kept: list[Slot] = []
+	hidden: list[Slot] = []
+	for slot in slots:
+		discipline = role_disciplines.get(slot.scheduling_role)
+		if wanted_disciplines and discipline not in wanted_disciplines:
+			hidden.append(slot)
+		elif wanted_branches and slot.branch not in wanted_branches:
+			hidden.append(slot)
+		else:
+			kept.append(slot)
+	return kept, hidden
+
+
+def holidays(monday: datetime.date, mode: str = "Bounded") -> tuple[dict[str, str], set[int], bool]:
+	"""The week's non-working days, which weekdays are weekly offs, and whether a calendar
+	answered at all.
+
+	`({ISO date: holiday description}, weekly-off weekdays, resolved)`. **Weekly offs are
+	in the dict too** — an ERPNext `Holiday List` stores them as dated `Holiday` rows — so
+	it is every day the companies' calendars say is not worked, not only the public
+	holidays. They also come back separately, as weekday numbers, because that is the
+	calendar's answer to "which days does this practice work" and `api._default_worked`
+	seeds the reader's weekday control from it.
+
+	The two extra returns distinguish the three states a calendar can be in, which the
+	dict alone cannot: nothing resolved (`resolved` false), resolved and naming its weekly
+	offs, and resolved while naming none — the last being a site that has simply never
+	generated them, where a weekday default has to come from somewhere else.
 
 	A column header is shared by everyone on the chart, so this is the *company*
 	calendar — the same one `optimizer.data_loader` takes its weekly offs from. A holiday
@@ -544,15 +767,19 @@ def holidays(monday: datetime.date, mode: str = "Bounded") -> dict[str, str]:
 		if (name := base_list_for(company, monday))
 	}
 	if not lists:
-		return {}
+		return {}, set(), False
 	days = {day.isoformat() for day in week_dates(monday)}
 	out: dict[str, str] = {}
+	weekly: set[int] = set()
 	for row in frappe.get_all(
 		"Holiday",
 		filters={"parent": ["in", sorted(lists)], "parenttype": "Holiday List"},
-		fields=["holiday_date", "description"],
+		fields=["holiday_date", "description", "weekly_off"],
 	):
-		iso = frappe.utils.getdate(row["holiday_date"]).isoformat()
-		if iso in days:
-			out.setdefault(iso, row["description"] or "")
-	return out
+		date = frappe.utils.getdate(row["holiday_date"])
+		if date.isoformat() not in days:
+			continue
+		out.setdefault(date.isoformat(), row["description"] or "")
+		if row["weekly_off"]:
+			weekly.add(date.weekday())
+	return out, weekly, True

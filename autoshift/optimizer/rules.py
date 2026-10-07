@@ -150,6 +150,8 @@ class RuleContext:
 	# (both set by apply_rules)
 	_current_weight: float = 1.0
 	_current_rule: str = ""
+	# scratch dict for rules
+	_scratch: dict[str, int] = field(default_factory=dict)
 
 	def add_objective(self, term, path: PATH = ()) -> None:
 		"""Contribute a term to the maximized objective, scaled by the rule's ruleset weight.
@@ -1388,9 +1390,13 @@ def order_specs(specs: tuple[DataPackage.RULE, ...]) -> tuple[DataPackage.RULE, 
 	Stable topological sort: a spec is emitted once every built-in it requires (and
 	that is actually part of this selection — ``check_ruleset`` has already rejected
 	missing ones) has been emitted, preserving the incoming order as the tiebreak so
-	the result stays deterministic. Custom Code rules declare no metadata, so they
-	simply keep their position. A dependency cycle falls back to the incoming order
-	rather than dropping rules or looping forever.
+	the result stays deterministic. Custom Code rules declare no metadata to require
+	anything by, so instead they wait on *every* built-in in the selection: a custom
+	rule reading a structure a built-in populates at apply-time (`ctx.room_occupancy`,
+	say) can otherwise race ahead of it, see nothing, and silently contribute no
+	constraints or objective terms. Multiple custom rules still keep their relative
+	incoming order among themselves. A dependency cycle falls back to the incoming
+	order rather than dropping rules or looping forever.
 	"""
 	selected = {key for _, key, _, _ in specs if key}
 	emitted: set[str] = set()
@@ -1398,7 +1404,7 @@ def order_specs(specs: tuple[DataPackage.RULE, ...]) -> tuple[DataPackage.RULE, 
 	def is_ready(spec: DataPackage.RULE) -> bool:
 		rule = BUILTIN_RULES.get(spec[1])
 		if rule is None:  # Custom Code (or an unknown key apply_rules will reject)
-			return True
+			return not selected - emitted
 		# only wait on requirements that are part of this selection; check_ruleset has
 		# already rejected a selection missing one
 		return not (rule.requires.keys() & selected) - emitted

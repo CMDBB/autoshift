@@ -63,6 +63,20 @@ order; the regression tests now build specs from the real document titles (`titl
 
 **If you change how `_load_rules` orders or hashes specs, keep the sort.**
 
+**Custom Code rules always run after every built-in in the selection (2026-10-05).** Custom
+Code declares no `requires` to sort by — that's deliberate, see "Dependency-graph inference
+for Custom Code rules" below — but a custom rule that reads something a built-in populates at
+apply-time (`ctx.room_occupancy`, built only by `room_coverage_matched_rooms`) could still race
+ahead of it whenever the custom rule's document name happened to sort first, see an empty
+structure, and silently contribute nothing: no constraint, no objective term, and — since only
+built-in Objective rules get a pre-registered zero entry in `objective_contributions` — no row
+in the breakdown either, rather than a visible 0. `order_specs` now holds every Custom Code
+spec back until the whole built-in selection has been emitted, regardless of document name.
+This is coarser than real dependency tracking (a custom rule that only reads `ctx.x`/`ctx.p`,
+built by `model_builder` before any rule runs, never needed the wait) but costs nothing —
+rule application order has no effect on a correctly-built LP/MILP's feasible region, only on
+which `ctx.room_occupancy`-style structures happen to exist yet.
+
 ---
 
 ## Presence, role modes and collateral work (2026-09-15)
@@ -907,6 +921,25 @@ The split inside that read is the load-bearing part:
   chosen). Deleting their non-rota variables would make binding unconditional and quietly
   retire that choice.
 
+**An empty read is not a missing calendar.** The first version guarded on the row count —
+"no rows came back for this company, so refuse to plan" — which conflated three different
+situations. Only one is an error:
+
+- **Nothing resolves** (no `Holiday List Assignment`, no `Company.default_holiday_list`):
+  a configuration error, and it throws. Planning on it would treat all seven days as worked.
+- **A list resolves and has no rows in this window**: a legitimate answer meaning every day
+  of the window is worked — a company that works seven days, or simply a window with no
+  holiday in it. The guard is therefore on `applicable_lists`, not on `rows_between`.
+- **A list resolves but its own date range stops short of the horizon**: neither. Those days
+  come back worked *including weekends*, because a weekend is a `weekly_off` row like any
+  other and an absent row is an absent weekend — so planning past the published year quietly
+  produces a schedule that staffs Saturdays. `_warn_uncovered_horizon` says so, naming the
+  span, and does not block: the old `Optimizer Settings` read had the same hole, and a sparse
+  calendar is a legitimate if unusual choice.
+
+A 2026-only calendar planned from 2027 is the case that actually bit; one straddling the year
+end is the instructive one — the 2026 half keeps its weekends and the 2027 half does not.
+
 **The books outrank the calendar.** A submitted `Shift Assignment` on somebody's holiday is a
 fact about a day they worked, so `load` adds every `forced` day back into that employee's
 availability before building the package. Without it a stale or wrong calendar would either
@@ -983,8 +1016,9 @@ never quietly lose somebody.
 **Why all seven days are always drawn, dimmed three ways:** an empty Sunday is nothing, a day
 outside the run's `planning_days` is a scope question, an empty working day is a finding.
 
-**Why people on leave get a strip instead of a cell:** they are the answer to "why is this
-chair empty".
+**Why people on leave get a row instead of a cell:** they are the answer to "why is this
+chair empty", and they are not in a chair, so they have no cell to be in. The row sits inside
+its section's own table — see "A sheet somebody can hang on a wall" below.
 
 **Chip order within a lane is alphabetical unless a role says otherwise
 (`Scheduling Role.chip_sort_field`).** The row number was always drawn — a band's rows are
@@ -1057,6 +1091,185 @@ inferred-role warning). Coverage is unaffected — it was already a fact about l
 A measured room whose line is already taken in the same lane falls back to the leftover
 lines. Only the `Unplaced` band can produce that, by pooling two bands' room 1 into one lane;
 dropping the chip would break the one promise this chart makes without exception.
+
+### A sheet somebody can hang on a wall (2026-10-06)
+
+The chart was effective and stable and still not quite usable, for three reasons that turn
+out to share one cause: it only ever had one audience. Everything on it — every band, every
+provenance colour, every warning — is addressed to the person who just ran the solve. A
+printed week is read by everybody else.
+
+**The filter narrows server-side, not in the browser.** `get_week_chart` takes
+`disciplines`/`branches`, hands them to `layout.derive`, and everything downstream follows
+the surviving band set: which sections exist at all, the coverage headline, the leave list,
+even which slots are loaded. Filtering in the renderer would have been one line and no round
+trip, and would have produced a chart whose headline counted rooms it was not drawing — the
+same defect `api._totals` already refuses by counting off the chart rather than off
+`Optimizer Run Coverage`. An empty selection is *every* band, never none, so the picker has
+no "all" state to get wrong and a chart nobody has filtered is the default.
+
+The one thing it does cost: `Unplaced` can no longer be relied on to hold everybody. A chip
+whose discipline the reader filtered out is genuinely gone, so `source.in_scope` hands back
+both halves and the payload carries a `hidden` count the filter row states. That is the
+narrowest reading of "the chart never quietly loses somebody" that a filter can satisfy at
+all: it is allowed to hide, it is not allowed to hide *silently*.
+
+**Leave is filed under the half-day it empties, and the leave record cannot say which.**
+HRMS stores a half-day as `Leave Application.half_day` plus a date and never records which
+half — so the morning/afternoon attribution has to come from somewhere else, and the only
+evidence available is what the person would otherwise have been doing: their rota, and
+whatever the books already record (`source._expected_shifts`). This is the same reading
+`_off_leave` already relies on in the other direction — it drops the rota day *because* they
+are on leave, and that dropped day is exactly what says the morning is the half that emptied.
+
+Two consequences worth stating. Somebody off all day appears under **both** halves rather
+than once: they are away for both, and picking one would mean choosing which half to lie
+about. And somebody with neither a rota nor a record that day lands in a leftovers row at the
+foot of the chart, flagged as such — a real answer, not a failure, and better than a
+confident guess. `chart.bucket_leaves` does the filing and is Frappe-free like the rest of
+placement, so it is unit-tested with the rest of the chart.
+
+Leave also follows the filter, which fixes a second thing nobody had asked about: the list
+was every approved Leave Application on the site, non-clinical staff included. Narrowing to
+employees holding a Scheduling Role in a drawn discipline drops them, on the same reasoning
+that keeps them off the chart itself — somebody holding no role is not scheduled here at all.
+
+**A printout defaults to a finished sheet, and the sheet omits what it cannot say honestly.**
+The export dialog's `clean` default drops the kept/added/dropped colours, the ★ and →, the
+dashed and dotted borders, the legend and the warnings: all of it says where a chip came
+from, which is a question about the solve, not about next Tuesday. Two decisions inside that
+are worth recording, because both could have gone the other way:
+
+- **A dropped chip comes off the sheet entirely**, rather than being drawn plain. With no
+  colour and no strikethrough left to mark it, a plain chip claims a room is staffed by
+  somebody the run sent home — the sheet would be wrong in the one way that matters.
+  `_order_lane` already sinks dropped chips to the bottom of their lane and `covered` already
+  counts them for nothing, so neither the hatching nor the headline was relying on them — but
+  the *row* was, which is the next note.
+- **The hatching stays.** "This room is not open" is a fact about the week, in the same class
+  as a weekend column, not a note about provenance. A clean sheet is not a sheet with less
+  information on it; it is a sheet with only this week's information on it.
+
+The dialog, rather than a second Export button or a settings doctype: the answers are
+per-print (one discipline this time, everything next time), nothing about them is worth
+storing, and the alternative — guessing from the screen's state — is how you end up printing
+a diff for the notice board.
+
+### A row past the room count is not a room (2026-10-06)
+
+Hiding the dropped chips exposed something that had been wrong all along. `chart.build` sets
+a band's height to `max(rooms_num, rows used)`, so a half-day with more people on it than the
+branch has rooms grows the band — correctly, because the alternative is hiding somebody. But
+the renderer then numbered *every* row it drew, so an eighth line in a seven-room branch
+printed as "room 8". The clean sheet turned that from a wrong label into a visible defect: the
+chips holding those lines were the dropped ones, so the sheet carried blank numbered rooms
+that do not exist.
+
+Rooms are written in stone — `rooms_num` is a fact about the building — so the fix is the
+general one, in both modes:
+
+- **Only rows within `band.rooms` are numbered**, and only they are hatched. Past that the
+  line is an overflow, not a half-staffed room, and neither a number nor hatching can be true
+  of it. The ordinal cell carries a title saying so, and `chart.build`'s existing "covers N
+  rooms on one half-day but only M are configured" warning is what explains the line.
+- **Rows past `band.rooms` are drawn only while something in them is drawn** (`drawn_rows`).
+  `hidden_chip` is the one predicate deciding whether a chip is printed, and both
+  `cell_markup` and the row count now ask it, so a line cannot outlive its only occupant.
+  The count stays monotonic: a row is one table row across every lane and day, so the deepest
+  visible one pulls the blanks above it along — there is no skipping a line in the middle.
+
+The row count stays in the renderer rather than moving into `api.py`, against this package's
+usual rule that the browser decides nothing, because it is a function of a *view* option the
+server does not have — the same reason `cell_markup` and `columns_of` already live there. What
+the server decides is unchanged: `chart.heights` still reports every row a chip landed on,
+because the screen still draws them.
+
+One thing deliberately left alone: `covered_rooms` can still count a fully-staffed overflow
+line, so a band with more pairs than rooms reports more staffed than configured. The solver
+cannot produce it (`active_rooms` is bounded by `rooms_num`), it only arises from book slots,
+and it predates all of this — folding the cap into `_coverage` would reach into the
+room-identity arithmetic for a headline that is already flagged by a warning.
+
+### A leave day is only news where somebody was due (2026-10-06)
+
+A printed week kept its weekend columns, because a long leave — parental, unpaid, a month in
+the summer — is stored as a *span of dates* and so covers every Saturday and Sunday in it.
+Nothing was staffed there and nothing could be, but the leave row held the column open.
+
+The fix is not to drop weekend leaves. A practice that starts opening on Saturdays would
+then find the chart quietly lying about it, and the whole point of deriving the layout from
+configuration is that the configuration is where such a change gets made. The defect is
+upstream of the weekend: **a leave day was reported wherever the leave spanned, not wherever
+it emptied something.** `shift_types == []` was doing double duty, meaning both "this person
+does not work that day" and "we have no idea what this person works", and the leftovers row
+drew both. The same bug mis-reported a four-day week's Wednesday, and nobody had noticed
+because nobody looks at a leftovers row until it is on paper.
+
+So each entry now carries `due` (`source._due`): was this person going to be here at all?
+Two pieces of evidence, both negative, and an explicit rule for having neither:
+
+- **their calendar.** The company's weekly offs, or a dated holiday of their own. This is
+  the decisive one and the reason the weekend problem disappears without a weekday test
+  anywhere: take Saturday out of the Holiday List and Saturday leave comes back by itself.
+- **their rota**, where we have a week for them at all and it puts them nowhere on that day.
+  This is what catches the four-day week and an alternating rota's off week.
+- **neither** ⇒ `due`. Absence of evidence is not evidence of absence: somebody with no rota
+  and nothing on the books is reported on any day their calendar allows, with no half named.
+  Guessing "probably off" there would hide a real absence, which is the one failure mode this
+  chart does not get to have.
+
+`bucket_leaves` grew a third bucket for the not-due days rather than dropping them, so the
+verdict stays in the payload for anything that wants it later; no view draws it, which is
+what makes a weekend of a month-long leave stop holding a column open.
+
+**The calendar resolution moved into `rota.holidays.calendars`.** Both halves of this — and
+`optimizer.data_loader._availability`, which had the only copy — now read one function, in
+the module that owns calendars. The split it implements is unchanged and still the subtle
+part: the *company's* weekly offs apply to everybody, each employee's *own dated* holidays
+apply to them alone, and an employee's own **weekly offs are ignored**, because for a bound
+employee those are their rota's days off and belong to the `role_binding` rules rather than
+to a deleted variable. What stayed behind in the loader is the policy, which is where the
+two callers genuinely differ: a solve throws on a company with no resolvable calendar,
+because it would otherwise plan seven-day weeks; a chart carries on and says so in a
+warning, because drawing the week it has beats drawing nothing.
+
+**And `WEEKENDS = (5, 6)` is no longer what makes a day non-working.** An ERPNext Holiday
+List stores its weekly offs as dated `Holiday` rows, so "not in the calendar" *is* "worked"
+— the reading `_availability` already took. `day.working` now follows it. This was latent
+rather than broken, and it would have surfaced the first Saturday the practice opened.
+
+### The weekday control: a hardcoded rule, made visible instead (2026-10-06)
+
+Reading the calendar immediately found that this practice's Holiday Lists carry **no weekly
+offs at all** — so the honest answer became "every day is worked", every weekend column read
+as working, and a leave spanning one emptied something after all. The previous rule was not
+wrong about their week; it was wrong about *where that fact lives*.
+
+Neither extreme is the answer. Keeping `WEEKENDS` as a rule is a lie the moment they open on
+a Saturday; dropping it entirely is a lie today. So it stayed, and became **the default of a
+control the reader can see** (`filters.weekdays`, two presets: All days / Weekends off):
+
+- the calendar's weekly offs where it names any — generate them and the control follows,
+  which is still the only answer a *solve* will ever read;
+- Mon-Fri where it names none, because a list nobody generated weekly offs for and a
+  genuinely seven-day practice are indistinguishable, and one of those is far more common;
+- the reader's own answer over both, because they are the one who knows which it is.
+
+A rule nobody can see is worth less than a default somebody can change in one click, and the
+control is self-cancelling: once the weekly offs are in the Holiday List, the default is
+already right and nobody touches it again.
+
+It **narrows and never widens**. A weekday left out closes that day for everybody; a weekday
+left in says only "not on my account", and the calendar still has its say — so "All days"
+cannot reopen a day a Holiday List closed. That asymmetry is deliberate: the control exists
+because the calendar cannot yet say a day *is* worked, and letting a view option overrule a
+calendar that *has* spoken would put the chart and the solver into disagreement, which is the
+one thing sharing `rota.holidays.calendars` was meant to prevent.
+
+Its reach is the three things that follow from "which days are worked": which columns read as
+working, what the coverage headline counts against, and which days a leave can have emptied.
+That last one is why it is a server argument and not a browser toggle — the pruning is
+`source._due`'s, and only the server can do it.
 
 ---
 

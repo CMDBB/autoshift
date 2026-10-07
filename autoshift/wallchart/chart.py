@@ -270,6 +270,54 @@ def week_dates(monday: datetime.date) -> list[datetime.date]:
 	return [monday + datetime.timedelta(days=offset) for offset in range(7)]
 
 
+def bucket_leaves(
+	entries: list[dict], dates: list[str], shift_types: list[str]
+) -> tuple[dict[str, list[list[dict]]], list[list[dict]], list[list[dict]]]:
+	"""File each leave entry by the half-day it empties.
+
+	Returns (per shift type, half not known, emptied nothing). Every one of the three
+	is day-indexed and exactly as wide as the week, so a leave cell is read the way a
+	chip cell is, and a leave on a day the chart does not draw has no column to land in.
+
+	Somebody on leave has no `Slot` — they are not in a chair — but they are the
+	answer to "why is this chair empty", so they are placed next to the chart by
+	the same arithmetic everything else here is.
+
+	Three buckets because a leave day is three different facts, and only the first two
+	belong next to a week:
+
+	- it emptied a half-day the chart has a table for, so it goes under that table. An
+	  entry naming **two** of them is filed under both: somebody off on Tuesday is off on
+	  Tuesday morning *and* Tuesday afternoon, and picking one would mean choosing which
+	  half to lie about.
+	- it emptied something, but nothing says which half — or names a Shift Type no
+	  section covers, which leaves just as little to draw it under. Both go to the
+	  leftovers, reported without a half.
+	- it emptied **nothing**: `due` is false, so the person was never going to be there
+	  that day (`source._due`). A leave is a span of dates and covers the days in
+	  between regardless, so this is the ordinary case for a long one — and reporting it
+	  says only that the leave is long. Kept apart rather than dropped so the verdict
+	  stays in the payload for anything that wants it; no view draws it today.
+	"""
+	by_shift = {shift_type: [[] for _ in dates] for shift_type in shift_types}
+	rest: list[list[dict]] = [[] for _ in dates]
+	not_due: list[list[dict]] = [[] for _ in dates]
+	column = {date: index for index, date in enumerate(dates)}
+	for entry in entries:
+		index = column.get(entry["date"])
+		if index is None:
+			continue
+		if not entry.get("due", True):
+			not_due[index].append(entry)
+			continue
+		halves = [shift_type for shift_type in entry["shift_types"] if shift_type in by_shift]
+		if not halves:
+			rest[index].append(entry)
+		for shift_type in halves:
+			by_shift[shift_type][index].append(entry)
+	return by_shift, rest, not_due
+
+
 def _describe_move(proposed: Slot, existing: Slot) -> str | None:
 	"""What the run changed about a half-day that was already on the books."""
 	parts = []

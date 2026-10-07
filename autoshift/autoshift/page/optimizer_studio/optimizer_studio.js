@@ -831,11 +831,20 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 				run,
 				status: message ? message.status : null,
 				week: date || null,
-				week_chart: (week) =>
+				// `filters` is the chart's own discipline/branch selection — see the
+				// Optimizer Run form's copy of this for why it goes to the server.
+				week_chart: (week, filters) =>
 					frappe
 						.call({
 							method: "autoshift.wallchart.api.get_week_chart",
-							args: { week, run, mode: this.mode_field.get_value() || "Bounded" },
+							args: {
+								week,
+								run,
+								mode: this.mode_field.get_value() || "Bounded",
+								disciplines: JSON.stringify((filters || {}).disciplines || []),
+								branches: JSON.stringify((filters || {}).branches || []),
+								weekdays: JSON.stringify((filters || {}).weekdays || []),
+							},
 						})
 						.then((r) => r.message),
 				// Already in hand from the preview call — no second round trip.

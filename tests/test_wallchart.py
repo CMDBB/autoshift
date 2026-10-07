@@ -24,6 +24,7 @@ from autoshift.wallchart.chart import (
 	Layout,
 	Section,
 	Slot,
+	bucket_leaves,
 	build,
 	merge,
 	monday_of,
@@ -564,3 +565,105 @@ def test_merge_keeps_the_room_index_on_a_kept_slot():
 	proposed = [slot(employee="E1", room_index=(3,))]
 	merged = merge([slot(employee="E1")], proposed)
 	assert merged[0].room_index == (3,)
+
+
+# ── leave, filed under the half-day it empties ───────────────────────────────
+
+WEEK = [(MONDAY + datetime.timedelta(days=offset)).isoformat() for offset in range(7)]
+
+
+def leave(employee="E1", day=MONDAY, shift_types=(AM,), due=True, **kwargs):
+	return {
+		"employee": employee,
+		"label": employee,
+		"leave_type": "Holiday",
+		"date": day.isoformat(),
+		"half_day": False,
+		"shift_types": list(shift_types),
+		"due": due,
+		**kwargs,
+	}
+
+
+def test_leave_is_filed_under_the_shift_type_it_empties():
+	by_shift, rest, _not_due = bucket_leaves([leave(shift_types=(PM,))], WEEK, [AM, PM])
+	assert by_shift[AM][0] == []
+	assert by_shift[PM][0][0]["employee"] == "E1"
+	assert rest[0] == []
+
+
+def test_leave_lands_in_the_column_of_its_own_day():
+	by_shift, _rest, _not_due = bucket_leaves([leave(day=TUESDAY)], WEEK, [AM, PM])
+	assert [len(entries) for entries in by_shift[AM]] == [0, 1, 0, 0, 0, 0, 0]
+
+
+def test_a_whole_day_off_is_reported_under_both_halves_worked():
+	"""Off on Tuesday is off on Tuesday morning *and* afternoon — picking one would
+	mean choosing which half to lie about."""
+	by_shift, rest, _not_due = bucket_leaves([leave(shift_types=(AM, PM))], WEEK, [AM, PM])
+	assert by_shift[AM][0][0]["employee"] == "E1"
+	assert by_shift[PM][0][0]["employee"] == "E1"
+	assert rest[0] == []
+
+
+def test_leave_nothing_can_attribute_falls_to_the_leftovers():
+	by_shift, rest, _not_due = bucket_leaves([leave(shift_types=())], WEEK, [AM, PM])
+	assert by_shift[AM][0] == [] and by_shift[PM][0] == []
+	assert rest[0][0]["employee"] == "E1"
+
+
+def test_a_shift_type_the_chart_has_no_table_for_is_as_good_as_none():
+	"""No section covers it, so there is nowhere to draw it either way."""
+	by_shift, rest, _not_due = bucket_leaves([leave(shift_types=("NIGHT",))], WEEK, [AM, PM])
+	assert rest[0][0]["employee"] == "E1"
+	assert list(by_shift) == [AM, PM]
+
+
+def test_a_day_the_chart_does_not_draw_has_no_column_to_land_in():
+	outside = leave(day=MONDAY - datetime.timedelta(days=1))
+	by_shift, rest, _not_due = bucket_leaves([outside], WEEK, [AM])
+	assert all(not entries for entries in by_shift[AM])
+	assert all(not entries for entries in rest)
+
+
+def test_every_shift_type_gets_a_column_set_even_with_no_leave_at_all():
+	by_shift, rest, _not_due = bucket_leaves([], WEEK, [AM, PM])
+	assert [len(by_shift[AM]), len(by_shift[PM]), len(rest)] == [7, 7, 7]
+
+
+def test_leave_on_a_day_the_person_never_works_empties_nothing():
+	"""The weekend of a long leave: `due` is false, so it is filed apart from both the
+	half-day buckets and the leftovers, and no view draws it."""
+	by_shift, rest, not_due = bucket_leaves([leave(shift_types=(), due=False)], WEEK, [AM, PM])
+	assert by_shift[AM][0] == [] and by_shift[PM][0] == []
+	assert rest[0] == []
+	assert not_due[0][0]["employee"] == "E1"
+
+
+def test_a_not_due_day_is_set_aside_even_with_a_shift_type_on_it():
+	"""`due` is the verdict, not a guess from the shift types: a rota day the employee's
+	own calendar dates off emptied nothing, whatever the rota said."""
+	_by_shift, rest, not_due = bucket_leaves([leave(shift_types=(AM,), due=False)], WEEK, [AM])
+	assert rest[0] == []
+	assert not_due[0][0]["employee"] == "E1"
+
+
+def test_a_leave_missing_the_verdict_is_treated_as_due():
+	"""Nothing silently disappears for want of a field."""
+	entry = leave()
+	del entry["due"]
+	by_shift, _rest, not_due = bucket_leaves([entry], WEEK, [AM])
+	assert by_shift[AM][0][0]["employee"] == "E1"
+	assert not_due[0] == []
+
+
+def test_the_three_buckets_partition_every_entry_of_a_drawn_day():
+	entries = [
+		leave(employee="E1", shift_types=(AM,)),
+		leave(employee="E2", shift_types=()),
+		leave(employee="E3", shift_types=(), due=False),
+	]
+	by_shift, rest, not_due = bucket_leaves(entries, WEEK, [AM])
+	assert [e["employee"] for e in by_shift[AM][0]] == ["E1"]
+	assert [e["employee"] for e in rest[0]] == ["E2"]
+	assert [e["employee"] for e in not_due[0]] == ["E3"]

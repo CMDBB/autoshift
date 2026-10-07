@@ -241,15 +241,21 @@ module.
    **`apply_rules` reorders specs via `order_specs`, a stable topological sort over
    `requires` — do not drop this**, see design notes.
 3. `data_loader.py` — `load(run_doc)` hydrates a `DataPackage`. `_availability` reads the
-   calendar per employee from HR via `rota.holidays.applicable_lists` (**not** HRMS's
+   calendar per employee from HR via **`rota.holidays.calendars`** — shared with the wall
+   chart, which reads it to decide whether a leave day emptied anything, so the picture and
+   the model cannot drift about which days are worked; only the *policy* is here (see the
+   resolution guard below). It resolves through `applicable_lists` (**not** HRMS's
    `get_holiday_dates_between_range`, which resolves a company through `Holiday List
    Assignment` only and never falls back to `Company.default_holiday_list`):
    the **company's** weekly offs define `working_days` (their union over employees, so a day
    nobody works is not in the horizon), each employee's own dated holidays remove their days
    alone. **The books outrank the calendar** — a `forced` day inside the horizon is added
    back to that employee's availability, so a submitted assignment on somebody's holiday can
-   never crash on a missing variable or be silently dropped. Throws when a company has no
-   list assigned. It also (bound employees' unrecorded
+   never crash on a missing variable or be silently dropped. **Guarded on resolution, not on
+   row count**: a company with no resolvable list throws, but a list that resolves and has
+   no rows in this window legitimately means "every day is worked" (and a calendar whose own
+   `from_date`/`to_date` stops short of the horizon warns instead — those days come back
+   worked, weekends included). It also (bound employees' unrecorded
    rota days come from `rota.materialize.settled_rows`, never from records created first); resolves the ruleset into
    `(rule_name, builtin_key, custom_code, weight)` tuples (throws on
    unimplemented/unvalidated; sorted by name for hash stability); normalizes preferences via
@@ -381,6 +387,16 @@ are *disabled with a tooltip* rather than hidden; Solver Log needs only a run, s
   the chart's own reading of `room_coverage`'s minimum — is hatched, because a half-staffed
   room is not an open room. `dropped` chips sink to the bottom of their lane and count
   toward neither. The headline counts fully-staffed rooms for the same reason.
+  **Only the first `rooms_num` rows are rooms.** A band grows past its room count rather than
+  hide anybody, but those extra lines are neither numbered nor hatched — there is no such
+  room to number and a non-room cannot be half-staffed; the ordinal's tooltip and `build`'s
+  "covers N rooms but only M are configured" warning explain them. They are also drawn only
+  while something in them is drawn (`wall_chart.js`'s `drawn_rows`, off the same `hidden_chip`
+  predicate `cell_markup` uses), so hiding the `dropped` chips on a finished sheet takes the
+  lines they were holding with them instead of leaving blank numbered rooms. `Unplaced` is
+  dropped outright when nothing in it is drawn — it reports unplaceable people, so with none
+  to report it says nothing; a *configured* band with no rooms still prints its label, because
+  that emptiness is the configuration.
   `Chart.covered` is the **set of open rows** per (shift type, band, day), not a count
   (`covered_rows` places them, `covered_rooms` counts them), and reaches the browser as the
   band's `open_rows` — an open room need not be at the top of the stack, so `_coverage`
@@ -405,11 +421,65 @@ are *disabled with a tooltip* rather than hidden; Solver Log needs only a run, s
   same days the loader reads — drawn as `virtual` chips (dotted, italic), so the week can be
   checked before anything is created. The "Create them" banner sits behind an
   "N not recorded" toolbar toggle.
+  **Filterable by discipline and branch**, two `MultiSelectList` pickers in a row of their
+  own above the chart (the only part of the view that outlives a fetch, so a dropdown is not
+  destroyed mid-click; it re-fetches on close, not on every toggle). Narrowed **server-side**
+  — `get_week_chart(..., disciplines, branches)` → `layout.derive(disciplines, branches)` —
+  because the sections, the coverage headline, the leave list and which slots even load all
+  follow the band set; an empty selection is *every* band, never none. `layout.filter_options`
+  lists what there is to narrow to (unfiltered, so the picker keeps offering what the
+  selection hid) — each option carrying a `description`, **which is not optional**: the
+  control renders that field into each row's subtitle and Frappe's `process_options` only
+  defaults it for *string* options, so an object option without one prints "undefined".
+  Ours names the band's other axis plus its room total ("B1 · B2 — 6 rooms") and `source.in_scope` splits the slots, handing back the hidden ones so the
+  payload's `filters.hidden` can state a count — a filter may hide, it may not hide silently.
+  `pending_bound` stays whole-week on purpose: it describes the books and the scope of
+  "Create them", neither of which the filter touches (the toggle's tooltip says so).
+  **Leave is filed under the half-day it empties**, one row per section inside that section's
+  own table (AM chart → AM leave → PM chart → PM leave), with the unattributable ones in a
+  leftovers row at the foot. HRMS records a half-day as a flag plus a date and never which
+  half, so the attribution comes from what the person would otherwise have worked —
+  `source._expected_shifts`, off their rota and the books; `chart.bucket_leaves` (Frappe-free,
+  tested) does the filing into three buckets. All day off ⇒ listed under both halves. Leave
+  also follows the filter and, with it, drops everybody holding no Scheduling Role at all.
+  **A leave day that emptied nothing is set aside** (`source._due` → `bucket_leaves`'s third
+  bucket, `leaves_not_due`, which nothing draws): a leave is a span of dates, so a long one
+  covers weekends and a four-day week's off day too, and reporting those says only that the
+  leave is long. `due` is false where their **calendar** says they do not work that day (the
+  company's weekly offs, or a dated holiday of their own) or where we have a week for them
+  and their **rota** puts them nowhere on it; somebody with neither is `due`, reported with
+  no half named — absence of evidence is not evidence.
+  **"Export PDF…" opens a dialog, not a print.** Per-print granularity: disciplines, branches,
+  a heading, working-days-only (an empty weekend column goes; one somebody is scheduled on
+  never does), include-leave, include-coverage-summary, a table per shift type (repeated day
+  header, so a page break lands between bands), orientation and text size. Its **"Finished
+  sheet" default is on**, dropping everything that says where a chip came from — the
+  kept/added/dropped colours, ★/→, the dashed/dotted borders, the legend, the warnings, the
+  `Unplaced` red and the today/out-of-window shading — and **omitting `dropped` chips
+  entirely**, since with no colour or strikethrough left a plain one would claim a room is
+  staffed by somebody the run sent home. Hatching stays either way: a room not being open is
+  a fact about the week, not about provenance. A scope the screen is not already showing is
+  re-fetched, and the popup is opened in the click's own turn and filled after (a window
+  opened post-`await` is blocked).
+  `day.working` comes from the **calendar** plus a reader's control, not from the weekday: a
+  Holiday List stores its weekly offs as dated `Holiday` rows, so "not in the calendar" is
+  "worked". A third picker, **Days worked** (`filters.weekdays`, presets "All days" /
+  "Weekends off"), says which weekdays the practice runs for a site whose list cannot say yet
+  — `api._default_worked` seeds it from the calendar's weekly offs where it names any,
+  else Mon–Fri (`api.WEEKENDS`, now **only** a default, not a rule). It **narrows and never
+  widens**: "All days" cannot reopen a day a Holiday List closed, because that belongs in the
+  list, which is the only answer a solve reads. It drives the working-day shading, the
+  headline's capacity, and — the reason it is a server argument — which days a leave can have
+  emptied. Parsed by `api._weekdays`, apart from `_selection`, because **Monday is 0** and a
+  falsy filter would eat it. The print dialog inherits the screen's setting rather than asking
+  again; it is a statement about the site's week, not a per-print choice.
   Split like the optimizer: `chart.py` is Frappe-free (covered by `tests/test_wallchart.py`),
   `layout.py`/`source.py` read the DB, `api.py` holds the whitelisted
-  `get_week_chart(week, run, mode)`. Cells print initials — `Employee.custom_initials` where
-  zawin2frappe has installed it (**read, never shipped here**), otherwise derived from the
-  name.
+  `get_week_chart(week, run, mode, disciplines, branches)`. `wall_chart.js` bundles the two
+  things drawing is parameterised on — which day columns, and how much to say — into one
+  `ctx` (`view()`), so the screen and a sheet share every markup function. Cells print
+  initials — `Employee.custom_initials` where zawin2frappe has installed it (**read, never
+  shipped here**), otherwise derived from the name.
 - **Statistics** — `OptimizerRun.get_run_statistics()` + `autoshift/public/js/run_stats.js`.
   Room-slots staffed vs configured, per-discipline coverage meters, a discipline × day grid,
   employees below FTE target, and each rule's share of the objective
@@ -534,9 +604,10 @@ four-day week must be written down as a holiday list or a week off costs five da
 `derive` = the company's assigned calendar (verbatim — an assignment of one's own kills the
 company fallback) ∪ every unworked day of the window; `worked` is rotas expanded plus what the
 books already record. **An export, never read back** — the solver's calendar stays
-`Optimizer Settings`. **Partly read back**: `data_loader._availability` takes these lists'
-dated holidays (and the *company's* weekly offs), never the rota-derived days off — those
-lag, and binding is a ruleset choice. Bound employees only (nobody else has a pattern to
+`Optimizer Settings`. **Partly read back**: `rota.holidays.calendars` — read by
+`data_loader._availability` and by the wall chart's `source._not_working` — takes these lists'
+dated holidays (and the *company's* weekly offs), never the rota-derived days off, which an
+employee's own list carries as *weekly* offs: those lag, and binding is a ruleset choice. Bound employees only (nobody else has a pattern to
 derive from);
 whole days only (`Holiday.is_half_day` exists but `get_holidays` counts dates, so a
 morning-only week is inexpressible). Lists are named by content digest and shared; the window
@@ -686,7 +757,7 @@ mints a new list + assignment from `first_difference`. On demand only: the Rota 
 
 - `uv run pytest tests/` — pure-Python, no Frappe context, ~2 s. `test_optimizer.py`
   (planning days, hashing, every rule), `test_wallchart.py` (`wallchart/chart.py` placement,
-  overflow, the run-vs-books merge), `test_rota.py` (`rota/cycle.py` phase, handover
+  overflow, the run-vs-books merge, filing leave under the half-day it empties), `test_rota.py` (`rota/cycle.py` phase, handover
   boundary), `test_rota_edit.py` (`rota/edit.py` staging, merging, describing),
   `test_diagnostics.py` (the infeasibilities binding actually produces, found by both the
   solver-free scan and the elastic analysis), `test_holidays.py` (`rota/calendar.py`

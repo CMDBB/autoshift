@@ -14,8 +14,13 @@ and nothing more. The shape is nested to match the drawing order:
                     bands: [{key, discipline, branch, numbered, rooms, height,
                              open_rows: [[rows open, …], …7],
                              lanes: [{key, label, gates_rooms}],
-                             rows: [ [ [cell|null, …7], …lanes ], …height ] }]}],
-      "leaves":   {"YYYY-MM-DD": [{employee, label, leave_type, speculative}]},
+                             rows: [ [ [cell|null, …7], …lanes ], …height ] }],
+                    leaves: [[{employee, label, leave_type, …}, …], …7]}],
+      "leaves_unknown": [[leave entry, …], …7],
+      "filters":  {disciplines: {options: [{value, label}], selected: [str]},
+                   branches:    {options: […],             selected: [str]},
+                   weekdays:    {selected: [0‥6]},
+                   hidden: int},
       "warnings": [str],
       "totals":   {staffed, capacity, kept, added, dropped},
       "pending_bound": {first_day, last_day, count, employees, employee_names},
@@ -31,6 +36,22 @@ backs an on-demand "Create them" for a planner who wants them recorded.
 somebody covering two rooms appears as two cells — see `chart._fill`; `rooms` on the
 cell is how many they cover in all, for the tooltip. Null is a room nobody is in,
 which is the thing the chart exists to show.
+
+A leave entry is filed under the Shift Type of the half it empties, so a section's
+`leaves` sit under that section's own table — morning leave below the morning
+chart — and `leaves_unknown` collects the ones nothing could attribute to a half
+(see `source._expected_shifts`). The same entry appears under both halves of a
+day somebody works twice: they are away for both.
+
+`filters` is the reader's own narrowing, the one view preference in the payload.
+`weekdays` is which weekdays the practice works — the reader's answer where they gave
+one, the calendar's where it has one, and Mon-Fri where neither does; it decides which
+columns read as working, what the headline counts against, and which days a leave can
+have emptied (see `_default_worked`).
+`options` are every discipline and branch there is a band for, *unfiltered* — the
+picker has to keep offering what the current selection hid — and `hidden` counts
+the half-days set aside, because a filter may be explicit but a quietly dropped
+person never is.
 
 `open_rows` is *which* of a band's rows are genuinely open on each weekday — the
 lines every gating lane staffs. Any other row is empty, or staffed by somebody but
@@ -50,11 +71,60 @@ import frappe
 
 from . import layout as layout_mod
 from . import source
-from .chart import KIND_ADDED, KIND_DROPPED, KIND_KEPT, OVERFLOW, build, merge, monday_of, week_dates
+from .chart import (
+	KIND_ADDED,
+	KIND_DROPPED,
+	KIND_KEPT,
+	OVERFLOW,
+	bucket_leaves,
+	build,
+	merge,
+	monday_of,
+	week_dates,
+)
 
 #: Weekday names are the browser's job (it has the user's locale); the payload
 #: only says which weekday a column is, and whether it is a working day.
+#:
+#: Saturday and Sunday, as the **default of a visible control only** — see
+#: :func:`_default_worked`. Which days are worked is a fact the company's Holiday List
+#: carries, not one this file gets to assert, and a practice that starts opening on a
+#: Saturday must not have to come here to say so.
 WEEKENDS = (5, 6)
+
+
+def _default_worked(weekly_offs: set[int], calendar: bool) -> set[int]:
+	"""Which weekdays the practice works, before the reader says otherwise.
+
+	The calendar's answer wherever it has one: an ERPNext `Holiday List` carries its
+	weekly offs as dated `Holiday` rows, which is the same reading
+	`data_loader._availability` takes. Generate the list without Saturday and the chart
+	opens on Saturdays, with no code change anywhere.
+
+	`WEEKENDS` is what a calendar that *names no weekly off at all* falls back to — a
+	list nobody has generated them for, or a genuinely seven-day practice, and nothing
+	distinguishes the two. It is the old hardcoded rule, and it is kept **only as the
+	default of a control the reader can see and change** (`filters.weekdays`), rather
+	than as a rule buried here: a site that works every day says so with one click, and a
+	site still staging towards weekend work gets the week it actually runs in the
+	meantime. The honest answer is still to put the weekly offs in the Holiday List,
+	which is the only one a solve will ever read.
+	"""
+	if calendar and weekly_offs:
+		return {weekday for weekday in range(7) if weekday not in weekly_offs}
+	return {weekday for weekday in range(7) if weekday not in WEEKENDS}
+
+
+def _weekdays(raw) -> set[int]:
+	"""The weekday control as it arrives from the browser.
+
+	Parsed apart from `_selection` because **Monday is 0**, and 0 is the one value a
+	"drop anything falsy" filter would quietly eat.
+	"""
+	if not raw:
+		return set()
+	values = frappe.parse_json(raw) if isinstance(raw, str) else raw
+	return {int(value) for value in values if 0 <= int(value) <= 6}
 
 
 def _resolve_week(week: str | None, run_doc=None) -> datetime.date:
@@ -122,19 +192,49 @@ def _planning_window(run_doc) -> tuple[str | None, str | None]:
 
 	try:
 		window = types.planning_days(frappe.utils.getdate(run_doc.date), run_doc.mode)
-	except (NotImplementedError, IndexError):
+	except NotImplementedError, IndexError:
 		return None, None
 	return (window[0].isoformat(), window[-1].isoformat()) if window else (None, None)
 
 
+def _selection(raw) -> list[str]:
+	"""A filter argument as it arrives from the browser: JSON, a list, or nothing.
+
+	An empty selection is "no filter", never "no bands" — see `layout.derive`.
+	"""
+	if not raw:
+		return []
+	values = frappe.parse_json(raw) if isinstance(raw, str) else raw
+	return [value for value in values if value]
+
+
 @frappe.whitelist()
-def get_week_chart(week: str | None = None, run: str | None = None, mode: str = "Bounded") -> dict:
+def get_week_chart(
+	week: str | None = None,
+	run: str | None = None,
+	mode: str = "Bounded",
+	disciplines=None,
+	branches=None,
+	weekdays=None,
+) -> dict:
 	"""The wall chart for one week, optionally diffed against an Optimizer Run.
 
 	`run` may name a run in any state. An unsolved or failed one contributes no
 	slots and the chart falls back to the Shift Assignments on the books — which
 	is the whole reason this view is always on: the week a solve failed for is
 	exactly the week somebody needs to look at.
+
+	`disciplines` and `branches` narrow the chart to those bands. Narrowed here
+	rather than in the browser so that everything derived from the band set — the
+	sections, the coverage headline, the leave list — is derived from the same set
+	the reader is looking at. A chart whose headline counted rooms it was not
+	drawing would be worse than no headline, which is the same reason `_totals`
+	counts off the chart rather than off `Optimizer Run Coverage`.
+
+	`weekdays` is which weekdays the practice works, for a site whose Holiday List cannot
+	say yet (see :func:`_default_worked`). It narrows and never widens: it decides which
+	columns read as working, what the coverage headline counts against, and — the reason
+	it is here rather than in the browser — which days a leave can have emptied.
 	"""
 	frappe.has_permission("Shift Assignment", throw=True)
 
@@ -144,23 +244,38 @@ def get_week_chart(week: str | None = None, run: str | None = None, mode: str = 
 		run_doc.check_permission("read")
 		mode = run_doc.mode or mode
 
+	disciplines, branches = _selection(disciplines), _selection(branches)
+	structure = layout_mod.derive(disciplines, branches)
+
 	monday = _resolve_week(week, run_doc)
 	week_days = week_dates(monday)
+	# Resolved before the leave list, because which days are worked is what decides
+	# whether a leave day emptied anything.
+	holidays, weekly_offs, calendar = source.holidays(monday, mode)
+	worked = _weekdays(weekdays) or _default_worked(weekly_offs, calendar)
 	speculated = (
 		{r.leave_application for r in (run_doc.get("leaves_speculations") or [])} if run_doc else set()
 	)
-	week_leaves = source.leaves(monday, speculated)
+	# Leave follows the bands actually drawn. A site with no band at all is the
+	# exception: there is nothing to narrow against, and reporting the week's leave
+	# is the only thing such a chart can still do.
+	drawn = {band.discipline for band in structure.bands} or None
+	week_leaves = source.leaves(monday, speculated, drawn, worked)
 	pending = _pending_bound(week_days[0], week_days[-1])
 	existing = source.from_shift_assignments(monday) + source.from_settled_rotas(
 		monday, _off_leave(pending.pop("rows"), week_leaves)
 	)
 	proposed = source.from_optimizer_run(run, monday) if run_doc else []
 
-	structure = layout_mod.derive()
+	existing, hidden_existing = source.in_scope(existing, disciplines, branches)
+	proposed, hidden_proposed = source.in_scope(proposed, disciplines, branches)
+	# Half-days, not chips, and not twice for one the run kept — the same counting
+	# `_totals` uses.
+	hidden = len({slot.match_key for slot in hidden_existing + hidden_proposed})
+
 	chart = build(structure, merge(existing, proposed), monday)
 	cells = _index(chart)
 
-	holidays = source.holidays(monday, mode)
 	first_day, last_day = _planning_window(run_doc)
 
 	days = []
@@ -171,10 +286,14 @@ def get_week_chart(week: str | None = None, run: str | None = None, mode: str = 
 				"date": iso,
 				"weekday": day.weekday(),
 				"holiday": holidays.get(iso),
-				"working": day.weekday() not in WEEKENDS and iso not in holidays,
+				"working": day.weekday() in worked and iso not in holidays,
 				"in_window": bool(first_day and last_day and first_day <= iso <= last_day),
 			}
 		)
+
+	by_shift, unknown, _not_due = bucket_leaves(
+		week_leaves, [day["date"] for day in days], [s.shift_type for s in structure.sections]
+	)
 
 	sections = []
 	for section in structure.sections:
@@ -201,7 +320,14 @@ def get_week_chart(week: str | None = None, run: str | None = None, mode: str = 
 					"overflow": True,
 				}
 			)
-		sections.append({"shift_type": section.shift_type, "title": section.title, "bands": bands})
+		sections.append(
+			{
+				"shift_type": section.shift_type,
+				"title": section.title,
+				"bands": bands,
+				"leaves": by_shift[section.shift_type],
+			}
+		)
 
 	return {
 		"week": monday.isoformat(),
@@ -209,8 +335,10 @@ def get_week_chart(week: str | None = None, run: str | None = None, mode: str = 
 		"next_week": (monday + datetime.timedelta(days=7)).isoformat(),
 		"days": days,
 		"sections": sections,
-		"leaves": week_leaves,
-		"warnings": _warnings(chart, structure),
+		"leaves_unknown": unknown,
+		"leaves_not_due": _not_due,
+		"filters": _filters(disciplines, branches, sorted(worked), hidden),
+		"warnings": _warnings(chart, structure, calendar),
 		"totals": _totals(chart, structure, days),
 		"pending_bound": pending,
 		"run": (
@@ -231,6 +359,25 @@ def get_week_chart(week: str | None = None, run: str | None = None, mode: str = 
 	}
 
 
+def _filters(disciplines: list[str], branches: list[str], weekdays: list[int], hidden: int) -> dict:
+	"""The reader's narrowing, and what there is to narrow to.
+
+	`weekdays.selected` is the *effective* set — the reader's own answer where they gave
+	one, the calendar's default otherwise — so the control always shows what the chart
+	is actually doing, and a reader who has never touched it still sees which days it
+	believes are worked. Weekday *names* are left to the browser, which has the locale.
+	"""
+	options = layout_mod.filter_options()
+	return {
+		"disciplines": {"options": options["disciplines"], "selected": disciplines},
+		"branches": {"options": options["branches"], "selected": branches},
+		# Strings, because the browser control keys its options by value and "0" is
+		# Monday; `_weekdays` parses them back.
+		"weekdays": {"selected": [str(weekday) for weekday in weekdays]},
+		"hidden": hidden,
+	}
+
+
 def _pending_bound(first, last) -> dict:
 	"""Settled schedules this week needs that nothing on the books records.
 
@@ -243,14 +390,23 @@ def _pending_bound(first, last) -> dict:
 	return rota.pending(first, last)
 
 
-def _off_leave(rows: list[dict], week_leaves: dict[str, list[dict]]) -> list[dict]:
+def _off_leave(rows: list[dict], week_leaves: list[dict]) -> list[dict]:
 	"""Drop rota days the employee is on leave for — leave wins, as it does in the loader."""
-	away = {(entry["employee"], day) for day, entries in week_leaves.items() for entry in entries}
+	away = {(entry["employee"], entry["date"]) for entry in week_leaves}
 	return [row for row in rows if (row["employee"], row["date"]) not in away]
 
 
-def _warnings(chart, structure) -> list[str]:
+def _warnings(chart, structure, calendar: bool) -> list[str]:
 	warnings = list(chart.warnings)
+	if not calendar:
+		# A solve refuses to run at all on this (`data_loader._availability` throws), so
+		# the chart saying it out loud is the kinder half of the same message.
+		warnings.append(
+			"no Holiday List resolves for any company, so the chart cannot tell which days "
+			"are worked: it is falling back to Saturday and Sunday as the weekend, and every "
+			"day of a leave reads as a day it emptied. Assign one through Holiday List "
+			"Assignment, or set the company's Default Holiday List"
+		)
 	if not structure.bands:
 		warnings.append(
 			"no Discipline Branch Config exists, so the chart has no bands to draw — configure "

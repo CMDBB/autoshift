@@ -67,6 +67,7 @@ assigned list says against what their rota now implies. No high-water mark, no s
 from __future__ import annotations
 
 import datetime
+from dataclasses import dataclass
 
 import frappe
 
@@ -144,6 +145,72 @@ def applicable_lists(
 		if name and name not in names:
 			names.append(name)
 	return names
+
+
+@dataclass(frozen=True)
+class Calendars:
+	"""What a set of employees' calendars say about one window, resolved once."""
+
+	#: employee -> the days of the window their calendar says they do not work
+	blocked: dict[str, set[datetime.date]]
+	#: company -> the Holiday Lists that resolved for it, earliest first
+	lists: dict[str, list[str]]
+	#: companies nothing resolved for at all. A configuration error for a solve; not
+	#: necessarily one for a chart — the caller decides, which is why this reports.
+	unresolved: list[str]
+
+
+def calendars(employees: list[str], first: datetime.date, last: datetime.date) -> Calendars:
+	"""Resolve which days each of `employees` does not work, over `[first, last]`.
+
+	The two-part split `optimizer.data_loader._availability` is built on, extracted so
+	the solver and the wall chart cannot drift apart about which days are worked:
+
+	- **The company's weekly offs** are what make a week five days rather than seven.
+	  They apply to everybody, and come from the *company's* list, never from anyone's
+	  own: a bound employee's generated list carries their rota's days off as weekly offs
+	  too, and those are the `role_binding` rules' business (see this module's header).
+	- **Each employee's own dated holidays** — a public holiday, a closure, an
+	  individually assigned calendar — remove that person's days and nobody else's.
+
+	Side-effect free and never throws. A company with no resolvable list comes back in
+	`unresolved` for the caller to make its own decision about: a solve refuses, because
+	it would otherwise plan seven-day weeks; a chart carries on, because drawing the week
+	it has beats drawing nothing.
+	"""
+	if not employees:
+		return Calendars(blocked={}, lists={}, unresolved=[])
+
+	companies = {
+		row.name: row.company
+		for row in frappe.get_all(
+			"Employee", filters={"name": ["in", list(employees)]}, fields=["name", "company"]
+		)
+	}
+	lists: dict[str, list[str]] = {}
+	unresolved: list[str] = []
+	weekly: dict[str, set[datetime.date]] = {}
+	for company in sorted({c for c in companies.values() if c}):
+		names = applicable_lists(company, company, first, last)
+		if not names:
+			unresolved.append(company)
+			continue
+		lists[company] = names
+		weekly[company] = {row.date for row in rows_between(names, first, last) if row.weekly_off}
+
+	blocked: dict[str, set[datetime.date]] = {}
+	for name in employees:
+		company = companies.get(name)
+		# Their own list's *dated* holidays only — its weekly offs are the company's
+		# answer above. An employee with no assignment of their own resolves to the
+		# company's list, which is how a dated company holiday reaches everybody.
+		personal = {
+			row.date
+			for row in rows_between(applicable_lists(name, company, first, last), first, last)
+			if not row.weekly_off
+		}
+		blocked[name] = weekly.get(company, set()) | personal
+	return Calendars(blocked=blocked, lists=lists, unresolved=unresolved)
 
 
 def base_list_for(company: str, as_on: datetime.date) -> str | None:

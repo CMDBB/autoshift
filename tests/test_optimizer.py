@@ -535,6 +535,26 @@ def test_order_specs_leaves_an_independent_selection_alone():
 	assert order_specs(specs) == specs
 
 
+def test_order_specs_runs_custom_code_after_every_builtin():
+	"""A custom rule sorting first by document name must still run last.
+
+	`room_coverage` ("Room coverage per discipline") sorts after `"Aaa Custom"` by
+	document name, so without the fix the custom spec would run first and see none of
+	what a built-in sets up at apply-time.
+	"""
+	specs = tuple(
+		sorted(
+			(
+				*titled_specs("room_coverage"),
+				("Aaa Custom", "", "def apply(ctx): pass", 1.0),
+			)
+		)
+	)
+	assert specs[0][0] == "Aaa Custom", "the custom rule must sort first by name to exercise the gap"
+	ordered = order_specs(specs)
+	assert ordered[-1][0] == "Aaa Custom"
+
+
 def test_order_specs_survives_a_dependency_cycle():
 	"""A cycle emits every spec exactly once rather than looping or dropping rules."""
 	cyclic = {

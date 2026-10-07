@@ -23,7 +23,10 @@ function render_schedule_view(frm) {
 			run: frm.is_new() ? null : frm.doc.name,
 			status: frm.doc.status,
 			week: frm.doc.date || null,
-			week_chart: (week) =>
+			// `filters` is the chart's own discipline/branch selection — narrowed
+			// server-side, because the sections, the coverage headline and the leave
+			// list all follow the band set (see `wallchart.api.get_week_chart`).
+			week_chart: (week, filters) =>
 				frappe
 					.call({
 						method: "autoshift.wallchart.api.get_week_chart",
@@ -31,6 +34,9 @@ function render_schedule_view(frm) {
 							week,
 							run: frm.is_new() ? null : frm.doc.name,
 							mode: frm.doc.mode || "Bounded",
+							disciplines: JSON.stringify((filters || {}).disciplines || []),
+							branches: JSON.stringify((filters || {}).branches || []),
+							weekdays: JSON.stringify((filters || {}).weekdays || []),
 						},
 					})
 					.then((r) => r.message),

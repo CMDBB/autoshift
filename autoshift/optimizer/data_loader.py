@@ -217,6 +217,44 @@ def ruleset_binding_rule_gap(ruleset: str) -> dict:
 	return binding_rule_gap(builtin_keys_of(names))
 
 
+def _warn_uncovered_horizon(company: str, holiday_lists: list[str], all_days: list[datetime.date]) -> None:
+	"""Warn where the resolved calendars stop short of the horizon being planned.
+
+	Distinct from a calendar that is simply quiet about a window: here nothing has been
+	published about those days at all, so they come back as working days — weekends
+	included, since a weekend is a `weekly_off` row like any other and an absent row is an
+	absent weekend. Planning past the end of the published year therefore produces a
+	schedule that staffs Saturdays, which is never what anybody meant.
+
+	A warning rather than a throw. The old `Optimizer Settings` read had the same hole, a
+	sparse calendar is a legitimate (if unusual) choice, and refusing the run would block
+	more than it protects — but it must not be silent.
+	"""
+	covered: set[datetime.date] = set()
+	for span in frappe.get_all(
+		"Holiday List", filters={"name": ["in", holiday_lists]}, fields=["from_date", "to_date"]
+	):
+		if not span.from_date or not span.to_date:
+			continue
+		day, end = max(getdate(span.from_date), all_days[0]), min(getdate(span.to_date), all_days[-1])
+		while day <= end:
+			covered.add(day)
+			day += datetime.timedelta(days=1)
+
+	uncovered = [day for day in all_days if day not in covered]
+	if not uncovered:
+		return
+	frappe.msgprint(
+		frappe._(
+			"{0}'s Holiday List does not cover {1} to {2}, so every day in that span — "
+			"weekends included — is treated as worked. Extend the list to cover the "
+			"horizon you are planning."
+		).format(company, uncovered[0], uncovered[-1]),
+		title=frappe._("Horizon outside the holiday calendar"),
+		indicator="orange",
+	)
+
+
 def _availability(
 	employees: list[str], all_days: list[datetime.date]
 ) -> tuple[dict[str, list[datetime.date]], list[datetime.date]]:
@@ -240,47 +278,50 @@ def _availability(
 	horizon at all, so the model is no larger than it was when one settings list defined
 	the same thing.
 
-	Resolution goes through `rota.holidays.applicable_lists`, **not** HRMS's own
-	`get_holiday_dates_between_range`, because that helper resolves a company through
-	`Holiday List Assignment` alone and never falls back to `Company.default_holiday_list`
-	— so a site that simply set the company default reads as having no calendar and every
-	day of the week comes back working.
+	Resolution goes through `rota.holidays.calendars` (and its `applicable_lists`), **not**
+	HRMS's own `get_holiday_dates_between_range`, because that helper resolves a company
+	through `Holiday List Assignment` alone and never falls back to
+	`Company.default_holiday_list` — so a site that simply set the company default reads as
+	having no calendar and every day of the week comes back working. The wall chart reads
+	the same `calendars` to decide whether a leave day emptied anything, which is why the
+	resolution lives in `rota.holidays` and only the policy below lives here.
+
+	A company with **no resolvable list at all** is a configuration error and throws: the
+	run would otherwise treat every day of the week as worked. A list that resolves but
+	carries **no rows in this window** is not an error — it says every day of the window is
+	worked, which is a legitimate thing for a calendar to say — so only the resolution is
+	guarded. The one case in between, a calendar whose own date range stops short of the
+	horizon, is neither: see :func:`_warn_uncovered_horizon`.
 	"""
-	from autoshift.rota.holidays import applicable_lists, rows_between
+	from autoshift.rota.holidays import calendars
 
 	if not employees or not all_days:
 		return {}, list(all_days)
 	first, last = all_days[0], all_days[-1]
 
-	def rows(assigned_to: str, company: str | None):
-		return rows_between(applicable_lists(assigned_to, company, first, last), first, last)
+	# The resolution itself is `rota.holidays.calendars` — shared with the wall chart, so
+	# the picture and the model cannot disagree about which days are worked. What stays
+	# here is the *policy*: a solve refuses to plan on a company with no calendar, where a
+	# chart would carry on.
+	resolved = calendars(employees, first, last)
+	for company in resolved.unresolved:
+		frappe.throw(
+			frappe._(
+				"No Holiday List could be resolved for {0}, so the optimizer cannot tell "
+				"which days are worked. Assign one through Holiday List Assignment, or set "
+				"the company's Default Holiday List."
+			).format(company)
+		)
+	# **Resolution is the thing to check, not the row count.** A calendar that resolves and
+	# simply has nothing to say about this window — no holiday falls in it, or the company
+	# genuinely works seven days — is a legitimate answer meaning "every day is worked",
+	# and refusing to plan on it was wrong.
+	for company, names in resolved.lists.items():
+		_warn_uncovered_horizon(company, names, all_days)
 
-	companies = {
-		row.name: row.company
-		for row in frappe.get_all("Employee", filters={"name": ["in", employees]}, fields=["name", "company"])
+	available: dict[str, list[datetime.date]] = {
+		name: [day for day in all_days if day not in resolved.blocked.get(name, ())] for name in employees
 	}
-	weekly_by_company: dict[str, set[datetime.date]] = {}
-	for company in sorted({c for c in companies.values() if c}):
-		company_rows = rows(company, company)
-		if not company_rows:
-			frappe.throw(
-				frappe._(
-					"No Holiday List could be resolved for {0}, so the optimizer cannot tell "
-					"which days are worked. Assign one through Holiday List Assignment, or set "
-					"the company's Default Holiday List."
-				).format(company)
-			)
-		weekly_by_company[company] = {row.date for row in company_rows if row.weekly_off}
-
-	available: dict[str, list[datetime.date]] = {}
-	for name in employees:
-		company = companies.get(name)
-		# Their own list's *dated* holidays only. Its weekly offs are the company's answer
-		# above, or — for a bound employee whose list this app generated — their rota's
-		# days off, which belong to the binding rules and not to the variable set.
-		personal = {row.date for row in rows(name, company) if not row.weekly_off}
-		blocked = weekly_by_company.get(company, set()) | personal
-		available[name] = [day for day in all_days if day not in blocked]
 
 	worked_by_someone = set().union(*available.values()) if available else set()
 	return available, [day for day in all_days if day in worked_by_someone]
