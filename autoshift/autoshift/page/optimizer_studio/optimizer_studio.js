@@ -313,7 +313,15 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 			// across nesting levels without breaking its radios. Its dependency is still
 			// enforced dynamically, just not drawn.
 			if (rule.group) continue;
-			const parent = (rule.requires || []).filter((n) => this.by_name.has(n)).sort()[0];
+			// A grouped rule is rendered by render_group(), which draws radios only and
+			// never a nested child — so a candidate parent that is itself grouped (e.g.
+			// `room_value_objective`, in the room-value choice group) cannot host a
+			// nested row either: picking it as the parent would draw the child nowhere.
+			// Fall through to the next requirement, or to standalone (dependency still
+			// enforced dynamically via blocked_reasons, just not drawn as nesting).
+			const parent = (rule.requires || [])
+				.filter((n) => this.by_name.has(n) && !this.by_name.get(n).group)
+				.sort()[0];
 			if (!parent || parent === rule.name) continue;
 			this.parent_of.set(rule.name, parent);
 			if (!this.children_of.has(parent)) this.children_of.set(parent, []);

@@ -167,6 +167,7 @@ class OptimizerRun(Document):
 						"<code>bench start</code>) and solve again."
 					).format(SYNC_TIME_LIMIT)
 				)
+			self.reload()
 			frappe.enqueue(
 				"autoshift.optimizer.solver.run_solve",
 				run_name=self.name,
@@ -175,7 +176,6 @@ class OptimizerRun(Document):
 				queue="long",
 				timeout=3600,
 			)
-			self.save()
 			return "Solving"
 
 		self.reload()
