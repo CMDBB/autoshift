@@ -1,0 +1,172 @@
+{
+ "actions": [],
+ "autoname": "field:role_name",
+ "creation": "2026-08-19 00:00:00",
+ "doctype": "DocType",
+ "document_type": "Setup",
+ "engine": "InnoDB",
+ "field_order": [
+  "role_name",
+  "discipline",
+  "assignment_mode",
+  "column_break_1",
+  "max_rooms",
+  "gates_rooms",
+  "assignment_value",
+  "display_order_key",
+  "assignments_binding",
+  "active",
+  "section_break_chip_sort",
+  "chip_sort_field",
+  "chip_sort_descending",
+  "section_break_description",
+  "description"
+ ],
+ "fields": [
+  {
+   "fieldname": "role_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Role Name",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "description": "The discipline this role staffs. A role always names one; this is what replaces Employee.department as the optimizer's notion of discipline.",
+   "fieldname": "discipline",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Discipline",
+   "options": "Department",
+   "reqd": 1
+  },
+  {
+   "default": "Flexible",
+   "description": "How a shift in this role is worked. <b>Flexible</b>: a rota slot in this role means \"present\", and the optimizer may fill it with any non-exclusive role the holder has, at any branch. <b>Exclusive</b>: worked in exactly this role, with no collateral duty alongside it, and a rota slot in it may not be swapped for another role. <b>Collateral</b>: a duty worked on top of another shift at the same shift and branch (a lead, say), or on its own where the rooms are already staffed. An Employee Scheduling Role may override this per person.",
+   "fieldname": "assignment_mode",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Assignment Mode",
+   "options": "Flexible\nExclusive\nCollateral",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "1",
+   "description": "Rooms one holder of this role covers in a single slot. An Employee Scheduling Role may override it per person.",
+   "fieldname": "max_rooms",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Max Rooms Per Holder",
+   "non_negative": 1,
+   "reqd": 1
+  },
+  {
+   "default": "1",
+   "description": "Whether a room in this discipline needs somebody in this role. Room coverage is the <i>minimum</i> over the roles that gate it, so a room opens only where every gating role is staffed \u2014 a room needing a practitioner and an assistant is two gating roles. Switch it off for a role that is worked in the discipline without being a condition of opening a room: a lead duty, a floater, an administrative role. A non-gating role neither opens rooms nor holds them shut.",
+   "fieldname": "gates_rooms",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Required To Staff A Room"
+  },
+  {
+   "default": "0",
+   "description": "What one shift in this role is worth to the practice, beyond the rooms it staffs, in the same objective points every other rule is priced in \u2014 a staffed room is worth 3 at the default weights, and an assignment costs about 1 in preference terms. <b>0</b>, the default, means a shift in this role is worth exactly what it staffs: for a role that gates rooms, that is already the whole story. Set a small positive figure on a standby or float role so somebody who would otherwise be left unassigned is put on it instead, and a negative one on a role to be used only where nothing else covers the work. Requires the <b>Value of working a role</b> objective in the run's ruleset.",
+   "fieldname": "assignment_value",
+   "fieldtype": "Float",
+   "label": "Value Of A Shift In This Role",
+   "precision": "2"
+  },
+  {
+   "default": "0",
+   "description": "Where this role's column sits in the week wall chart, within its discipline. Lower sorts further left; leave at 0 unless you want to override the default order (most rooms per holder first, then name). Negative values sort ahead of every unset role.",
+   "fieldname": "display_order_key",
+   "fieldtype": "Int",
+   "label": "Display Order Key"
+  },
+  {
+   "default": "0",
+   "description": "Holders of this role keep exactly the Shift Assignments already on the books: the optimizer may not add, move or drop any of them. For a role whose schedule is settled by its holders rather than by the planner. Requires the \"Bind settled schedules\" rule in the run's ruleset; an individual holder can opt out on their Employee Scheduling Role.",
+   "fieldname": "assignments_binding",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Assignments Are Binding"
+  },
+  {
+   "default": "1",
+   "fieldname": "active",
+   "fieldtype": "Check",
+   "label": "Active"
+  },
+  {
+   "fieldname": "section_break_chip_sort",
+   "fieldtype": "Section Break",
+   "label": "Chip Order"
+  },
+  {
+   "description": "Fieldname on Employee to order this role's chips by within a lane, e.g. \"date_of_joining\". Leave blank to keep the default: alphabetical by initials, which is what the wall chart's row numbers reflect either way.",
+   "fieldname": "chip_sort_field",
+   "fieldtype": "Data",
+   "label": "Chip Sort Field"
+  },
+  {
+   "default": "0",
+   "depends_on": "chip_sort_field",
+   "description": "Highest value first instead of lowest first.",
+   "fieldname": "chip_sort_descending",
+   "fieldtype": "Check",
+   "label": "Descending"
+  },
+  {
+   "fieldname": "section_break_description",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  }
+ ],
+ "links": [],
+ "modified": "2026-09-07 13:12:32.529810",
+ "modified_by": "Administrator",
+ "module": "Autoshift",
+ "name": "Scheduling Role",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "HR Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

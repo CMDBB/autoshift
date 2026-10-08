@@ -8,6 +8,7 @@
  "field_order": [
   "ruleset_name",
   "description",
+  "is_system",
   "section_break_rules",
   "rules"
  ],
@@ -26,6 +27,15 @@
    "label": "Description"
   },
   {
+   "default": "0",
+   "description": "Seeded and kept in sync by app code (see create_standard_optimization_rules) rather than hand-authored. A marker for future tooling (e.g. a preset-toggling UI auto-duplicating into a user ruleset on first edit), not an edit lock — there is none today.",
+   "fieldname": "is_system",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "System Ruleset",
+   "read_only": 1
+  },
+  {
    "fieldname": "section_break_rules",
    "fieldtype": "Section Break",
    "label": "Rules"
@@ -35,12 +45,11 @@
    "fieldname": "rules",
    "fieldtype": "Table",
    "label": "Rules",
-   "options": "Optimization Ruleset Rule",
-   "reqd": 1
+   "options": "Optimization Ruleset Rule"
   }
  ],
  "links": [],
- "modified": "2026-07-06 00:00:00",
+ "modified": "2026-07-27 11:06:44.950848",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Optimization Ruleset",

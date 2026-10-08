@@ -5,7 +5,7 @@ fixtures = [
 ]
 app_title = "Autoshift"
 app_publisher = "CMDBB"
-app_description = "WIP (mixed integer programming for shift optimization, natural language constraints and preference, explainable decisions)"
+app_description = "Mixed integer programming for shift optimization. WIP: natural language constraints and preference, explainable decisions"
 app_color = "#88ffee"
 app_email = "adrian.schemel@cmdbalexert.ch"
 app_license = "gpl-3.0"
@@ -13,7 +13,10 @@ app_license = "gpl-3.0"
 # Apps
 # ------------------
 
-required_apps = ["frappe/hrms"]
+required_apps = [
+	"frappe/hrms",
+	"frappe/payments",
+]
 
 # Each item in the list will be shown as an app in the apps page
 add_to_apps_screen = [
@@ -94,6 +97,16 @@ commands = "autoshift.commands"
 
 # before_install = "autoshift.install.before_install"
 after_install = "autoshift.install.after_install"
+
+# Migrate
+# ------------------
+# Re-syncs Optimization Rule documents from the rules.py registry on every `bench migrate` —
+# idempotent (upsert by builtin_key, drop unsupported leftovers, never touch a hand-tuned
+# ruleset row's weight), so it is never wrong to run again. This is what lets a new/renamed
+# built-in rule reach an already-migrated site without a dedicated patch for every addition;
+# patches.txt's own `create_standard_optimization_rules` entry stays for sites that migrate
+# straight from before this hook existed.
+after_migrate = "autoshift.patches.create_standard_optimization_rules.execute"
 
 # Uninstallation
 # ------------

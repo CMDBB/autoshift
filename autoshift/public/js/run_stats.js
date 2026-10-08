@@ -1,0 +1,446 @@
+// Copyright (c) 2026, CMDBB and contributors
+// For license information, please see license.txt
+
+// Shared run-statistics renderer: aggregate room-coverage / utilization stats of a
+// solved Optimizer Run. Used by the Optimizer Run form and by Optimizer Studio — both
+// feed it the payload `OptimizerRun.get_run_statistics()` returns, so the rendering
+// only lives once (same pattern as schedule_grid.js).
+//
+// NOTE: no `import`/`export` here, deliberately — see bulk_employee_settings.js for why
+// doctype/page scripts on this app stay plain scripts. Loaded via frappe.require() and
+// accessed through the frappe.provide("autoshift.run_stats") namespace below.
+
+frappe.provide("autoshift.run_stats");
+
+autoshift.run_stats.inject_styles = function () {
+	if (document.getElementById("autoshift-run-stats-styles")) return;
+	const css = `
+		.autoshift-run-stats { margin-bottom: 1rem; }
+		.autoshift-run-stats .ars-warnings { margin-bottom: 0.75rem; }
+		.autoshift-run-stats .ars-warning {
+			display: flex; gap: 0.5rem; align-items: baseline;
+			border-radius: var(--border-radius); padding: 0.5rem 0.75rem; margin-bottom: 0.4rem;
+			font-size: var(--text-sm);
+		}
+		.autoshift-run-stats .ars-warning-warning {
+			background: var(--bg-orange, #fff7ed); color: var(--text-on-orange, #9a3412);
+		}
+		.autoshift-run-stats .ars-warning-info {
+			background: var(--bg-blue, #eff6ff); color: var(--text-on-blue, #1e40af);
+		}
+		.autoshift-run-stats .ars-tiles {
+			display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1rem;
+		}
+		.autoshift-run-stats .ars-tile {
+			flex: 1 1 10rem; min-width: 10rem;
+			border: 1px solid var(--border-color); border-radius: var(--border-radius-md);
+			padding: 0.6rem 0.8rem;
+		}
+		.autoshift-run-stats .ars-tile-value { font-size: var(--text-2xl); font-weight: 600; }
+		.autoshift-run-stats .ars-tile-sub { color: var(--text-muted); font-size: var(--text-sm); }
+		.autoshift-run-stats .ars-tile-label {
+			color: var(--text-muted); font-size: var(--text-xs);
+			text-transform: uppercase; letter-spacing: 0.04em;
+		}
+		.autoshift-run-stats .ars-section-title {
+			margin: 1rem 0 0.4rem; color: var(--text-muted);
+			text-transform: uppercase; font-size: var(--text-xs); letter-spacing: 0.04em;
+		}
+		.autoshift-run-stats .ars-disc { margin-bottom: 0.75rem; }
+		.autoshift-run-stats .ars-disc-head {
+			display: flex; justify-content: space-between; gap: 0.75rem;
+			font-size: var(--text-sm); margin-bottom: 0.25rem;
+		}
+		.autoshift-run-stats .ars-disc-name { font-weight: 500; }
+		.autoshift-run-stats .ars-disc-numbers { color: var(--text-muted); }
+		.autoshift-run-stats .ars-meter {
+			position: relative; height: 8px; border-radius: 4px;
+			background: var(--bg-light-gray, var(--control-bg));
+			overflow: hidden;
+		}
+		.autoshift-run-stats .ars-meter-fill {
+			position: absolute; inset: 0 auto 0 0; border-radius: 4px;
+			background: var(--blue-500, #2563eb);
+		}
+		.autoshift-run-stats .ars-meter-bound {
+			position: absolute; top: -2px; bottom: -2px; width: 2px;
+			background: var(--orange-500, #f97316);
+		}
+		.autoshift-run-stats .ars-disc-sub { color: var(--text-muted); font-size: var(--text-xs); margin-top: 0.25rem; }
+		.autoshift-run-stats .ars-grid-scroll {
+			overflow-x: auto; border: 1px solid var(--border-color);
+			border-radius: var(--border-radius-md);
+		}
+		.autoshift-run-stats .ars-grid { border-collapse: separate; border-spacing: 0; width: 100%; }
+		.autoshift-run-stats .ars-grid th, .autoshift-run-stats .ars-grid td {
+			padding: 0.3rem 0.5rem; font-size: var(--text-xs); text-align: center;
+			border-bottom: 1px solid var(--border-color); border-right: 1px solid var(--border-color);
+			white-space: nowrap;
+		}
+		.autoshift-run-stats .ars-grid th { background: var(--fg-color); font-weight: 500; }
+		.autoshift-run-stats .ars-grid .ars-grid-row-label {
+			text-align: left; background: var(--fg-color); position: sticky; left: 0; z-index: 1;
+		}
+		.autoshift-run-stats .ars-grid td { color: var(--text-color); }
+		.autoshift-run-stats .ars-num { text-align: right; font-variant-numeric: tabular-nums; }
+		.autoshift-run-stats details { margin-top: 0.5rem; }
+		.autoshift-run-stats summary { cursor: pointer; font-size: var(--text-sm); color: var(--text-muted); }
+		/* Objective breakdown tree: one row per node, nested under a disclosure. Rows are
+		   built on first expand (see the delegated handler), so a rule with thousands of
+		   half-days costs nothing until somebody opens it. */
+		.autoshift-run-stats .ars-row {
+			display: flex; align-items: baseline; gap: 0.5rem;
+			padding: 0.15rem 0.3rem; font-size: var(--text-sm); color: var(--text-color);
+			border-radius: var(--border-radius);
+		}
+		.autoshift-run-stats .ars-row:hover { background: var(--bg-light-gray, var(--control-bg)); }
+		.autoshift-run-stats .ars-row-label { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+		.autoshift-run-stats .ars-row-share { color: var(--text-muted); font-size: var(--text-xs); }
+		.autoshift-run-stats .ars-row .ars-num { flex: 0 0 auto; min-width: 5rem; }
+		.autoshift-run-stats .ars-neg { color: var(--red-600, #b91c1c); }
+		.autoshift-run-stats .ars-leaf { padding-left: 1.05rem; }
+		.autoshift-run-stats .ars-node > summary { list-style-position: outside; color: var(--text-color); }
+		.autoshift-run-stats .ars-node { margin-top: 0; }
+		.autoshift-run-stats .ars-kids {
+			margin-left: 0.55rem; padding-left: 0.5rem;
+			border-left: 1px solid var(--border-color);
+		}
+		.autoshift-run-stats .ars-kids-level {
+			color: var(--text-muted); font-size: var(--text-xs);
+			text-transform: uppercase; letter-spacing: 0.04em; margin: 0.2rem 0 0.1rem 0.3rem;
+		}
+		.autoshift-run-stats .ars-kids-note {
+			color: var(--text-muted); font-size: var(--text-xs); margin: 0.2rem 0 0.2rem 0.3rem;
+		}
+	`;
+	const style = document.createElement("style");
+	style.id = "autoshift-run-stats-styles";
+	style.textContent = css;
+	document.head.appendChild(style);
+};
+
+function ars_pct(staffed, capacity) {
+	return capacity ? Math.round((100 * staffed) / capacity) : 0;
+}
+
+function ars_tile(value, sub, label) {
+	return `<div class="ars-tile">
+		<div class="ars-tile-value">${value}</div>
+		${sub ? `<div class="ars-tile-sub">${sub}</div>` : ""}
+		<div class="ars-tile-label">${label}</div>
+	</div>`;
+}
+
+function ars_warnings(warnings) {
+	if (!warnings || !warnings.length) return "";
+	const rows = warnings
+		.map((w) => {
+			const cls = w.severity === "warning" ? "ars-warning-warning" : "ars-warning-info";
+			const icon = w.severity === "warning" ? "⚠" : "ℹ";
+			return `<div class="ars-warning ${cls}"><span>${icon}</span><span>${frappe.utils.escape_html(
+				w.message
+			)}</span></div>`;
+		})
+		.join("");
+	return `<div class="ars-warnings">${rows}</div>`;
+}
+
+function ars_coverage_meters(coverage) {
+	if (!coverage || !coverage.length) return "";
+	const rows = coverage
+		.map((disc) => {
+			const pct = ars_pct(disc.staffed, disc.capacity);
+			const bound =
+				disc.supply_bound !== null && disc.supply_bound !== undefined
+					? Math.min(disc.supply_bound, disc.capacity)
+					: null;
+			const bound_marker =
+				bound !== null && bound < disc.capacity
+					? `<div class="ars-meter-bound" style="left:${ars_pct(bound, disc.capacity)}%;"
+						title="${frappe.utils.escape_html(
+							__("Role-supply bound: {0} can supply at most {1} room-slots", [
+								disc.limiting_role || "",
+								String(disc.supply_bound),
+							])
+						)}"></div>`
+					: "";
+			const branches = (disc.branches || [])
+				.map((b) => `${frappe.utils.escape_html(b.branch)}: ${b.staffed}/${b.capacity}`)
+				.join(" · ");
+			const bound_note =
+				bound !== null && bound < disc.capacity
+					? ` — ${__("at most {0} attainable (limited by {1})", [
+							String(Math.min(disc.supply_bound, disc.capacity)),
+							frappe.utils.escape_html(disc.limiting_role || ""),
+					  ])}`
+					: "";
+			return `<div class="ars-disc">
+				<div class="ars-disc-head">
+					<span class="ars-disc-name">${frappe.utils.escape_html(disc.discipline)}</span>
+					<span class="ars-disc-numbers">${disc.staffed} / ${disc.capacity} ${__(
+				"room-slots"
+			)} (${pct}%)</span>
+				</div>
+				<div class="ars-meter">
+					<div class="ars-meter-fill" style="width:${pct}%;"></div>
+					${bound_marker}
+				</div>
+				<div class="ars-disc-sub">${branches}${bound_note}</div>
+			</div>`;
+		})
+		.join("");
+	return `<div class="ars-section-title">${__("Room coverage by discipline")}</div>${rows}`;
+}
+
+function ars_day_grid(matrix) {
+	if (!matrix || !matrix.length) return "";
+	const days = [...new Set(matrix.map((c) => c.date))].sort();
+	const row_key = (c) => `${c.discipline} ${c.branch} ${c.shift_type}`;
+	const rows = new Map();
+	for (const c of matrix) {
+		const key = row_key(c);
+		if (!rows.has(key)) rows.set(key, { cells: new Map(), c });
+		rows.get(key).cells.set(c.date, c);
+	}
+
+	const day_header = days
+		.map((d) => {
+			const dt = frappe.datetime.str_to_obj(d);
+			const label = `${dt.toLocaleDateString(undefined, {
+				weekday: "short",
+			})} ${frappe.datetime.str_to_user(d).slice(0, 5)}`;
+			return `<th>${frappe.utils.escape_html(label)}</th>`;
+		})
+		.join("");
+
+	const body = [...rows.values()]
+		.sort((a, b) => row_key(a.c).localeCompare(row_key(b.c)))
+		.map(({ cells, c }) => {
+			const label = `${frappe.utils.escape_html(c.discipline)} · ${frappe.utils.escape_html(
+				c.branch
+			)} · ${frappe.utils.escape_html(c.shift_type)}`;
+			const tds = days
+				.map((d) => {
+					const cell = cells.get(d);
+					if (!cell) return `<td></td>`;
+					const ratio = cell.capacity ? cell.staffed / cell.capacity : 0;
+					// Sequential single-hue tint; the printed numbers carry the value, the
+					// tint only makes the pattern scannable.
+					const alpha = Math.round(ratio * 45);
+					return `<td style="background:color-mix(in srgb, var(--blue-500, #2563eb) ${alpha}%, transparent);"
+						title="${frappe.utils.escape_html(
+							__("{0} of {1} rooms staffed", [
+								String(cell.staffed),
+								String(cell.capacity),
+							])
+						)}">${cell.staffed}/${cell.capacity}</td>`;
+				})
+				.join("");
+			return `<tr><td class="ars-grid-row-label">${label}</td>${tds}</tr>`;
+		})
+		.join("");
+
+	return `<div class="ars-section-title">${__("Coverage per day")}</div>
+		<div class="ars-grid-scroll"><table class="ars-grid">
+			<thead><tr><th class="ars-grid-row-label"></th>${day_header}</tr></thead>
+			<tbody>${body}</tbody>
+		</table></div>`;
+}
+
+// The rendered trees of the last couple of renders, so a node's children can be built
+// when it is first expanded rather than all at once: an objective rule decomposed to
+// (employee, day, shift) is thousands of rows nobody has asked to see yet.
+const ars_trees = new Map();
+let ars_tree_token = 0;
+
+function ars_register_tree(nodes) {
+	const token = String(++ars_tree_token);
+	ars_trees.set(token, nodes);
+	for (const stale of [...ars_trees.keys()].slice(0, -2)) ars_trees.delete(stale);
+	return token;
+}
+
+function ars_node_at(token, address) {
+	let nodes = ars_trees.get(token);
+	let node = null;
+	for (const index of String(address).split(".")) {
+		node = (nodes || [])[Number(index)];
+		if (!node) return null;
+		nodes = node.children;
+	}
+	return node;
+}
+
+// Expand on click rather than on `toggle`: toggle doesn't bubble, and one delegated
+// handler has to serve every tree the form and Studio ever render.
+function ars_bind_tree_once() {
+	if (ars_bind_tree_once.done) return;
+	ars_bind_tree_once.done = true;
+	$(document).on("click", ".autoshift-run-stats .ars-node > summary", function () {
+		const details = this.parentElement;
+		const kids = details.querySelector(":scope > .ars-kids");
+		if (!kids || kids.dataset.filled) return;
+		const node = ars_node_at(details.dataset.tree, details.dataset.node);
+		if (!node) return;
+		kids.innerHTML = ars_children_html(node, details.dataset.tree, details.dataset.node);
+		kids.dataset.filled = "1";
+	});
+}
+
+const ARS_ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+function ars_node_label(node) {
+	const label = node.label !== undefined ? node.label : node.rule;
+	if (ARS_ISO_DATE.test(label)) {
+		const dt = frappe.datetime.str_to_obj(label);
+		return `${dt.toLocaleDateString(undefined, {
+			weekday: "short",
+		})} ${frappe.datetime.str_to_user(label)}`;
+	}
+	return label;
+}
+
+function ars_value_html(value) {
+	const num = Number(value || 0);
+	const text = `${num > 0 ? "+" : num < 0 ? "−" : ""}${Math.abs(num).toFixed(2)}`;
+	return `<span class="ars-num ${num < 0 ? "ars-neg" : ""}">${text}</span>`;
+}
+
+function ars_node_html(node, token, address, share_of) {
+	const label = frappe.utils.escape_html(String(ars_node_label(node)));
+	const share =
+		share_of && Math.abs(node.value) > 0
+			? `<span class="ars-row-share">${Math.round(
+					(100 * Math.abs(node.value)) / share_of
+			  )}%</span>`
+			: "";
+	const row = `<span class="ars-row-label">${label}</span>${share}${ars_value_html(node.value)}`;
+	if (!node.children || !node.children.length) {
+		return `<div class="ars-row ars-leaf">${row}</div>`;
+	}
+	return `<details class="ars-node" data-tree="${token}" data-node="${address}">
+		<summary class="ars-row">${row}</summary>
+		<div class="ars-kids"></div>
+	</details>`;
+}
+
+// A node's level is the rule's `levels[depth - 1]`: the engine leaves it off the nodes
+// themselves rather than repeating it on a few thousand of them.
+function ars_level_of(token, address) {
+	const parts = String(address).split(".");
+	const rule = (ars_trees.get(token) || [])[Number(parts[0])] || {};
+	return (rule.levels || [])[parts.length - 1] || "";
+}
+
+function ars_children_html(node, token, address) {
+	const kids = node.children || [];
+	const level = ars_level_of(token, address);
+	const caption = level
+		? `<div class="ars-kids-level">${frappe.utils.escape_html(level)}</div>`
+		: "";
+	const rows = kids
+		.map((kid, index) => ars_node_html(kid, token, `${address}.${index}`))
+		.join("");
+	// A rule whose decomposition overran its node budget lost its deepest levels; say so,
+	// rather than letting the reader take the leaves for the finest grain there is.
+	const trimmed = (node.trimmed || []).length
+		? `<div class="ars-kids-note">${__("Broken down no further than {0} — {1} omitted.", [
+				(node.levels || []).join(" › "),
+				node.trimmed.join(", "),
+		  ])}</div>`
+		: "";
+	return caption + rows + trimmed;
+}
+
+function ars_breakdown(breakdown) {
+	if (!breakdown || !breakdown.length) return "";
+	ars_bind_tree_once();
+	const token = ars_register_tree(breakdown);
+	const magnitude = breakdown.reduce((sum, n) => sum + Math.abs(Number(n.value) || 0), 0);
+	const rows = breakdown
+		.map((node, index) => ars_node_html(node, token, String(index), magnitude))
+		.join("");
+	return `<details><summary>${__(
+		"Objective breakdown by rule"
+	)}</summary><div class="ars-kids">${rows}</div></details>`;
+}
+
+function ars_under_target(employees) {
+	const under = (employees || []).filter((r) => r.assigned < r.target);
+	if (!under.length) return "";
+	const shown = under.slice(0, 15);
+	const items = shown
+		.map(
+			(r) =>
+				`<li>${frappe.utils.escape_html(r.employee_name || r.employee)}: ${
+					r.assigned
+				} ${__("of")} ${r.target}</li>`
+		)
+		.join("");
+	const more =
+		under.length > shown.length
+			? `<li>${__("… and {0} more", [under.length - shown.length])}</li>`
+			: "";
+	return `<details><summary>${__("{0} employee(s) below FTE target", [
+		under.length,
+	])}</summary><ul>${items}${more}</ul></details>`;
+}
+
+autoshift.run_stats.build_html = function (stats) {
+	const t = stats.totals || {};
+	const tiles = [
+		ars_tile(
+			`${t.room_slots_staffed} / ${t.room_slots_capacity}`,
+			`${ars_pct(t.room_slots_staffed, t.room_slots_capacity)}%`,
+			__("Room-slots staffed")
+		),
+		ars_tile(
+			String(t.assignments),
+			__("of {0} FTE-target shifts", [t.target_shifts]),
+			__("Assignments")
+		),
+		ars_tile(
+			`${t.employees_scheduled} / ${t.employees_considered}`,
+			t.assignments_forced ? __("{0} forced", [t.assignments_forced]) : "",
+			__("Employees scheduled")
+		),
+		ars_tile(
+			t.objective_value !== null && t.objective_value !== undefined
+				? Number(t.objective_value).toFixed(1)
+				: "—",
+			"",
+			__("Objective")
+		),
+	].join("");
+
+	return (
+		ars_warnings(stats.warnings) +
+		`<div class="ars-tiles">${tiles}</div>` +
+		ars_coverage_meters(stats.coverage) +
+		ars_day_grid(stats.matrix) +
+		ars_under_target(stats.employees) +
+		ars_breakdown(stats.objective_breakdown)
+	);
+};
+
+/**
+ * Render the run-statistics panel into `$wrapper`, fetched lazily via `fetch_stats`
+ * (a function returning a promise of the `get_run_statistics()` payload, or falsy for
+ * a run with no solution). Callers may call this repeatedly; it re-fetches and
+ * re-renders each time.
+ */
+autoshift.run_stats.render = function ($wrapper, fetch_stats) {
+	autoshift.run_stats.inject_styles();
+	$wrapper.addClass("autoshift-run-stats");
+	$wrapper.html(
+		`<div class="text-muted" style="padding: 0.5rem 0;">${__("Loading statistics…")}</div>`
+	);
+
+	return Promise.resolve(fetch_stats()).then((stats) => {
+		if (!stats || !stats.totals) {
+			$wrapper.empty();
+			return;
+		}
+		$wrapper.html(autoshift.run_stats.build_html(stats));
+	});
+};

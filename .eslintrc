@@ -26,6 +26,8 @@
 	"root": true,
 	"globals": {
 		"frappe": true,
+		"autoshift": true,
+		"hrms": true,
 		"Vue": true,
 		"SetVueGlobals": true,
 		"__": true,
