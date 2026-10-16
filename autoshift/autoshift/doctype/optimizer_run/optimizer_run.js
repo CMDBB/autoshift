@@ -37,6 +37,13 @@ function render_schedule_view(frm) {
 							disciplines: JSON.stringify((filters || {}).disciplines || []),
 							branches: JSON.stringify((filters || {}).branches || []),
 							weekdays: JSON.stringify((filters || {}).weekdays || []),
+							// Left out entirely until the "Highlight" picker has been built at
+							// least once — an explicit empty list means highlight nobody, which
+							// is not the same thing as never having asked (see
+							// `wallchart.api._highlight_selection`).
+							...(filters && filters.highlight_roles !== undefined
+								? { highlight_roles: JSON.stringify(filters.highlight_roles) }
+								: {}),
 						},
 					})
 					.then((r) => r.message),

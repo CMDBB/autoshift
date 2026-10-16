@@ -17,9 +17,11 @@ and nothing more. The shape is nested to match the drawing order:
                              rows: [ [ [cell|null, …7], …lanes ], …height ] }],
                     leaves: [[{employee, label, leave_type, …}, …], …7]}],
       "leaves_unknown": [[leave entry, …], …7],
-      "filters":  {disciplines: {options: [{value, label}], selected: [str]},
-                   branches:    {options: […],             selected: [str]},
-                   weekdays:    {selected: [0‥6]},
+      "highlighted": {employee: [role label, …]},
+      "filters":  {disciplines:     {options: [{value, label}], selected: [str]},
+                   branches:        {options: […],             selected: [str]},
+                   weekdays:        {selected: [0‥6]},
+                   highlight_roles: {options: […],             selected: [str]},
                    hidden: int},
       "warnings": [str],
       "totals":   {staffed, capacity, kept, added, dropped},
@@ -42,6 +44,11 @@ A leave entry is filed under the Shift Type of the half it empties, so a section
 chart — and `leaves_unknown` collects the ones nothing could attribute to a half
 (see `source._expected_shifts`). The same entry appears under both halves of a
 day somebody works twice: they are away for both.
+
+`highlighted` names every employee a selected "Highlight" role reaches, with the labels of
+whichever of those roles they hold — independent of `cell.role`, since the point is to mark
+them on a half-day worked in a *different* role too. The browser marks a chip whose
+`employee` is a key, whatever the chip's own role.
 
 `filters` is the reader's own narrowing, the one view preference in the payload.
 `weekdays` is which weekdays the practice works — the reader's answer where they gave
@@ -208,6 +215,18 @@ def _selection(raw) -> list[str]:
 	return [value for value in values if value]
 
 
+def _highlight_selection(raw) -> list[str] | None:
+	"""The "Highlight" picker's argument, distinguishing "never touched" from
+	"explicitly cleared" — unlike `_selection`, an empty list here is a real
+	answer (highlight nobody), so the caller omits the argument entirely until a
+	reader has touched the control (see `wall_chart.js`'s `selection_of`).
+	`None` back means "seed it from `Scheduling Role.highlight_by_default`".
+	"""
+	if raw is None:
+		return None
+	return _selection(raw)
+
+
 @frappe.whitelist()
 def get_week_chart(
 	week: str | None = None,
@@ -216,6 +235,7 @@ def get_week_chart(
 	disciplines=None,
 	branches=None,
 	weekdays=None,
+	highlight_roles=None,
 ) -> dict:
 	"""The wall chart for one week, optionally diffed against an Optimizer Run.
 
@@ -235,6 +255,12 @@ def get_week_chart(
 	say yet (see :func:`_default_worked`). It narrows and never widens: it decides which
 	columns read as working, what the coverage headline counts against, and — the reason
 	it is here rather than in the browser — which days a leave can have emptied.
+
+	`highlight_roles` marks a holder of any of these `Scheduling Role`s wherever their chip
+	is drawn, even a half-day worked in a different role — so an apprentice stands out
+	whatever they are covering. Omitted (`None`, not an empty list), it seeds from
+	`Scheduling Role.highlight_by_default`; an explicit empty list means highlight nobody.
+	It never narrows the chart itself, only what the browser marks on it.
 	"""
 	frappe.has_permission("Shift Assignment", throw=True)
 
@@ -246,6 +272,10 @@ def get_week_chart(
 
 	disciplines, branches = _selection(disciplines), _selection(branches)
 	structure = layout_mod.derive(disciplines, branches)
+
+	highlight_roles = _highlight_selection(highlight_roles)
+	if highlight_roles is None:
+		highlight_roles = layout_mod.default_highlight_roles()
 
 	monday = _resolve_week(week, run_doc)
 	week_days = week_dates(monday)
@@ -275,6 +305,13 @@ def get_week_chart(
 
 	chart = build(structure, merge(existing, proposed), monday)
 	cells = _index(chart)
+
+	options = layout_mod.filter_options()
+	role_labels = {option["value"]: option["label"] for option in options["roles"]}
+	highlighted = {
+		employee: [role_labels.get(role, role) for role in roles]
+		for employee, roles in source.highlighted_employees(highlight_roles, week_days).items()
+	}
 
 	first_day, last_day = _planning_window(run_doc)
 
@@ -337,7 +374,8 @@ def get_week_chart(
 		"sections": sections,
 		"leaves_unknown": unknown,
 		"leaves_not_due": _not_due,
-		"filters": _filters(disciplines, branches, sorted(worked), hidden),
+		"highlighted": highlighted,
+		"filters": _filters(options, disciplines, branches, sorted(worked), hidden, highlight_roles),
 		"warnings": _warnings(chart, structure, calendar),
 		"totals": _totals(chart, structure, days),
 		"pending_bound": pending,
@@ -359,21 +397,34 @@ def get_week_chart(
 	}
 
 
-def _filters(disciplines: list[str], branches: list[str], weekdays: list[int], hidden: int) -> dict:
+def _filters(
+	options: dict,
+	disciplines: list[str],
+	branches: list[str],
+	weekdays: list[int],
+	hidden: int,
+	highlight_roles: list[str],
+) -> dict:
 	"""The reader's narrowing, and what there is to narrow to.
 
 	`weekdays.selected` is the *effective* set — the reader's own answer where they gave
 	one, the calendar's default otherwise — so the control always shows what the chart
 	is actually doing, and a reader who has never touched it still sees which days it
 	believes are worked. Weekday *names* are left to the browser, which has the locale.
+
+	`highlight_roles.selected` is likewise the effective set — the reader's own answer, or
+	`Scheduling Role.highlight_by_default`'s where nobody has touched the picker yet (see
+	`_highlight_selection`) — so a reader who never opens it still sees what it marked.
+	Unlike the others, it narrows nothing: it is reported here only so the picker can show
+	what is currently highlighted.
 	"""
-	options = layout_mod.filter_options()
 	return {
 		"disciplines": {"options": options["disciplines"], "selected": disciplines},
 		"branches": {"options": options["branches"], "selected": branches},
 		# Strings, because the browser control keys its options by value and "0" is
 		# Monday; `_weekdays` parses them back.
 		"weekdays": {"selected": [str(weekday) for weekday in weekdays]},
+		"highlight_roles": {"options": options["roles"], "selected": highlight_roles},
 		"hidden": hidden,
 	}
 

@@ -184,13 +184,32 @@ def _summarize(names: list[str], rooms: int) -> str:
 	return f"{shown} — {counted}" if shown else counted
 
 
+def default_highlight_roles() -> list[str]:
+	"""Active roles flagged to seed the wall chart's "Highlight" picker.
+
+	Only the picker's *first* seeding, before a reader has touched it this
+	session — see `wallchart.api._highlight_selection`. An explicit empty
+	selection afterwards means "highlight nobody", not "back to these".
+	"""
+	return sorted(
+		row.name
+		for row in frappe.get_all(
+			"Scheduling Role", filters={"active": 1, "highlight_by_default": 1}, fields=["name"]
+		)
+	)
+
+
 def filter_options() -> dict:
-	"""Every discipline and branch the chart could draw, for the filter pickers.
+	"""Every discipline, branch and role the chart could draw, for the filter pickers.
 
 	Read off `Discipline Branch Config` rather than off Department and Branch
 	wholesale: a discipline nothing is configured for has no band to show or hide,
 	so offering it would only be a way of filtering to an empty chart. Unfiltered
 	by design — the picker has to keep offering what the current selection hid.
+	Roles are every active `Scheduling Role` regardless of band filter: the
+	"Highlight" picker marks a holder wherever their chip is drawn, including a
+	half-day worked in a different role, so it is not narrowed by which bands are
+	currently shown.
 
 	Every option carries a `description`, and must: `MultiSelectList` interpolates
 	that field straight into each row's subtitle and only defaults it for *string*
@@ -217,6 +236,11 @@ def filter_options() -> dict:
 			if config.discipline:
 				disciplines_of.setdefault(config.branch, set()).add(config.discipline)
 
+	roles = frappe.get_all(
+		"Scheduling Role", filters={"active": 1}, fields=["name", "role_name", "discipline"]
+	)
+	role_labels = _department_labels({role.discipline for role in roles if role.discipline})
+
 	return {
 		"disciplines": [
 			{
@@ -236,6 +260,14 @@ def filter_options() -> dict:
 				),
 			}
 			for branch in sorted(branch_rooms)
+		],
+		"roles": [
+			{
+				"value": role.name,
+				"label": role.role_name or role.name,
+				"description": role_labels.get(role.discipline, role.discipline or ""),
+			}
+			for role in sorted(roles, key=lambda r: r.role_name or r.name)
 		],
 	}
 

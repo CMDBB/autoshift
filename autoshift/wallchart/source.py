@@ -562,6 +562,27 @@ def _not_working(
 	return {employee: blocked.get(employee, set()) | closed for employee in employees}
 
 
+def highlighted_employees(roles: list[str], days: list[datetime.date]) -> dict[str, list[str]]:
+	"""Employee -> the selected roles they hold, for the wall chart's "Highlight" picker.
+
+	Read off `Employee Scheduling Role` directly rather than off `cell.role`:
+	the point is to mark a holder wherever their chip is drawn, including a
+	half-day they work in a different role, not only the lane that role owns.
+	"""
+	if not roles:
+		return {}
+	rows = frappe.get_all(
+		"Employee Scheduling Role",
+		filters={"scheduling_role": ["in", roles], "active": 1},
+		fields=["employee", "scheduling_role", "valid_from", "valid_to"],
+	)
+	out: dict[str, list[str]] = defaultdict(list)
+	for row in rows:
+		if any(_in_window(row, day) for day in days):
+			out[row["employee"]].append(row["scheduling_role"])
+	return dict(out)
+
+
 def _in_disciplines(employees: set[str], days: list[datetime.date], disciplines: set[str]) -> set[str]:
 	"""Which of `employees` hold an in-window Scheduling Role in one of `disciplines`.
 

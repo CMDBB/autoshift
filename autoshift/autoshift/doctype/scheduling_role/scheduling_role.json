@@ -16,6 +16,7 @@
   "display_order_key",
   "assignments_binding",
   "active",
+  "highlight_by_default",
   "section_break_chip_sort",
   "chip_sort_field",
   "chip_sort_descending",
@@ -102,6 +103,13 @@
    "fieldname": "active",
    "fieldtype": "Check",
    "label": "Active"
+  },
+  {
+   "default": "0",
+   "description": "Seed the wall chart's \"Highlight\" picker with this role whenever nobody has touched it yet, so a holder stands out on their chip wherever they are drawn — including a half-day worked in a different role. A reader can still add or clear roles for their own session; this only sets what they see first.",
+   "fieldname": "highlight_by_default",
+   "fieldtype": "Check",
+   "label": "Highlight On Wall Chart By Default"
   },
   {
    "fieldname": "section_break_chip_sort",

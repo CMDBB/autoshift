@@ -18,8 +18,10 @@
 //   how much to say — the on-screen chart is a working instrument and shows
 //   provenance (kept/added/dropped colours, ★ pinned, → moved, dashed and
 //   dotted borders, the legend, the warnings); a `clean` printout is a finished
-//   sheet and shows the schedule. Hatching survives both: "this room is not
-//   open" is a fact about the week, not about where a chip came from.
+//   sheet and shows the schedule. Hatching survives both, and so does the •
+//   "Highlight" mark (`ctx.highlighted`): neither is provenance about how the
+//   run was produced — one is a fact about the week, the other about who
+//   somebody is — so "Finished sheet" leaves them alone.
 //
 // NOTE: no `import`/`export` here, deliberately — see bulk_employee_settings.js
 // for why doctype/page scripts on this app stay plain scripts. Loaded via
@@ -134,6 +136,7 @@ autoshift.wall_chart.inject_styles = function () {
 			outline: 2px solid var(--primary, #2490ef); outline-offset: 1px;
 		}
 		.autoshift-wall-chart .awc-mark { font-size: 0.7em; vertical-align: super; }
+		.autoshift-wall-chart .awc-highlight-mark { color: var(--amber-600, #d97706); font-weight: 700; }
 		.autoshift-wall-chart .awc-leave-band { font-style: italic; font-weight: 400; }
 		.autoshift-wall-chart .awc-leave-cell {
 			white-space: normal; text-align: left; vertical-align: top;
@@ -193,6 +196,10 @@ function view(payload, options) {
 		// planning window is provenance, so both go with the other working marks.
 		today: options.clean ? null : frappe.datetime.get_today(),
 		clean: !!options.clean,
+		// employee -> the "Highlight" roles they hold, whatever role their chip is
+		// drawn in. Survives a clean sheet: see `cell_markup` for why it is not
+		// gated on `clean` the way the provenance colours and marks are.
+		highlighted: payload.highlighted || {},
 		// `== null`, not `!== false`: the dialog's answers come from a Frappe Check,
 		// which is 0 or 1 — only an absent option means "the screen's default, on".
 		leaves: options.leaves == null ? true : !!options.leaves,
@@ -301,13 +308,26 @@ function cell_markup(cell, ctx) {
 	)
 		.filter(Boolean)
 		.join(" — ");
-	const marks = ctx.clean
-		? ""
-		: (cell.forced ? `<span class="awc-mark" title="${__("Pinned")}">★</span>` : "") +
-		  (cell.changed ? `<span class="awc-mark" title="${esc(cell.changed)}">→</span>` : "");
+	const marks =
+		(ctx.clean
+			? ""
+			: (cell.forced ? `<span class="awc-mark" title="${__("Pinned")}">★</span>` : "") +
+			  (cell.changed
+					? `<span class="awc-mark" title="${esc(cell.changed)}">→</span>`
+					: "")) + highlight_mark(ctx.highlighted[cell.employee]);
 	return `<span class="${classes.join(" ")}" data-who="${esc(cell.employee)}" title="${esc(
 		title
 	)}">${esc(cell.label)}</span>${marks}`;
+}
+
+// Which roles made this chip stand out, as a small mark beside it — the same
+// pattern as ★ (pinned) and → (moved), but never dropped on a clean sheet: it
+// is a fact about who somebody is, not about how the run was produced, which
+// is what "Finished sheet" exists to strip.
+function highlight_mark(roles) {
+	if (!roles || !roles.length) return "";
+	const title = __("Also holds: {0}", [roles.join(", ")]);
+	return `<span class="awc-mark awc-highlight-mark" title="${esc(title)}">•</span>`;
 }
 
 // Somebody on leave has no chair, so no cell — but "½" is a fact about the week
@@ -569,9 +589,25 @@ function legend_markup(payload) {
 				`<span class="awc-key"><span class="awc-swatch ${cls}"></span>${esc(label)}</span>`
 		)
 		.join("");
-	return `<span class="awc-legend">${swatches}<span class="awc-key">${esc(
-		chart_source_label(payload)
-	)}</span></span>`;
+	return `<span class="awc-legend">${swatches}${highlight_key(
+		payload
+	)}<span class="awc-key">${esc(chart_source_label(payload))}</span></span>`;
+}
+
+// What the • mark means right now — only while something is actually selected to
+// highlight, named by role rather than drawn as a swatch: the mark itself is the
+// sample, so a reader sees exactly what to look for on the chart.
+function highlight_key(payload) {
+	const highlight = (payload.filters || {}).highlight_roles || {};
+	const selected = highlight.selected || [];
+	if (!selected.length) return "";
+	const options = highlight.options || [];
+	const labels = selected.map(
+		(value) => (options.find((o) => o.value === value) || {}).label || value
+	);
+	return `<span class="awc-key"><span class="awc-mark awc-highlight-mark">•</span>${esc(
+		__("Holds {0}", [labels.join(", ")])
+	)}</span>`;
 }
 
 function bar_markup(payload) {
@@ -686,6 +722,7 @@ function build_filters($wrapper, payload, reload) {
 		return;
 	}
 	$host.data("awc-built", true);
+	const highlight_options = (filters.highlight_roles || {}).options || [];
 	$host.html(`
 		<span class="awc-filter-label">${__("Show")}</span>
 		<div class="awc-filter awc-filter-disciplines"></div>
@@ -699,6 +736,15 @@ function build_filters($wrapper, payload, reload) {
 		<button type="button" class="btn btn-default btn-xs awc-days-week" title="${__(
 			"Count Saturday and Sunday as not worked"
 		)}">${__("Weekends off")}</button>
+		${
+			highlight_options.length
+				? `<span class="awc-filter-label awc-filter-gap">${__("Highlight")}</span>
+		<div class="awc-filter awc-filter-highlight_roles"></div>
+		<button type="button" class="btn btn-default btn-xs awc-highlight-clear" title="${__(
+			"Mark nobody on the chart"
+		)}">${__("None")}</button>`
+				: ""
+		}
 		<span class="awc-hidden-note text-muted"></span>
 	`);
 
@@ -706,31 +752,31 @@ function build_filters($wrapper, payload, reload) {
 		disciplines: __("All disciplines"),
 		branches: __("All branches"),
 		weekdays: __("Days worked"),
+		highlight_roles: __("Highlight"),
 	};
 	const controls = {};
-	const read = () => ({
-		disciplines: controls.disciplines.get_value() || [],
-		branches: controls.branches.get_value() || [],
-		weekdays: controls.weekdays.get_value() || [],
-	});
+	const keys = highlight_options.length
+		? ["disciplines", "branches", "weekdays", "highlight_roles"]
+		: ["disciplines", "branches", "weekdays"];
+	const read = () =>
+		keys.reduce(
+			(out, key) => Object.assign(out, { [key]: controls[key].get_value() || [] }),
+			{}
+		);
 	// On close rather than on change: picking three disciplines is three clicks
 	// inside one dropdown, and refetching after each of them would rebuild the
 	// chart under the hand still choosing.
 	const settle = () => {
 		const next = read();
 		const current = selection_of($wrapper);
-		if (
-			same_set(next.disciplines, current.disciplines) &&
-			same_set(next.branches, current.branches) &&
-			same_set(next.weekdays, current.weekdays)
-		) {
+		if (keys.every((key) => same_set(next[key] || [], current[key] || []))) {
 			return;
 		}
 		$wrapper.data("awc-filters", next);
 		reload();
 	};
 
-	["disciplines", "branches", "weekdays"].forEach((key) => {
+	keys.forEach((key) => {
 		controls[key] = make_picker(
 			$host.find(`.awc-filter-${key}`),
 			key,
@@ -761,6 +807,12 @@ function build_filters($wrapper, payload, reload) {
 		controls.disciplines.set_value([]);
 		controls.branches.set_value([]);
 		$wrapper.data("awc-filters", Object.assign(read(), { disciplines: [], branches: [] }));
+		reload();
+	});
+	$host.find(".awc-highlight-clear").on("click", () => {
+		if (!read().highlight_roles.length) return;
+		controls.highlight_roles.set_value([]);
+		$wrapper.data("awc-filters", Object.assign(read(), { highlight_roles: [] }));
 		reload();
 	});
 	hidden_note($host, filters.hidden);
@@ -937,6 +989,7 @@ function export_css(options) {
 	.awc-uncertain { border-style: dashed; }
 	.awc-virtual { border-style: dotted; font-style: italic; }
 	.awc-mark { font-size: 0.7em; vertical-align: super; }
+	.awc-highlight-mark { color: #d97706; font-weight: 700; }
 	.awc-leave-band { font-style: italic; font-weight: 500; }
 	.awc-leave-cell { white-space: normal; text-align: left; vertical-align: top; background: #fafafa; }
 	.awc-who.awc-leave { background: #fdf2f8; border-color: #f9a8d4; color: #9d174d; }
@@ -1161,12 +1214,14 @@ function open_export_window() {
 // from the screen's: the sections, the coverage headline and the leave list all
 // follow the band set, and `api.get_week_chart` is the only thing that knows how.
 function run_export(payload, options, fetch) {
-	// The weekday control is a statement about the site's week, not a per-print choice,
-	// so the sheet inherits whatever the screen is set to.
+	// The weekday control and the highlight picker are both statements about the
+	// site's week rather than a per-print choice, so the sheet inherits whatever
+	// the screen is set to — there is no dialog field to change either.
 	const wanted = {
 		disciplines: options.disciplines || [],
 		branches: options.branches || [],
 		weekdays: ((payload.filters || {}).weekdays || {}).selected || [],
+		highlight_roles: ((payload.filters || {}).highlight_roles || {}).selected || [],
 	};
 	const shown = payload.filters || {};
 	const unchanged =

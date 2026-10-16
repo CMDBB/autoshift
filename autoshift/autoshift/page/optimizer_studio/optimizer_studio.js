@@ -856,6 +856,11 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 								disciplines: JSON.stringify((filters || {}).disciplines || []),
 								branches: JSON.stringify((filters || {}).branches || []),
 								weekdays: JSON.stringify((filters || {}).weekdays || []),
+								// Omitted until the "Highlight" picker has been built at least
+								// once — see the Optimizer Run form's copy of this for why.
+								...(filters && filters.highlight_roles !== undefined
+									? { highlight_roles: JSON.stringify(filters.highlight_roles) }
+									: {}),
 							},
 						})
 						.then((r) => r.message),
