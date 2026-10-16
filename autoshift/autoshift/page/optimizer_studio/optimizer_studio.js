@@ -47,7 +47,8 @@ function inject_studio_styles() {
 			margin-left: 0.6rem; padding-left: 0.75rem;
 			border-left: 2px solid var(--border-color);
 		}
-		.optimizer-studio .op-row-parent > .op-check-label > span { font-weight: 500; }
+		.optimizer-studio .op-row-parent > .op-check-label > span,
+		.optimizer-studio .op-row-parent > .op-radio-label > span { font-weight: 500; }
 		.optimizer-studio .op-row-blocked > .op-check-label,
 		.optimizer-studio .op-row-blocked > .op-radio-label { opacity: 0.45; cursor: not-allowed; }
 		.optimizer-studio .op-row-blocked > .op-desc { opacity: 0.45; }
@@ -311,17 +312,12 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 			// A grouped rule stays where its group is: a choice set whose members have
 			// different requirements (as `existing_assignments` does) cannot be split
 			// across nesting levels without breaking its radios. Its dependency is still
-			// enforced dynamically, just not drawn.
+			// enforced dynamically, just not drawn. A grouped rule can still be a nesting
+			// PARENT, though — render_group() draws each option's children exactly as
+			// render_toggle_row() does, so e.g. `synergy_value_objective` nests under its
+			// `room_value_objective` radio option.
 			if (rule.group) continue;
-			// A grouped rule is rendered by render_group(), which draws radios only and
-			// never a nested child — so a candidate parent that is itself grouped (e.g.
-			// `room_value_objective`, in the room-value choice group) cannot host a
-			// nested row either: picking it as the parent would draw the child nowhere.
-			// Fall through to the next requirement, or to standalone (dependency still
-			// enforced dynamically via blocked_reasons, just not drawn as nesting).
-			const parent = (rule.requires || [])
-				.filter((n) => this.by_name.has(n) && !this.by_name.get(n).group)
-				.sort()[0];
+			const parent = (rule.requires || []).filter((n) => this.by_name.has(n)).sort()[0];
 			if (!parent || parent === rule.name) continue;
 			this.parent_of.set(rule.name, parent);
 			if (!this.children_of.has(parent)) this.children_of.set(parent, []);
@@ -430,9 +426,16 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 
 	render_group(key, rules) {
 		const options = rules
-			.map(
-				(r) => `
-				<div class="op-row" data-rule="${frappe.utils.escape_html(r.name)}">
+			.map((r) => {
+				const children = this.children_of.get(r.name) || [];
+				const nested = children.length
+					? `<div class="op-children">${children
+							.map((child) => this.render_toggle_row(child))
+							.join("")}</div>`
+					: "";
+				return `
+				<div class="op-row${children.length ? " op-row-parent" : ""}"
+					data-rule="${frappe.utils.escape_html(r.name)}">
 					<label class="op-radio-label">
 						<input type="radio" class="op-toggle-group" name="op-group-${frappe.utils.escape_html(
 							key
@@ -447,8 +450,9 @@ autoshift.OptimizerStudio = class OptimizerStudio {
 							  )}</div>`
 							: ""
 					}
-				</div>`
-			)
+					${nested}
+				</div>`;
+			})
 			.join("");
 		return `
 			<div class="op-group" data-group="${frappe.utils.escape_html(key)}">
