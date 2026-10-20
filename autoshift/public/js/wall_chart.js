@@ -18,10 +18,19 @@
 //   how much to say — the on-screen chart is a working instrument and shows
 //   provenance (kept/added/dropped colours, ★ pinned, → moved, dashed and
 //   dotted borders, the legend, the warnings); a `clean` printout is a finished
-//   sheet and shows the schedule. Hatching survives both, and so does the •
-//   "Highlight" mark (`ctx.highlighted`): neither is provenance about how the
-//   run was produced — one is a fact about the week, the other about who
-//   somebody is — so "Finished sheet" leaves them alone.
+//   sheet and shows the schedule. The • "Highlight" mark (`ctx.highlighted`)
+//   survives both: it is not provenance about how the run was produced but a
+//   fact about who somebody is, so "Finished sheet" leaves it alone. A `dropped`
+//   chip survives too, because hiding a scheduled person is the one thing this
+//   chart never does — but loses its colour and strikethrough like everything
+//   else and prints in italics under a dashed underline (`.awc-idle`).
+//
+// The two media also differ in what they can paint at all, which is not a
+// stylistic choice: **a printout drops every background**, so the screen's
+// hatching for a room that is not fully staffed cannot reach paper. A sheet is
+// ink only and says the weaker, cheaper thing instead — a dot in an empty seat
+// (`.awc-room:empty`). `export_css` has the whole story; it is worth reading
+// before adding anything to that stylesheet.
 //
 // NOTE: no `import`/`export` here, deliberately — see bulk_employee_settings.js
 // for why doctype/page scripts on this app stay plain scripts. Loaded via
@@ -136,7 +145,7 @@ autoshift.wall_chart.inject_styles = function () {
 			outline: 2px solid var(--primary, #2490ef); outline-offset: 1px;
 		}
 		.autoshift-wall-chart .awc-mark { font-size: 0.7em; vertical-align: super; }
-		.autoshift-wall-chart .awc-highlight-mark { color: var(--amber-600, #d97706); font-weight: 700; }
+		.autoshift-wall-chart .awc-highlight-mark { font-weight: 700; font-size: 1.1em; margin-left: 0.05em; }
 		.autoshift-wall-chart .awc-leave-band { font-style: italic; font-weight: 400; }
 		.autoshift-wall-chart .awc-leave-cell {
 			white-space: normal; text-align: left; vertical-align: top;
@@ -216,7 +225,7 @@ function view(payload, options) {
 function columns_of(payload, options) {
 	const all = payload.days.map((day, index) => Object.assign({}, day, { index }));
 	if (!options.working_only) return all;
-	const busy = busy_days(payload, options.clean);
+	const busy = busy_days(payload);
 	return all.filter((col) => col.working || busy.has(col.index));
 }
 
@@ -225,17 +234,13 @@ function columns_of(payload, options) {
 // show, and a sheet that hid it would be the one place it could not be seen.
 // "Empty" means empty *as drawn*, though: a Saturday whose only chip is one the
 // sheet is not printing has nothing on it.
-function busy_days(payload, clean) {
+function busy_days(payload) {
 	const busy = new Set();
 	const mark = (entries, index) => entries && entries.length && busy.add(index);
 	payload.sections.forEach((section) => {
 		section.bands.forEach((band) =>
 			band.rows.forEach((lanes) =>
-				lanes.forEach((days) =>
-					days.forEach(
-						(cell, index) => cell && !hidden_chip(cell, clean) && busy.add(index)
-					)
-				)
+				lanes.forEach((days) => days.forEach((cell, index) => cell && busy.add(index)))
 			)
 		);
 		(section.leaves || []).forEach(mark);
@@ -268,27 +273,27 @@ function day_classes(day, ctx) {
 	return classes;
 }
 
-// A chip the current mode does not draw. One case today — a `dropped` chip on a
-// clean sheet — but it is asked twice, by `cell_markup` and by the row arithmetic
-// in `drawn_rows`, and the two have to agree: a row whose only occupant is never
-// printed must not be drawn either.
-function hidden_chip(cell, clean) {
-	return !!clean && cell.kind === "dropped";
-}
-
 function cell_markup(cell, ctx) {
 	if (!cell) return "";
-	// A finished sheet is the schedule as planned, not a diff against the books.
-	// Without its colour and its strikethrough a dropped chip would claim the room
-	// is staffed, so it comes off the sheet entirely rather than off its styling —
-	// `open_rows` already counts it for nothing, so the hatching stays right.
-	if (hidden_chip(cell, ctx.clean)) return "";
-	const classes = ["awc-who", ctx.clean ? "awc-plain" : `awc-${cell.kind}`];
+	const classes = ["awc-who"];
+	// A finished sheet drops every other kind's colour — it is the schedule as
+	// planned, not a diff against the books — but a `dropped` chip still has to
+	// read as *not actually there*, because a plain chip with no mark at all would
+	// print as though somebody were in the room (`open_rows` never counted it, so
+	// the hatching is already right — only the chip itself was ambiguous).
+	// `.awc-idle` marks it with ink only, never a background: see `export_css` for
+	// what a printout throws away and what that cost us.
+	if (ctx.clean) classes.push(cell.kind === "dropped" ? "awc-plain awc-idle" : "awc-plain");
+	else classes.push(`awc-${cell.kind}`);
 	if (!ctx.clean && cell.uncertain) classes.push("awc-uncertain");
 	if (!ctx.clean && cell.virtual) classes.push("awc-virtual");
 	const title = (
 		ctx.clean
-			? [cell.employee_name || cell.employee, cell.role]
+			? [
+					cell.employee_name || cell.employee,
+					cell.role,
+					cell.kind === "dropped" ? __("not scheduled this week") : "",
+			  ]
 			: [
 					cell.employee_name || cell.employee,
 					cell.role,
@@ -320,14 +325,16 @@ function cell_markup(cell, ctx) {
 	)}">${esc(cell.label)}</span>${marks}`;
 }
 
-// Which roles made this chip stand out, as a small mark beside it — the same
-// pattern as ★ (pinned) and → (moved), but never dropped on a clean sheet: it
-// is a fact about who somebody is, not about how the run was produced, which
-// is what "Finished sheet" exists to strip.
+// Which roles made this chip stand out, as a mark beside it — never dropped on
+// a clean sheet, unlike ★ (pinned) and → (moved): it is a fact about who
+// somebody is, not about how the run was produced, which is what "Finished
+// sheet" exists to strip. Its own class rather than `.awc-mark`: that one is
+// sized down and raised for a mark that rides beside running text, which is
+// exactly what would make this one easy to miss at a glance.
 function highlight_mark(roles) {
 	if (!roles || !roles.length) return "";
 	const title = __("Also holds: {0}", [roles.join(", ")]);
-	return `<span class="awc-mark awc-highlight-mark" title="${esc(title)}">•</span>`;
+	return `<span class="awc-highlight-mark" title="${esc(title)}">•</span>`;
 }
 
 // Somebody on leave has no chair, so no cell — but "½" is a fact about the week
@@ -371,22 +378,19 @@ function lane_spans(count, width) {
  * `Discipline Branch Config.rooms_num` is the floor and it is the truth: those
  * rooms exist whether or not anybody is in them, and an empty one is the thing
  * this chart was built to show. Rows *past* it are not rooms at all — they only
- * exist because more people turned up on one half-day than the branch has rooms —
- * so they are drawn only while something in them is still being drawn. Hide the
- * `dropped` chips and the lines they were holding go with them, instead of
- * leaving a blank numbered room the practice does not have.
+ * exist because more people turned up on one half-day than the branch has rooms
+ * (a `dropped` chip included — see the module header on where it lands), so they
+ * are drawn only while something in them is still being drawn.
  *
  * Monotonic by construction: a row is one table row across every lane and every
  * day, so the deepest visible one pulls every row above it along, blanks
  * included. There is no skipping a line in the middle.
  */
-function drawn_rows(band, ctx) {
+function drawn_rows(band) {
 	let rows = Math.min(band.rooms || 0, band.height);
 	band.rows.forEach((lanes, index) => {
 		if (index + 1 <= rows) return;
-		const visible = lanes.some((days) =>
-			days.some((cell) => cell && !hidden_chip(cell, ctx.clean))
-		);
+		const visible = lanes.some((days) => days.some(Boolean));
 		if (visible) rows = index + 1;
 	});
 	return rows;
@@ -440,7 +444,7 @@ function band_markup(band, ctx) {
 		)
 		.join("");
 
-	const height = drawn_rows(band, ctx);
+	const height = drawn_rows(band);
 	const rows = [
 		`<tr><th class="${classes.join(" ")}" rowspan="${height + 1}" scope="rowgroup">${esc(
 			band.discipline
@@ -475,6 +479,14 @@ function band_markup(band, ctx) {
 				const cls = ["awc-cell", ...day_classes(day, ctx)];
 				if (position && !lane_index) cls.push("awc-day-start");
 				if (lane.gates_rooms === false) cls.push("awc-aside");
+				// Two different statements about the same line, and the two
+				// stylesheets take different ones. `awc-room` says "this line is a
+				// seat somebody could be in", which is what lets the printed sheet
+				// dot an empty one — a blank nobody forgot. `awc-uncovered` is the
+				// stronger claim the screen hatches: the room is not open, whoever
+				// else is on the line. Only the screen can afford to say it; see
+				// `export_css` for why a sheet says everything with ink.
+				if (is_room) cls.push("awc-room");
 				if (is_room && !open_rows.has(row + 1)) cls.push("awc-uncovered");
 				cells.push(
 					`<td class="${cls.join(" ")}" colspan="${spans[lane_index]}">${cell_markup(
@@ -531,7 +543,7 @@ function section_markup(section, ctx) {
 	// nothing to say. A configured band with no rooms still prints its label —
 	// that emptiness *is* the configuration.
 	const bands = section.bands
-		.filter((band) => !band.overflow || drawn_rows(band, ctx))
+		.filter((band) => !band.overflow || drawn_rows(band))
 		.map((band) => band_markup(band, ctx))
 		.join("");
 	if (!bands) return "";
@@ -568,7 +580,11 @@ function chart_source_label(payload) {
 		: __("Shift Assignments on the books — run {0} is {1}", [run.name, run.status]);
 }
 
-function legend_markup(payload) {
+// `printed` swaps the one key the two media do not share. The screen hatches a
+// room that is not fully staffed; a sheet cannot (see `export_css`) and dots an
+// empty seat instead, so a printed legend naming the hatching would describe a
+// mark that is not on the page.
+function legend_markup(payload, printed) {
 	const run = payload.run;
 	const keys =
 		run && run.compared
@@ -583,13 +599,19 @@ function legend_markup(payload) {
 	if (payload.pending_bound && payload.pending_bound.count) {
 		keys.push([__("From Shift Schedule, not yet recorded"), "awc-existing awc-virtual"]);
 	}
-	const swatches = [...keys, [__("Room not fully staffed"), "awc-uncovered"]]
+	if (!printed) keys.push([__("Room not fully staffed"), "awc-uncovered"]);
+	const swatches = keys
 		.map(
 			([label, cls]) =>
 				`<span class="awc-key"><span class="awc-swatch ${cls}"></span>${esc(label)}</span>`
 		)
 		.join("");
-	return `<span class="awc-legend">${swatches}${highlight_key(
+	const empty = printed
+		? `<span class="awc-key"><span class="awc-empty-key">·</span>${esc(
+				__("Nobody in this room")
+		  )}</span>`
+		: "";
+	return `<span class="awc-legend">${swatches}${empty}${highlight_key(
 		payload
 	)}<span class="awc-key">${esc(chart_source_label(payload))}</span></span>`;
 }
@@ -605,7 +627,7 @@ function highlight_key(payload) {
 	const labels = selected.map(
 		(value) => (options.find((o) => o.value === value) || {}).label || value
 	);
-	return `<span class="awc-key"><span class="awc-mark awc-highlight-mark">•</span>${esc(
+	return `<span class="awc-key"><span class="awc-highlight-mark">•</span>${esc(
 		__("Holds {0}", [labels.join(", ")])
 	)}</span>`;
 }
@@ -909,9 +931,20 @@ function weekday_options(payload) {
 // A self-contained stylesheet for the exported page: no `var(--…)` theme
 // tokens (the popup never loads the desk's CSS), no sticky positioning (the
 // export is not scrolled — `<th rowspan>` already keeps a band's label next
-// to all of its rows) and no interactive chrome. Colors are the screen
-// stylesheet's own fallback values, so the export reads the same way the
-// chart does in a browser that has never seen the desk theme.
+// to all of its rows) and no interactive chrome.
+//
+// **This sheet says everything with ink: text, borders and text decorations,
+// and no background whatsoever.** Not a style preference — a background is the
+// one kind of paint a printout drops (a browser prints with backgrounds off by
+// default, Chrome's "Background graphics" box), so anything said with one is
+// said only in the preview window and silently lost on paper. Forcing it with
+// `print-color-adjust: exact` was worse than the disease: every gradient tile
+// and wavy decoration then had to be rasterized at print resolution across
+// hundreds of cells, which made the export crawl and came out coarse and
+// over-scaled anyway, px stops having no relation to a 7pt chip. So the
+// hatching is gone and an empty seat is marked the cheapest way there is —
+// `.awc-room:empty`, one dot, "nobody here, and nobody forgot" — while the
+// screen keeps the hatching, which says the stronger thing (see `band_markup`).
 //
 // Sized off three custom properties rather than hard-coded points, so the
 // dialog's text-size answer scales the whole sheet consistently; `.awc-plain`
@@ -939,11 +972,13 @@ function export_css(options) {
 	)}; color: #6b7280; margin-bottom: 0.6rem; }
 	.awc-key { display: inline-flex; align-items: center; gap: 0.3rem; }
 	.awc-swatch { display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 2px; border: 1.2px solid; }
+	/* The mark itself as its own sample, the same way the • highlight key works. */
+	.awc-empty-key { display: inline-block; width: 0.7rem; text-align: center; color: #6b7280; }
 	.awc-totals { font-size: ${pt(8.5)}; color: #6b7280; margin-bottom: 0.5rem; }
 	.awc-totals b { color: #1f2937; }
 	.awc-warning {
 		border-left: 3px solid #facc15; padding: 0.3rem 0.55rem; margin-bottom: 0.3rem;
-		font-size: ${pt(8)}; color: #4b5563; background: #fafafa;
+		font-size: ${pt(8)}; color: #4b5563;
 	}
 	table { border-collapse: separate; border-spacing: 0; width: 100%; margin-bottom: 0.8rem; }
 	th, td {
@@ -951,11 +986,13 @@ function export_css(options) {
 		padding: 0.15rem 0.3rem; font-size: var(--awc-cell); text-align: center; white-space: nowrap;
 	}
 	thead { display: table-header-group; }
-	thead th { font-weight: 600; background: #f9fafb; }
+	thead th { font-weight: 600; }
 	.awc-lane { font-weight: 400; color: #6b7280; font-size: var(--awc-small); }
+	/* The shading that used to separate a section's heading from the grid was a
+	   background, so it only ever showed in the preview. A rule is ink. */
 	.awc-section-title {
 		text-align: left; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase;
-		background: #eef0f3; font-size: var(--awc-small);
+		font-size: var(--awc-small); border-top: 1.5px solid #374151;
 	}
 	.awc-band {
 		text-align: left; vertical-align: top; min-width: 8rem; max-width: 8rem;
@@ -965,37 +1002,57 @@ function export_css(options) {
 	.awc-band.awc-overflow { color: #dc2626; }
 	.awc-ord { color: #6b7280; font-size: var(--awc-small); min-width: 1.4rem; max-width: 1.4rem; }
 	.awc-day-start { border-left: 2px solid #9ca3af; }
-	.awc-nonworking { background: #f4f5f6; }
+	/* Shading said this on screen. On paper the day's own heading says it, in the
+	   same italic the aside lanes use. */
+	th.awc-nonworking { font-style: italic; color: #6b7280; }
 	.awc-outside { opacity: 0.55; }
-	.awc-today-col { background: #eff6ff; }
 	.awc-cell { vertical-align: middle; }
-	.awc-uncovered {
-		background-image: repeating-linear-gradient(
-			45deg, transparent, transparent 4px, #e5e7eb 4px, #e5e7eb 5px
-		);
-	}
-	.awc-aside { background-color: #fafafa; }
+	/* An empty seat, stated rather than shaded: one dot, centred by the cell's own
+	   alignment, saying "nobody is in this room" where a blank cell alone could
+	   just as well be a chart that forgot somebody. The :empty test is exactly
+	   right here — cell_markup returns "" when there is no chip, so the cell
+	   really is empty — and generated content does not change that, so the rule
+	   cannot cancel itself. Only on awc-room: a line past the configured count is
+	   not a seat, and dotting it would promise a room that does not exist. */
+	.awc-room:empty::after { content: "·"; color: #6b7280; }
 	th.awc-aside { font-style: italic; }
 	.awc-who {
 		display: inline-block; border: 1.2px solid transparent; border-radius: 3px;
 		padding: 0.03rem 0.25rem; font-family: "SFMono-Regular", Consolas, monospace;
 		font-size: var(--awc-chip);
 	}
-	.awc-plain { background: transparent; border-color: transparent; color: #111827; font-weight: 600; }
-	.awc-existing { background: #f3f4f6; border-color: #9ca3af; }
-	.awc-kept { background: #eef2ff; border-color: #a5b4fc; color: #312e81; }
-	.awc-added { background: #ecfdf5; border-color: #6ee7b7; color: #065f46; }
-	.awc-dropped { background: #fef2f2; border-color: #fca5a5; color: #991b1b; text-decoration: line-through; }
+	.awc-plain { border-color: transparent; color: #111827; font-weight: 600; }
+	/* How a finished sheet says "on the books, and this run does not schedule
+	   them". Dashes and italics, and nothing else: a wavy line is drawn from the
+	   font's own thickness, which at this chip's 7pt is sub-pixel and rasterizes
+	   away to a blur, while a dash is a flat run of ink that survives any scale.
+	   Italics carry it on their own if even that fails, and nothing else on a
+	   finished sheet is an italic chip. */
+	.awc-plain.awc-idle {
+		color: #6b7280; font-weight: 400; font-style: italic;
+		text-decoration-line: underline;
+		text-decoration-style: dashed;
+		text-decoration-thickness: 1px;
+		text-underline-offset: 1px;
+	}
+	/* Kept/added/dropped only reach a sheet with "Finished sheet" off, and say it
+	   with a border and the text's own colour — thin ink, where the fill they used
+	   to carry was both the heaviest thing on the page and the one thing a
+	   printout drops. */
+	.awc-existing { border-color: #9ca3af; }
+	.awc-kept { border-color: #a5b4fc; color: #312e81; }
+	.awc-added { border-color: #6ee7b7; color: #065f46; }
+	.awc-dropped { border-color: #fca5a5; color: #991b1b; text-decoration: line-through; }
 	.awc-uncertain { border-style: dashed; }
 	.awc-virtual { border-style: dotted; font-style: italic; }
 	.awc-mark { font-size: 0.7em; vertical-align: super; }
-	.awc-highlight-mark { color: #d97706; font-weight: 700; }
+	.awc-highlight-mark { font-weight: 700; font-size: 1.1em; margin-left: 0.05em; }
 	.awc-leave-band { font-style: italic; font-weight: 500; }
-	.awc-leave-cell { white-space: normal; text-align: left; vertical-align: top; background: #fafafa; }
-	.awc-who.awc-leave { background: #fdf2f8; border-color: #f9a8d4; color: #9d174d; }
+	.awc-leave-cell { white-space: normal; text-align: left; vertical-align: top; }
+	.awc-who.awc-leave { border-color: #f9a8d4; color: #9d174d; }
 	/* On a clean sheet the leave chips keep a hairline box: several of them share
 	   one cell, and without it a row of initials runs together. */
-	.awc-who.awc-leave.awc-plain { background: transparent; border-color: #d1d5db; color: #374151; font-weight: 400; }
+	.awc-who.awc-leave.awc-plain { border-color: #d1d5db; color: #374151; font-weight: 400; }
 	/* A row never breaks; a table always may. Avoiding a break inside the table
 	   itself would be ignored by every engine the moment one section is taller
 	   than a page, and pushed to a fresh page before breaking anyway — so the
@@ -1043,7 +1100,7 @@ function export_markup(payload, options) {
 	const leaves = unknown_leaves_markup(payload, ctx);
 	const head =
 		export_head(payload, options) +
-		(options.clean ? "" : legend_markup(payload)) +
+		(options.clean ? "" : legend_markup(payload, true)) +
 		(options.coverage ? totals_markup(payload) : "") +
 		(options.clean
 			? ""
@@ -1135,7 +1192,7 @@ function export_dialog($wrapper, payload, fetch) {
 				label: __("Finished sheet"),
 				default: 1,
 				description: __(
-					"Drops everything that says where a shift came from: the kept/added/dropped colours, the ★ and → marks, the dashed and dotted borders, the legend and the warnings. Half-days this run re-planned away come off the sheet entirely — with no colour and no strikethrough left, they would read as staffed. Rooms that are not fully staffed stay hatched."
+					"Drops everything that says where a shift came from: the kept/added/dropped colours, the ★ and → marks, the dashed and dotted borders, the legend and the warnings. Half-days this run re-planned away still print, in italics under a dashed underline, so they read as somebody who is not actually there. A sheet carries no shading at all — nothing painted as a background survives a printout — so an empty room is marked with a single dot rather than hatched."
 				),
 			},
 			{

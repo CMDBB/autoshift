@@ -384,16 +384,20 @@ are *disabled with a tooltip* rather than hidden; Solver Log needs only a run, s
   was measured. Anything counting half-days therefore counts distinct `Slot.match_key`, not
   placements (`_totals`' kept/added/dropped, `build`'s inferred-role warning).
   Any line **not** in `covered` — the rows *every* gating lane staffs,
-  the chart's own reading of `room_coverage`'s minimum — is hatched, because a half-staffed
-  room is not an open room. `dropped` chips sink to the bottom of their lane and count
+  the chart's own reading of `room_coverage`'s minimum — is hatched **on screen**, because a
+  half-staffed room is not an open room; a printed sheet cannot say this at all (hatching is a
+  background, and a printout drops every background — see "Export PDF…" below) and marks an
+  empty seat with a single dot instead, which is the weaker claim it can afford.
+  `dropped` chips sink to the bottom of their lane and count
   toward neither. The headline counts fully-staffed rooms for the same reason.
   **Only the first `rooms_num` rows are rooms.** A band grows past its room count rather than
   hide anybody, but those extra lines are neither numbered nor hatched — there is no such
   room to number and a non-room cannot be half-staffed; the ordinal's tooltip and `build`'s
   "covers N rooms but only M are configured" warning explain them. They are also drawn only
-  while something in them is drawn (`wall_chart.js`'s `drawn_rows`, off the same `hidden_chip`
-  predicate `cell_markup` uses), so hiding the `dropped` chips on a finished sheet takes the
-  lines they were holding with them instead of leaving blank numbered rooms. `Unplaced` is
+  while something in them is drawn (`wall_chart.js`'s `drawn_rows`), so an overflow line
+  holding nothing but a `dropped` chip the current view does not print collapses along with
+  every other empty trailing row — nothing on this chart ever hides a scheduled person, only
+  a genuinely blank line past the configured count. `Unplaced` is
   dropped outright when nothing in it is drawn — it reports unplaceable people, so with none
   to report it says nothing; a *configured* band with no rooms still prints its label, because
   that emptiness is the configuration.
@@ -455,10 +459,26 @@ are *disabled with a tooltip* rather than hidden; Solver Log needs only a run, s
   header, so a page break lands between bands), orientation and text size. Its **"Finished
   sheet" default is on**, dropping everything that says where a chip came from — the
   kept/added/dropped colours, ★/→, the dashed/dotted borders, the legend, the warnings, the
-  `Unplaced` red and the today/out-of-window shading — and **omitting `dropped` chips
-  entirely**, since with no colour or strikethrough left a plain one would claim a room is
-  staffed by somebody the run sent home. Hatching stays either way: a room not being open is
-  a fact about the week, not about provenance. A scope the screen is not already showing is
+  `Unplaced` red and the today/out-of-window shading. A `dropped` chip still prints — hiding a
+  scheduled person is the one thing this chart never does — but loses its colour and
+  strikethrough with everything else and prints in **italics under a dashed underline**
+  (`.awc-idle`), needing no colour to read as "not actually here"; `open_rows` never counted
+  it, so the room it sits in is drawn as the empty one it is.
+  **`export_css` paints nothing: no background, no gradient, no colour fill.** Not a
+  preference — a browser prints with backgrounds off by default (Chrome's "Background
+  graphics" box) and drops every `background-color` and `background-image`, so anything a
+  sheet says that way is said only in the preview window and silently lost on paper. That
+  quietly cost every printout its hatching for years. Forcing it back with
+  `print-color-adjust: exact` was worse: the rasterizer then had to paint every gradient tile
+  and wavy decoration at print resolution across hundreds of cells, which made the export
+  crawl and still came out coarse and over-scaled, px stops bearing no relation to a 7pt
+  chip. So the sheet is **ink only** — text, borders, text decorations — and says the
+  cheap, honest version of each thing: a dot in an empty seat (`.awc-room:empty`, the
+  `awc-room` class being "this line is a seat", distinct from the screen's stronger
+  `awc-uncovered`), a rule above a section heading, an italic header for a non-working day,
+  and a bare border plus text colour where a chip used to carry a fill. `legend_markup`
+  takes a `printed` flag for the one key the two media cannot share. **Before adding anything
+  to that stylesheet, check it is ink.** A scope the screen is not already showing is
   re-fetched, and the popup is opened in the click's own turn and filled after (a window
   opened post-`await` is blocked).
   `day.working` comes from the **calendar** plus a reader's control, not from the weekday: a
