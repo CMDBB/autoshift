@@ -87,6 +87,6 @@ def _custom_rule_scratchpad(ctx: RuleContext) -> None:
 	}
 	employees_concerned = {e for _, _, e in payload}
 
-	for (e, role, shift, day, branch, room_idx), var in ctx.room_occupancy.items():
+	for (e, _role, _shift, day, _branch, room_idx), var in ctx.room_occupancy.items():
 		if e in employees_concerned and (day.weekday(), room_idx, e) not in payload:
 			ctx.add_objective(-1 * var, path(Weekday=day.weekday(), Room=room_idx, Employee=e))
