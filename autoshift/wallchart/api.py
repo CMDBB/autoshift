@@ -240,10 +240,10 @@ def get_week_chart(
 	week: str | None = None,
 	run: str | None = None,
 	mode: str = "Bounded",
-	disciplines=None,
-	branches=None,
-	weekdays=None,
-	highlight_roles=None,
+	disciplines: str | None = None,
+	branches: str | None = None,
+	weekdays: str | None = None,
+	highlight_roles: str | None = None,
 ) -> dict:
 	"""The wall chart for one week, optionally diffed against an Optimizer Run.
 
