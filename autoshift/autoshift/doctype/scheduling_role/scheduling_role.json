@@ -8,18 +8,19 @@
  "field_order": [
   "role_name",
   "discipline",
-  "assignment_mode",
-  "column_break_1",
   "max_rooms",
+  "active",
+  "column_break_1",
   "gates_rooms",
   "assignment_value",
-  "display_order_key",
+  "assignment_mode",
   "assignments_binding",
-  "active",
-  "highlight_by_default",
   "section_break_chip_sort",
+  "display_order_key",
+  "highlight_by_default",
   "chip_sort_field",
   "chip_sort_descending",
+  "wallchart_abbreviation",
   "section_break_description",
   "description"
  ],
@@ -55,7 +56,8 @@
   },
   {
    "fieldname": "column_break_1",
-   "fieldtype": "Column Break"
+   "fieldtype": "Column Break",
+   "label": "Optimizer Configuration"
   },
   {
    "default": "1",
@@ -106,7 +108,7 @@
   },
   {
    "default": "0",
-   "description": "Seed the wall chart's \"Highlight\" picker with this role whenever nobody has touched it yet, so a holder stands out on their chip wherever they are drawn — including a half-day worked in a different role. A reader can still add or clear roles for their own session; this only sets what they see first.",
+   "description": "Seed the wall chart's \"Highlight\" picker with this role whenever nobody has touched it yet, so a holder stands out on their chip wherever they are drawn \u2014 including a half-day worked in a different role. A reader can still add or clear roles for their own session; this only sets what they see first.",
    "fieldname": "highlight_by_default",
    "fieldtype": "Check",
    "label": "Highlight On Wall Chart By Default"
@@ -114,7 +116,7 @@
   {
    "fieldname": "section_break_chip_sort",
    "fieldtype": "Section Break",
-   "label": "Chip Order"
+   "label": "Wallchart Display"
   },
   {
    "description": "Fieldname on Employee to order this role's chips by within a lane, e.g. \"date_of_joining\". Leave blank to keep the default: alphabetical by initials, which is what the wall chart's row numbers reflect either way.",
@@ -138,10 +140,16 @@
    "fieldname": "description",
    "fieldtype": "Small Text",
    "label": "Description"
+  },
+  {
+   "fieldname": "wallchart_abbreviation",
+   "fieldtype": "Data",
+   "label": "Wallchart Abbreviation",
+   "length": 4
   }
  ],
  "links": [],
- "modified": "2026-09-07 13:12:32.529810",
+ "modified": "2026-10-23 14:19:12.560274",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Scheduling Role",

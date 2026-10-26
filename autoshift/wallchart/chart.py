@@ -147,6 +147,7 @@ class Lane:
 	#: and `room_coverage` enforces. A non-gating lane (a lead duty, a floater)
 	#: is drawn like any other and simply does not decide whether a room counts.
 	gates_rooms: bool = True
+	abbreviation: str = ""
 
 
 @dataclass(frozen=True)

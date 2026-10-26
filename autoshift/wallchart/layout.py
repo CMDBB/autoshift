@@ -298,7 +298,14 @@ def derive(disciplines: list[str] | None = None, branches: list[str] | None = No
 	roles = frappe.get_all(
 		"Scheduling Role",
 		filters={"active": 1},
-		fields=[*ROLE_ORDER_FIELDS, "role_name", "discipline", "chip_sort_descending", "gates_rooms"],
+		fields=[
+			*ROLE_ORDER_FIELDS,
+			"role_name",
+			"discipline",
+			"chip_sort_descending",
+			"gates_rooms",
+			"wallchart_abbreviation",
+		],
 	)
 	by_discipline: dict[str, list] = {}
 	for role in roles:
@@ -331,6 +338,7 @@ def derive(disciplines: list[str] | None = None, branches: list[str] | None = No
 				role.role_name or role.name,
 				bool(role.chip_sort_descending),
 				bool(role.gates_rooms),
+				role.wallchart_abbreviation,
 			)
 			for role in by_discipline.get(config.discipline, [])
 		)

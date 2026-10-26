@@ -185,7 +185,15 @@ def _band_payload(chart, cells, band_key, shift_type, lanes, rooms) -> dict:
 		"rooms": rooms,
 		"height": height,
 		"open_rows": [list(chart.covered_rows(shift_type, band_key, day)) for day in range(7)],
-		"lanes": [{"key": lane.key, "label": lane.label, "gates_rooms": lane.gates_rooms} for lane in lanes],
+		"lanes": [
+			{
+				"key": lane.key,
+				"label": lane.label,
+				"gates_rooms": lane.gates_rooms,
+				"abbreviation": lane.abbreviation,
+			}
+			for lane in lanes
+		],
 		"rows": rows,
 	}
 
