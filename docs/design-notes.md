@@ -1,9 +1,10 @@
 # Design notes
 
 Why things are the way they are. Nothing here is needed to *understand* the current code —
-`CLAUDE.md` covers that, and `README.md` covers using the app. This file exists so the
-reasoning behind a decision survives after the decision stops looking surprising, and so
-neither of those two files has to carry it.
+the `CLAUDE.md` files cover that (a map at the repo root, one per package beside the code it
+describes), `docs/formulation.md` covers the arithmetic, and `README.md` covers using the app.
+This file exists so the reasoning behind a decision survives after the decision stops looking
+surprising, and so none of those files has to carry it.
 
 Ordered roughly by how likely you are to need it.
 
@@ -1271,6 +1272,29 @@ working, what the coverage headline counts against, and which days a leave can h
 That last one is why it is a server argument and not a browser toggle — the pruning is
 `source._due`'s, and only the server can do it.
 
+### Highlighting a group, and why its argument is tri-state (2026-10-26)
+
+The other three pickers narrow, and for them an empty selection is "no filter" — there is
+nothing for the server to distinguish, because "every band" is what both a cleared picker and
+an untouched one mean. **Highlight** is not a filter: it marks the holders of the chosen
+`Scheduling Role`s and hides nothing, so an empty selection is a real answer ("mark nobody")
+and genuinely differs from "nobody has touched this yet". `api._highlight_selection` therefore
+keeps `None` and `[]` apart where `_selection` collapses them: omitted means seed from
+`Scheduling Role.highlight_by_default`, an explicit empty list means highlight nobody. The
+browser omits the argument entirely until the reader opens the control.
+
+Two consequences of marking a *person* rather than a lane. It follows the employee, so a chip
+is marked even on a half-day worked in some other role — which is the question being asked
+("where is the apprentice this week"), and the chip's own lane already says what they covered.
+And its options are every active role regardless of the band filter, since a highlighted
+holder can be drawn in a band the chosen role does not appear in at all.
+
+`Scheduling Role.wallchart_abbreviation` is the same kind of concession as
+`chip_sort_field` and `display_order_key`: the derived default (initials off the role name)
+collides as soon as two roles in a discipline start with the same letters, and what a lane
+should be called on a sheet somebody reads at a glance is the site's to declare, not this
+repo's to infer. Blank keeps the derived initials, which is why nothing had to be backfilled.
+
 ---
 
 ## Diagnosing infeasibility: three instruments, not one
@@ -1376,6 +1400,95 @@ Consequences worth naming:
 The panel renders a node's children on first expand rather than up front, for the same
 reason the payload leaves levels implicit: the tree is built to be *opened*, one branch at
 a time, not to be laid out in full.
+
+
+## The horizon scan: one run per week, and two readings of a shortfall (2026-10-27)
+
+A single run says whether *that* window works. The question a planner actually loses sleep
+over is further out — the week in March where a four-day contract, a long leave and a rota
+cycle happen to coincide — and it is not answerable by looking at one week at a time by hand.
+So the scanner solves the whole horizon, week by week, and paints a calendar.
+
+**Why one real `Optimizer Run` per window rather than an ephemeral solve.** Storing a bare
+verdict per day would be smaller and tidier, and it was the first instinct. It is wrong for
+two reasons that both come down to reusing what exists:
+
+- a flagged day is useless if you cannot look at it, and everything that *can* look at a week
+  — the wall chart, the statistics panel, the solver log, `diagnose-model` — takes a run. With
+  one run per window, clicking a day draws its wall chart for free, and a failed week carries
+  its own `diagnostics.report` in the Solver Log with no new machinery at all;
+- `input_hash` already exists and already means "this input has been solved". Keeping the runs
+  makes a *re-scan* nearly free: `find_cached_runs` hands back the run a window already had
+  and only what genuinely changed is solved again. Re-runnability was in the ask, and this is
+  the cheap version of it — the alternative (re-solve everything, every time) makes a yearly
+  scan something nobody runs twice.
+
+The cost is run volume: ~52 runs a year scanned, each with its solution and coverage tables.
+`type = "Scan"` and the list view's existing filter keep them out of the way, for the same
+reason `Automatic` is filtered.
+
+**Why windows do not overlap.** A rolling window (solve a week, step a day) would judge each
+day seven times and produce seven answers for it, and "worst of the seven" is not a thing
+anybody asked. Non-overlapping windows mean each day is judged once, by exactly one run, and
+the square on the calendar has one run behind it to open. The last window is kept whole past
+the end date for the same reason a short week is never solved: a week truncated to four days
+is short of coverage *because it was truncated*, and reporting that as a finding is noise.
+
+**Resumability is the row statuses, not a cursor.** No "resume from here" pointer, no job
+state: each window commits as it is solved, and resuming means "solve every `Pending` row".
+That makes four different interruptions — Stop, a worker restart, a `Ctrl-C` on
+`bench scan-horizon`, a window that ran out of time — leave *the same* state behind, and makes
+a half-finished scan a useful artefact rather than a broken one. Stop is cooperative and
+finishes the window in flight, because CBC is a subprocess and an abandoned solve would be
+re-done from scratch anyway. A window that exceeds its time limit is left `Timed Out` with its
+Draft run kept, so the next resume retries that same run: one pathological week must not hold
+the other fifty-one hostage, and the impatience costs nothing.
+
+**Why a day with no verdict is not a clean day.** The one invariant the calendar cannot
+violate. An unscanned day has no entry in the payload at all and draws dashed; a day the
+practice does not work draws grey and is counted in neither direction. Painting either of them
+in the "covered" colour would make a scan that has run for ten minutes look like a scan that
+has finished, which is worse than showing nothing.
+
+**Two readings of a shortfall, both stored.** Measuring staffed rooms against
+`rooms_num` reports a practice's structural ceiling: four rooms, two practitioners in, two
+rooms short — every single week, for ever. That is true, and it is a hiring question, not a
+scheduling one; as a daily alert it is pure noise that buries the real finding. So the cell
+also carries `exclusive_capacity`: the rooms the holders of **exclusive gating roles actually
+scheduled in that slot** could open, capped by the scarcest such role. Measured against that,
+only a *missing flexible* member — the assistant who could have been scheduled and was not —
+is flagged, which is the part a different schedule would have fixed.
+
+Both figures are computed at scan time and stored raw, with the reader's choice applied on
+read. Deriving one of them later was never an option (it needs the `DataPackage`'s modes and
+`max_rpe`, which a stored verdict does not carry), and storing only the chosen one would make
+a change of mind a full re-scan.
+
+Three mechanics inside that figure are deliberate, and all three were wrong in the first
+draft until a test said so:
+
+- a **Flexible** role caps nothing. It is the shortage being looked for; capping by it would
+  define the finding out of existence. The exception is a role whose every holder *present*
+  overrides it to Exclusive — then nobody else could have been put there either.
+- a **non-gating** exclusive role (an administrative post) caps nothing. No room waits on it.
+- **nobody in an exclusive gating role is a supply of zero, not a role to skip.** Skipping it
+  reads as "no exclusive role here, so use the configured capacity" and reports a closed
+  practice as critically understaffed. Zero is the honest answer: the rooms cannot open, the
+  scaled reading calls the day fine and the strict reading calls it shut, and both are correct
+  answers to different questions.
+
+**Non-coverage findings raise a floor, they do not win.** A leave colliding with a settled
+assignment is a `warning` however full the rooms are — a record contradicting another record
+is not answered by the schedule being fine around it. Ending the window under FTE is only
+`info`: nobody is missing from a room over it. Both are filed under days: the conflict under
+its own date, the deficit under every day the employee was free and scheduled nowhere, since
+those are the days that could have absorbed it.
+
+**Findings are one JSON blob per window, not a child table.** A row per (day, discipline,
+branch, shift) is thousands of rows for a year, for a payload that is only ever read whole by
+one page. The blob is versioned (`FINDINGS_VERSION`) and a payload from another version reads
+back as *no* findings rather than being partially guessed at — a wrong verdict is worse than
+an absent one, which is the same bargain the objective breakdown's version 1 fallback makes.
 
 
 ## Smaller decisions worth not re-litigating

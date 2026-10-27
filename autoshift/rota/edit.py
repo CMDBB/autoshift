@@ -46,8 +46,8 @@ employee still has, as they stand, by clearing the flag in place (`EditPlan.prom
 collateral_roles)`, see :func:`group_key` — and *not* on cadence or anchor, which are
 outcomes of folding the changes rather than inputs to the grouping. This is what lets a
 genuinely varying multi-week
-pattern (CLAUDE.md's "Multi-week rotas": several same-cadence assignments at different
-phases) be edited at all: every one of a group's member rows, whatever their own cadence,
+pattern (several same-cadence assignments at different phases, which is what zawin2frappe
+emits) be edited at all: every one of a group's member rows, whatever their own cadence,
 is resampled into a per-view-week `phases` map (`_Group.phases`, `phase -> weekdays`) before
 any `Change` is folded in, and `minimal_cycle` reads the *smallest* cadence that map still
 needs once every change has landed. Editing a single occurrence inside a view wider than

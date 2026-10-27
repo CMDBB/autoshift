@@ -129,12 +129,12 @@
   },
   {
    "default": "Manual",
-   "description": "Was this run created manually, copied from another run, or was it created automatically by another tool (dynamic auto-calendar)",
+   "description": "Was this run created manually, copied from another run, created automatically by another tool (dynamic auto-calendar), or by one window of a Horizon Scan",
    "fieldname": "type",
    "fieldtype": "Select",
    "hidden": 1,
    "label": "Type",
-   "options": "Manual\nCopy\nAutomatic\nTest",
+   "options": "Manual\nCopy\nAutomatic\nScan\nTest",
    "read_only": 1,
    "set_only_once": 1
   },

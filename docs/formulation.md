@@ -2,7 +2,8 @@
 
 The exact arithmetic every built-in rule in `autoshift/optimizer/rules.py` puts into the
 model. **Formulas only** — what a rule is *for*, and why it is the way it is, lives on the
-rule's own `@builtin_rule` description, in `CLAUDE.md` and in `design-notes.md`.
+rule's own `@builtin_rule` description, in `autoshift/optimizer/CLAUDE.md` and in
+`design-notes.md`.
 
 One section per built-in, in registry order — 26 of them: 12 constraint rules, `warm_start`
 (kind `Other`), and 13 objective rules. Constraint names are the `_cname` prefixes the model

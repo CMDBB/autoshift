@@ -112,7 +112,7 @@ def _sort_value(role: str | None, person: dict, chip_sort: dict[str, tuple[str, 
 
 def _location_branches() -> dict[str, str | None]:
 	"""Shift Location -> branch. The source of truth for a Shift Assignment's
-	branch is `Shift Location.custom_branch` (CLAUDE.md, "Custom fields")."""
+	branch is `Shift Location.custom_branch` (CLAUDE.md, "Custom field ownership")."""
 	return {
 		row.name: row.custom_branch
 		for row in frappe.get_all("Shift Location", fields=["name", "custom_branch"])

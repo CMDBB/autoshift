@@ -203,7 +203,7 @@ def _shift_location_for(discipline: str, branch: str) -> str:
 	"""The `Shift Location` a fresh `Shift Schedule Assignment` should point at for
 	`branch` — the inverse of `_rotas_by_branch`.
 
-	Room-level assignment doesn't exist yet (see CLAUDE.md, "To be implemented") — the
+	Room-level assignment doesn't exist yet (see CLAUDE.md, "Not built yet") — the
 	optimizer tracks an aggregate room count per (discipline, branch), never a specific
 	room — so picking the alphabetically-first matching Shift Location is as good a
 	choice as any other; nothing downstream distinguishes between them.

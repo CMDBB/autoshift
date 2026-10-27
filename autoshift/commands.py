@@ -320,10 +320,65 @@ def update_holiday_lists(context, dry_run):
 		frappe.destroy()
 
 
+@click.command("scan-horizon")
+@click.option("--scan", help="Horizon Scan to sweep. Omit to create one from the options below")
+@click.option("--ruleset", default="Standard Ruleset", help="Ruleset for a scan created here")
+@click.option("--start", help="First day to scan (defaults to today). Snapped back to its Monday")
+@click.option("--until", help="Scan forward until this day")
+@click.option("--mode", default="1-week", help="Window length: 1-week, 2-week or 4-week")
+@click.option("--window-time-limit", default=None, type=int, help="Seconds per window's solve")
+@click.option("--rerun", is_flag=True, help="Reset every window first instead of resuming")
+@pass_context
+def scan_horizon(context, scan, ruleset, start, until, mode, window_time_limit, rerun):
+	"""Sweep a Horizon Scan window by window, in this process
+
+	The same sweep the page queues as a background job (`autoshift.scanner.scan.sweep`),
+	run in the foreground — which is how a bench with no worker scans anything, and how a
+	long sweep is watched. It checkpoints per window, so Ctrl-C loses at most the window
+	in flight and the scan resumes from there.
+	"""
+	from autoshift.scanner import scan as scan_engine
+
+	site = get_site(context)
+	frappe.init(site=str(site))
+	frappe.connect()
+	try:
+		if not scan:
+			if not until:
+				raise click.UsageError("--until is required when creating a scan")
+			doc = frappe.new_doc("Horizon Scan")
+			doc.set("ruleset", ruleset)
+			doc.set("start_date", start or frappe.utils.today())
+			doc.set("end_date", until)
+			doc.set("mode", mode)
+			if window_time_limit:
+				doc.set("window_time_limit", window_time_limit)
+			doc.insert()
+			frappe.db.commit()  # nosemgrep
+			scan = doc.name
+			click.echo(f"created {scan}: {doc.weeks_total} window(s)")
+		doc = frappe.get_doc("Horizon Scan", scan)
+		if rerun:
+			scan_engine.reset(doc)
+			frappe.db.commit()  # nosemgrep
+		doc.db_set({"status": "Scanning", "cancel_requested": 0}, update_modified=False)
+		frappe.db.commit()  # nosemgrep
+		scan_engine.sweep(scan)
+		doc.reload()
+		for row in doc.get("windows") or []:
+			click.echo(
+				f"{row.window_start} {row.status:<9} {row.severity or '':<8} {row.optimizer_run or ''}"
+			)
+		click.echo(f"{doc.status}: {doc.weeks_done}/{doc.weeks_total} window(s) scanned")
+	finally:
+		frappe.destroy()
+
+
 commands = [
 	dump_dev_data,
 	seed_dev_data,
 	capture_datapackage,
 	diagnose_model,
 	update_holiday_lists,
+	scan_horizon,
 ]

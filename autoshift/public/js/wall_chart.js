@@ -434,8 +434,6 @@ function band_markup(band, ctx) {
 					const cls = ["awc-lane", ...day_classes(day, ctx)];
 					if (position && !lane_index) cls.push("awc-day-start");
 					if (lane.gates_rooms === false) cls.push("awc-aside");
-					if (!lane.abbreviation) console.log(lane);
-					else console.log("lane.abbreviation" + lane.abbreviation);
 					return `<th class="${cls.join(" ")}" colspan="${
 						spans[lane_index]
 					}" scope="col" title="${esc(lane.label)}">${esc(
