@@ -20,7 +20,7 @@ illegal under the ruleset. Three tools, in increasing cost:
 :func:`lp_relaxation` drops integrality so CBC returns duals; ``LpConstraint.pi`` and
 ``LpVariable.dj`` are meaningful only on the relaxation, never on the MILP.
 
-Pure Python (no Frappe imports) — usable from tests and the sandbox notebook.
+Pure Python (no Frappe imports) — usable from tests and `bench diagnose-model` alike.
 """
 
 from __future__ import annotations
@@ -481,8 +481,10 @@ def elastic_analysis(
 	if not integral:
 		relax_integrality(prob)
 	slacks = elasticize(prob)
-	prob.solve(pulp.COIN_CMD(timeLimit=time_limit, msg=False))
-	status = pulp.LpStatus[prob.status]
+	# gapRel=0: see solver.run_solve — without it CBC can stop at "good enough" and report
+	# GapLimit instead of Optimal, which this function's callers treat as unsolved.
+	result = prob.solve(pulp.COIN_CMD(timeLimit=time_limit, msg=False, gapRel=0, gapAbs=0))
+	status = result.status.name
 
 	by_name = {str(con.name): con for con in _constraints(prob)}
 	violations = []

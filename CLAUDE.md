@@ -40,11 +40,10 @@ Three apps split the responsibility; keep them separate.
 | `../zawin2frappe` | Migrating data out of the legacy ZaWin system into Frappe HR. Reads a *profile* for everything practice-specific. | Public |
 | `../cmdb_frappe` | This practice: the zawin profile, curated overrides, investigation docs. `required_apps = ["autoshift", "zawin2frappe"]`. | **Private** |
 
-- **No practice data, ever** — not in code, fixtures, tests or notebook outputs. Branch names,
-  company abbreviations, discipline names, employee ids and real run dates together fingerprint
-  the practice. Tests use neutral placeholders (`E1`, `B1`, `D1`).
-- `sandbox/` is a live-data hazard: `sandbox/*.json` is gitignored and an `nbstripout`
-  pre-commit hook clears `playground.ipynb` outputs. Don't defeat either.
+- **No practice data, ever** — not in code, fixtures or tests. Branch names, company
+  abbreviations, discipline names, employee ids and real run dates together fingerprint the
+  practice. Tests use neutral placeholders (`E1`, `B1`, `D1`). `snapshots/*.json`
+  (`capture-datapackage` output) is gitignored for the same reason — don't defeat it.
 - Don't add config doctypes or seed data for one practice's setup. A new practice-specific
   value becomes a *field* on an existing config doctype; the value lives in `cmdb_frappe`.
 
@@ -189,12 +188,12 @@ bench --site development.localhost seed-dev-data --input /path/to/dev_data
 bench --site development.localhost diagnose-model --run OR-0001      # why is it infeasible
 bench --site development.localhost update-holiday-lists --dry-run    # per-employee holiday lists
 bench --site development.localhost scan-horizon --until 2027-03-01   # sweep a horizon, in the foreground
-bench diagnose-model --snapshot sandbox/snapshots/OR-0001.json --lp /tmp/m.lp   # offline, no site
+bench diagnose-model --snapshot snapshots/OR-0001.json --lp /tmp/m.lp   # offline, no site
 ```
 
 `dump-dev-data` / `seed-dev-data` snapshot and restore **only Autoshift's own configuration**
 (`DEV_DATA_DOCTYPES`: Holiday List, Scheduling Role, Discipline Branch Config, Employee
 Scheduling Role, Employee Settings, Optimizer Settings). Company / Branch / Designation / Shift
 Type / Employee are zawin2frappe's job — seeding them here would duplicate it and dump real
-personnel to disk. `capture-datapackage` snapshots a run's resolved `DataPackage` for the
-sandbox notebook.
+personnel to disk. `capture-datapackage` snapshots a run's resolved `DataPackage` for offline
+diagnosis (`diagnose-model --snapshot`), with no site needed.

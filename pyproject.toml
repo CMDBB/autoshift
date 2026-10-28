@@ -7,7 +7,7 @@ readme = "README.md"
 dynamic = ["version"]
 dependencies = [
     # "frappe~=16.0.0" # Installed and managed by bench.
-    "pulp[cbc]",
+    "pulp[cbc]>=4.0",
     "numpy",
 ]
 
@@ -26,8 +26,6 @@ packages = []
 [dependency-groups]
 dev = [
     "coverage>=7.14.1",
-    "ipykernel<=6.30.0",
-    "pandas>=3.0.3",
     "pytest>=9.0.3",
     "semgrep>=1.168.0",
 ]

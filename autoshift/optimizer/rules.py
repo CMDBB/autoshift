@@ -287,8 +287,8 @@ def _vname(*parts) -> str:
 	"""Sanitize parts into a PuLP-safe variable name.
 
 	The counterpart to `_cname`, for rules that introduce auxiliary variables — a
-	linearized absolute value, say. Same prefix convention, so sandbox tooling can group
-	a rule's variables the way `constraint_frame` groups its constraints.
+	linearized absolute value, say. Same prefix convention, so `diagnostics.group_of` can
+	group a rule's variables the same way it groups its constraints.
 	"""
 	return _cname(*parts)
 

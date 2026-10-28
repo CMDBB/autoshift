@@ -1015,8 +1015,8 @@ run you want to pick apart offline:
 
 ```bash
 bench --site YOUR_SITE diagnose-model --run OR-0001
-bench --site YOUR_SITE capture-datapackage --run OR-0001 --output sandbox/snapshots/
-bench diagnose-model --snapshot sandbox/snapshots/OR-0001.json --lp /tmp/m.lp   # no site needed
+bench --site YOUR_SITE capture-datapackage --run OR-0001 --output snapshots/
+bench diagnose-model --snapshot snapshots/OR-0001.json --lp /tmp/m.lp   # no site needed
 ```
 
 ### Linting
@@ -1065,9 +1065,8 @@ Existing records are left alone unless you pass `--overwrite`. Don't seed dev
 data into the test site — keep it pristine.
 
 A dump contains real employees and leave records from whichever site produced
-it, so `dev_data/` is gitignored. The same goes for `sandbox/`:
-`capture-datapackage` snapshots are gitignored and a pre-commit hook strips
-`playground.ipynb` outputs, because the notebook runs against live data. Don't
+it, so `dev_data/` is gitignored. The same goes for `snapshots/`: a
+`capture-datapackage` output embeds live branch/discipline/employee data. Don't
 commit around either.
 
 ---

@@ -66,7 +66,7 @@ rule-owned, created only by `room_coverage_matched_rooms`, so a ruleset keeping 
 over `ctx.room_load`'s linearized estimate, falling back to 0 ("unmeasured") when neither rule
 ran — **one figure covers both mechanisms**, so `wallchart/source.py` needs no preference logic.
 **`build()` returns its `RuleContext` as a fifth element** so the breakdown can be evaluated
-against solved variables — update sandbox/test call sites if you change that shape.
+against solved variables — update test call sites if you change that shape.
 
 **`committer.py`** — converts an Approved run into submitted `Shift Assignment` records.
 Raises `NotImplementedError` unconditionally; see "Not built yet" in the root `CLAUDE.md`.
@@ -88,7 +88,7 @@ instruments, in increasing cost (design notes explain why three):
 
 `relax_integrality` / `lp_relaxation` / `shadow_prices` drop integrality so CBC returns duals
 (`pi` / `dj` are `None` on a MILP). **`solver.run_solve` appends `report()` to a Failed run's
-Solver Log**; `bench diagnose-model` and the sandbox helpers are the on-demand surfaces.
+Solver Log**; `bench diagnose-model` is the on-demand surface.
 
 **`editor_support.py`** — introspects RuleContext/DataPackage for the rule editor's completions.
 

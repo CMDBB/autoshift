@@ -178,12 +178,12 @@ def _seed_single(doctype: str, record: dict, overwrite: bool) -> int:
 
 def _default_snapshot_dir():
 	# bench chdirs into sites/ before dispatching commands, so a plain relative
-	# default would land under sites/sandbox/snapshots instead of the app's own
-	# sandbox/ — anchor it to this file's location instead.
+	# default would land under sites/snapshots instead of the app's own —
+	# anchor it to this file's location instead.
 	import os
 
 	app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-	return os.path.join(app_root, "sandbox", "snapshots")
+	return os.path.join(app_root, "snapshots")
 
 
 @click.command("capture-datapackage")
@@ -197,7 +197,7 @@ def _default_snapshot_dir():
 @click.option("--output", default=_default_snapshot_dir, help="Output directory")
 @pass_context
 def capture_datapackage(context, run_name, output):
-	"""Snapshot the DataPackage an Optimizer Run resolves to, for offline sandbox play"""
+	"""Snapshot the DataPackage an Optimizer Run resolves to, for offline diagnosis"""
 	import os
 
 	from autoshift.optimizer import data_loader

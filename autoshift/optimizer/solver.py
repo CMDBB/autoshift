@@ -68,7 +68,7 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 		run_solve's arguments to be serializable
 	:param DataPackage data: (see DataPackage)
 	:param int time_limit: seconds passed straight to CBC's own timeLimit. If CBC stops
-		without reaching a conclusive status (LpStatus "Not Solved"), nothing is
+		without reaching a conclusive status (LpSolveStatus.TimeLimit), nothing is
 		persisted and "TimedOut" is returned so the caller can escalate (e.g. to
 		a background job with a longer time_limit) instead of treating it as a
 		failed solve.
@@ -85,8 +85,11 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 		fd, log_path = tempfile.mkstemp(prefix="cbc_", suffix=".log")
 		os.close(fd)
 		try:
-			solver = pulp.COIN_CMD(timeLimit=time_limit, logPath=log_path, warmStart=True)
-			prob.solve(solver)
+			# gapRel=0: PuLP 4's bundled CBC (the separate cbcbox package) defaults to a
+			# nonzero MIP gap, which would report "GapLimit" — and so "Failed" below — for
+			# a solution that is actually optimal, just not proven so within that tolerance.
+			solver = pulp.COIN_CMD(timeLimit=time_limit, logPath=log_path, warmStart=True, gapRel=0, gapAbs=0)
+			result = prob.solve(solver)
 
 			# nosemgrep: frappe-semgrep-rules.rules.security.frappe-security-file-traversal (is a tempfile -> safe)
 			with open(log_path) as f:
@@ -94,9 +97,12 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 		finally:
 			os.unlink(log_path)
 
-		lp_status = pulp.LpStatus[prob.status]
+		# PuLP 4.0 moved the outcome off `prob.status` onto solve()'s own return value, and
+		# split what used to be the single "Not Solved" status into a specific reason —
+		# a plain time limit is the only one COIN_CMD actually reports.
+		lp_status = result.status.name
 
-		if lp_status == "Not Solved":
+		if lp_status == "TimeLimit":
 			# Time limit hit before CBC reached a conclusive result; let the
 			# caller decide whether to escalate rather than recording a failure.
 			return True

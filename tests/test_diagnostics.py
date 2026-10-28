@@ -65,8 +65,7 @@ def bound(**overrides) -> DataPackage:
 
 def solve(data: DataPackage) -> str:
 	prob, *_ = build(data)
-	prob.solve(pulp.COIN_CMD(msg=False))
-	return pulp.LpStatus[prob.status]
+	return prob.solve(pulp.COIN_CMD(msg=False, gapRel=0, gapAbs=0)).status.name
 
 
 # ── grouping ──────────────────────────────────────────────────────────────────
@@ -236,7 +235,9 @@ def test_write_lp_writes_the_whole_model(tmp_path):
 	written = (tmp_path / "model.lp").read_text()
 	assert path == str(tmp_path / "model.lp")
 	assert "one_shift" in written  # constraints, by the name the rule gave them
-	assert "x_E1_R1_AM_2026_06_01_B1" in written  # and every variable
+	# PuLP's own add_variable_dict names a variable off str(key) with no further sanitizing,
+	# so a date segment keeps its hyphens here even though _cname/_vname scrub them.
+	assert "x_E1_R1_AM_2026-06-01_B1" in written  # and every variable
 
 
 # ── elastic analysis ──────────────────────────────────────────────────────────
@@ -301,8 +302,8 @@ def test_the_relaxation_prices_the_binding_constraint():
 		),
 	)
 	prob, _x, _ar, _ctx = diagnostics.lp_relaxation(data)
-	prob.solve(pulp.COIN_CMD(msg=False))
-	assert pulp.LpStatus[prob.status] == "Optimal"
+	result = prob.solve(pulp.COIN_CMD(msg=False, gapRel=0, gapAbs=0))
+	assert result.status.name == "Optimal"
 
 	priced = dict(diagnostics.shadow_prices(prob))
 	assert any(name.startswith("fte_max") for name in priced), priced

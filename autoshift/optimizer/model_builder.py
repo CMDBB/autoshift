@@ -42,10 +42,6 @@ def presence_variables(data: DataPackage, prob: pulp.LpProblem) -> dict[tuple, p
 	Over `days_of(e)`, not `working_days`: a day the employee's own calendar calls a
 	holiday gets no presence variable at all, so nothing can put them there. Availability
 	is structural here for the same reason role eligibility is — see `build`.
-
-	Split out so a throwaway problem can recreate them under the same names — that is how
-	`sandbox.helpers.objective_breakdown` re-runs an objective rule against an already-solved
-	model.
 	"""
 	return {
 		key: variable
