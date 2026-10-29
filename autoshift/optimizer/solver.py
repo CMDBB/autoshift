@@ -66,7 +66,9 @@ def _explain_failure(data: DataPackage) -> str:
 		return f"--- Diagnostics ---\nDiagnostics failed:\n{traceback.format_exc()}"
 
 
-def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool | None:
+def run_solve(
+	run_name: str, data: DataPackage, time_limit: int = 3600, ignore_links: bool = False
+) -> bool | None:
 	"""
 	Build and solve the MILP, then persist the solution onto the Optimizer Run.
 
@@ -78,10 +80,21 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 		persisted and "TimedOut" is returned so the caller can escalate (e.g. to
 		a background job with a longer time_limit) instead of treating it as a
 		failed solve.
+	:param bool ignore_links: skip Link-field validation on the final `run.save()`. This
+		run fetches its *own* `Optimizer Run` document — setting `flags.ignore_links` on
+		whatever `Document` instance a caller happens to hold does nothing here, which is
+		exactly the gap a smoke test that injects a synthetic `DataPackage` (fictional
+		employees that deliberately don't exist as real records) fell into: the solve
+		used to appear to pass, but only because the solve was *silently failing*
+		earlier for an unrelated reason and `run.save()` never reached a populated
+		`solution_table` to validate. Default `False` — a real solve must never bypass
+		this, since a mismatched `DataPackage` writing bad links is exactly what the
+		validation is for.
 
 	:returns: True if timed out, Falsy otherwise
 	"""
 	run = frappe.get_doc("Optimizer Run", run_name)
+	run.flags.ignore_links = ignore_links
 	try:
 		run.set("hash", data.input_hash())
 

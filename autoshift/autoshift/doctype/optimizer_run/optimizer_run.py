@@ -162,6 +162,12 @@ class OptimizerRun(Document):
 		Attempts to solve synchronously within SYNC_TIME_LIMIT seconds.
 		If CBC doesn't conclude within that window, the same data is re-queued as a
 		background job with the full timeout.
+
+		`self.flags.ignore_links` carries through to the actual `run.save()` inside
+		`run_solve` — it fetches its own document, so setting the flag here on `self`
+		would otherwise be a no-op. Only a test injecting a synthetic `DataPackage` of
+		fictional employees (see `test_optimizer_run.py`) ever sets it; a real solve
+		must never bypass this, so the default stays `False`.
 		"""
 		if self.status != "Draft":
 			frappe.throw(frappe._("Only Draft runs can be solved."))
@@ -169,7 +175,9 @@ class OptimizerRun(Document):
 
 		data = self.cache_datapackage()
 		self.set("status", "Solving")
-		timed_out = run_solve(str(self.name), data, time_limit=SYNC_TIME_LIMIT)
+		timed_out = run_solve(
+			str(self.name), data, time_limit=SYNC_TIME_LIMIT, ignore_links=self.flags.ignore_links
+		)
 		if timed_out:
 			if not _background_workers_alive():
 				# Without this guard the run would sit in "Solving" forever with the job
@@ -189,6 +197,7 @@ class OptimizerRun(Document):
 				run_name=self.name,
 				data=data,
 				time_limit=3600,
+				ignore_links=self.flags.ignore_links,
 				queue="long",
 				timeout=3600,
 			)

@@ -102,12 +102,31 @@ class IntegrationTestOptimizerRun(IntegrationTestCase):
 		Smoke test on:
 		- The cache mechanism
 		- The solve() method (on a basic data package)
+
+		`ignore_links` is set on `self.test_record`, not on whatever document
+		`run_solve` itself fetches and saves — see `solver.run_solve`'s own `ignore_links`
+		parameter, which is what actually reaches that save. Pinned with an explicit
+		status assertion because this solve silently did nothing at all for a long time
+		(an unrelated caching bug returned data that made the model fail to build, and
+		neither this test nor `test_no_overfilling_of_shifts` asserted the run had
+		actually solved) — a smoke test that never checks for smoke is not one.
 		"""
 		self.cache.set_value(datapackage_cache_key(self.test_record.name), pkg().dumps())  # ty:ignore[unresolved-attribute]
 		self.test_record.flags.ignore_links = True
 		self.test_record.solve()
+		self.assertEqual(self.test_record.status, "Solved")
+		self.assertTrue(self.test_record.get("solution_table"))
 
 	def test_no_overfilling_of_shifts(self):
+		"""One room, three nurses each wanting 5 shifts a week: the week holds only
+		7 days x 2 shift types x 1 room = 14 room-slots, so the solver may not place
+		more than that even though 3 x 5 = 15 is asked for.
+
+		Deliberately checked against `solution_table` / `coverage_table` — the records
+		`run_solve` itself just wrote — rather than `get_schedule_events()`: that method
+		also renders Shift Type colour metadata for the UI, which needs a real "Shift
+		Type" record this test (like the employees) intentionally never creates.
+		"""
 		self.cache.set_value(  # ty:ignore[unresolved-attribute]
 			datapackage_cache_key(self.test_record.name),
 			pkg(
@@ -118,8 +137,10 @@ class IntegrationTestOptimizerRun(IntegrationTestCase):
 		)
 		self.test_record.flags.ignore_links = True
 		self.test_record.solve()
-		schedule = self.test_record.get_schedule_events()
-		assert {"Alice", "Bob", "Caoimhe"} & {e.name for e in schedule["employees"]} == set()
+		self.assertEqual(self.test_record.status, "Solved")
+		self.assertLessEqual(len(self.test_record.get("solution_table")), 14)
+		for coverage in self.test_record.get("coverage_table"):
+			self.assertLessEqual(coverage.staffed_rooms, coverage.capacity)
 
 	# --- utilities tests ---
 
