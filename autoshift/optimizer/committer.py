@@ -14,7 +14,7 @@ def commit(run_name: str) -> None:
 		frappe.throw(frappe._("Only Approved runs can be committed."))
 
 	# `committed_assignments` was removed from Optimizer Run while the run -> Shift
-	# Assignment link-back mechanism is redesigned (see CLAUDE.md "To be implemented").
+	# Assignment link-back mechanism is redesigned (see CLAUDE.md, "Not built yet").
 	# Fail before creating/submitting anything so a commit attempt can't leave behind
 	# real Shift Assignments with no way to trace them back to this run.
 	frappe.throw(

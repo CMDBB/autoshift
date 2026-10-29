@@ -67,3 +67,10 @@ Cargo.lock
 
 # this file is both ignored and committed, so it is available but its changes are ignored
 rule_scratchpad.py
+
+# `bench capture-datapackage` output: real dev-site data, re-capture instead of committing
+snapshots/*.json
+
+# `dump-dev-data` output: real employees/leaves from a live site. Practice-specific
+# configuration belongs in the private companion app, not here.
+dev_data/

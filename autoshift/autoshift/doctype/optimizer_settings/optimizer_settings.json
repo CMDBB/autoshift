@@ -4,26 +4,8 @@
  "doctype": "DocType",
  "document_type": "Setup",
  "engine": "InnoDB",
- "field_order": [
-  "bounded_holiday_list",
-  "unbounded_holiday_list"
- ],
- "fields": [
-  {
-   "description": "Holiday List for the bounded planners. Include only week-based holidays (i.e. Weekends)",
-   "fieldname": "bounded_holiday_list",
-   "fieldtype": "Link",
-   "label": "Bounded Holiday List",
-   "options": "Holiday List"
-  },
-  {
-   "description": "Holiday List used for the Unbounded planner (include Weekends AND special days)",
-   "fieldname": "unbounded_holiday_list",
-   "fieldtype": "Link",
-   "label": "Unbounded Holiday List",
-   "options": "Holiday List"
-  }
- ],
+ "field_order": [],
+ "fields": [],
  "issingle": 1,
  "links": [],
  "modified": "2026-07-08 12:00:00.000000",
