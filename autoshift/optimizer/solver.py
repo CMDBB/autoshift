@@ -26,6 +26,12 @@ CACHEABLE_STATUSES = ("Solved", "Failed", "Approved", "Committed")
 # ones worth spending a second solve on to explain (see _explain_failure).
 DIAGNOSABLE_STATUSES = ("Infeasible", "Undefined", "Unbounded")
 
+# A schedule within 1% of the true optimum is as good as one in practice — tight enough that
+# nobody would notice the difference, loose enough to let CBC stop well before it would
+# otherwise have to grind out a full proof of optimality. "GapLimit" (stopped within this
+# tolerance) is accepted as a solve exactly like "Optimal" below.
+MIP_GAP_REL = 0.01
+
 # Seconds the failure diagnosis may spend on its own elastic solve. It runs after a solve
 # has already failed, so a planner is waiting on it — keep it well under the sync budget.
 DIAGNOSIS_TIME_LIMIT = 30
@@ -85,10 +91,9 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 		fd, log_path = tempfile.mkstemp(prefix="cbc_", suffix=".log")
 		os.close(fd)
 		try:
-			# gapRel=0: PuLP 4's bundled CBC (the separate cbcbox package) defaults to a
-			# nonzero MIP gap, which would report "GapLimit" — and so "Failed" below — for
-			# a solution that is actually optimal, just not proven so within that tolerance.
-			solver = pulp.COIN_CMD(timeLimit=time_limit, logPath=log_path, warmStart=True, gapRel=0, gapAbs=0)
+			solver = pulp.COIN_CMD(
+				timeLimit=time_limit, logPath=log_path, warmStart=True, gapRel=MIP_GAP_REL, gapAbs=0
+			)
 			result = prob.solve(solver)
 
 			# nosemgrep: frappe-semgrep-rules.rules.security.frappe-security-file-traversal (is a tempfile -> safe)
@@ -109,10 +114,11 @@ def run_solve(run_name: str, data: DataPackage, time_limit: int = 3600) -> bool 
 
 		run.set(
 			"solver_log",
+			f"Solver status: {lp_status}\n\n"
 			f"--- Rules Logs ---\n{rule_logs}\n--- Solver Logs ---\n{solver_log}",
 		)
 
-		if lp_status == "Optimal":
+		if lp_status in ("Optimal", "GapLimit"):
 			# value() is None for a constant (e.g. objective-less feasibility) problem
 			run.set("objective_value", pulp.value(prob.objective) or 0.0)
 			run.set("solution_table", [])
