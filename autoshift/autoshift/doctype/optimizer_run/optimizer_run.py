@@ -3,7 +3,7 @@ import heapq
 import itertools
 import json
 
-import frappe.utils.caching
+import frappe
 from frappe.model.document import Document
 
 from autoshift.optimizer import data_loader, rules, types
@@ -78,8 +78,24 @@ class OptimizerRun(Document):
 		if not self.type:
 			self.type = "Manual"
 
-	@frappe.utils.caching.redis_cache()
 	def cache_datapackage(self):
+		"""Load this run's `DataPackage`, cached in Redis under its own document name.
+
+		**Deliberately not `@frappe.utils.caching.redis_cache()`** — that decorator keys its
+		(1-hour) cache entry on `hash((self,))`, and `Document` carries no `__hash__`/`__eq__`
+		override, so Python falls back to identity (`id(self)`). A single-run caller only
+		ever calls this once per process and never notices, but anything that creates and
+		discards many `Optimizer Run` objects in one long-lived process — the horizon
+		scanner's sweep, one per window — hits CPython reusing a just-freed object's address
+		for the next one: the next window's run gets the *same* `id()`, the *same* outer
+		cache key, and silently gets served back the *previous* window's cached
+		`DataPackage` without this body ever running. That produced real corruption: a run
+		dated for one week, solved and saved under a completely different week's data,
+		input hash and all (caught 2026-10-28; see git history for the run pair that proved
+		it). The cache below, keyed on `self.name`, is the correct one — unique per actual
+		document, no risk of colliding with an unrelated run — and was always sufficient on
+		its own; the outer decorator added nothing but the collision.
+		"""
 		cache = frappe.cache
 		if cache is None:
 			return data_loader.load(self)
