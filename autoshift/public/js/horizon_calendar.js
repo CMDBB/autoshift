@@ -87,7 +87,7 @@ frappe.provide("autoshift.horizon_calendar");
 		.autoshift-horizon .ahz-table th, .autoshift-horizon .ahz-table td {
 			border-bottom: 1px solid var(--border-color); padding: 0.2rem 0.4rem; text-align: left;
 		}
-		.autoshift-horizon .ahz-table td.ahz-num { text-align: right; font-variant-numeric: tabular-nums; }
+		.autoshift-horizon .ahz-table td.ahz-num { font-variant-numeric: tabular-nums; }
 		.autoshift-horizon .ahz-note { color: var(--text-muted); font-size: var(--text-sm); }
 		.autoshift-horizon .ahz-windows { max-height: 11rem; overflow-y: auto; margin-top: 0.5rem; }
 	`;
@@ -213,7 +213,8 @@ frappe.provide("autoshift.horizon_calendar");
 			// rather than draw a day this scan says nothing about.
 			ahz_state($wrapper, { date: null });
 			$wrapper.data("ahz-drawn", null);
-			$wrapper.find(".ahz-detail, .ahz-chart").empty();
+			$wrapper.find(".ahz-detail").empty();
+			teardown_chart($wrapper.find(".ahz-chart"));
 		}
 	}
 
@@ -232,7 +233,8 @@ frappe.provide("autoshift.horizon_calendar");
 						  )}</button>`
 						: "")
 			);
-			$wrapper.find(".ahz-legend, .ahz-months, .ahz-detail, .ahz-chart").empty();
+			$wrapper.find(".ahz-legend, .ahz-months, .ahz-detail").empty();
+			teardown_chart($wrapper.find(".ahz-chart"));
 			return;
 		}
 
@@ -524,8 +526,30 @@ frappe.provide("autoshift.horizon_calendar");
 		return frappe.datetime.add_days(date, -offset);
 	}
 
+	/**
+	 * Fully reset the embedded wall chart's node, not just its contents.
+	 *
+	 * `autoshift.wall_chart.render()` is written to be called again and again on the
+	 * *same* wrapper, but only ever for one fixed run across different weeks — every
+	 * other caller points one wrapper at one run for its whole life. Here, each day
+	 * clicked can belong to a different window's run, so `.ahz-chart` has to look brand
+	 * new to it every time: `.empty()` alone clears the `.awc-filters` / `.awc-body`
+	 * children it builds, but leaves the `autoshift-wall-chart` class (and any `.data()`
+	 * it parked directly on this node, like the band-filter selection) in place from the
+	 * *previous* run. `render()` then sees that class, skips rebuilding the skeleton it
+	 * just lost, and hands an empty jQuery selection into `make_control()` — which is the
+	 * "Cannot set properties of undefined (setting 'fieldobj')" crash.
+	 */
+	function teardown_chart($chart) {
+		$chart.off(); // the two delegated handlers render() binds directly on this node
+		$chart.empty();
+		$chart.removeClass("autoshift-wall-chart");
+		$chart.removeData();
+	}
+
 	function draw_chart($wrapper, date, win) {
 		const $chart = $wrapper.find(".ahz-chart");
+		teardown_chart($chart);
 		if (!win.run) {
 			$chart.html(
 				`<div class="ahz-note">${__(
@@ -582,7 +606,9 @@ frappe.provide("autoshift.horizon_calendar");
 		});
 		$wrapper.on("change", ".ahz-scan-picker", (event) => {
 			ahz_state($wrapper, { scan: $(event.currentTarget).val(), date: null });
-			$wrapper.find(".ahz-detail, .ahz-chart").empty();
+			$wrapper.data("ahz-drawn", null);
+			$wrapper.find(".ahz-detail").empty();
+			teardown_chart($wrapper.find(".ahz-chart"));
 			fetch_scan($wrapper);
 		});
 		$wrapper.on("click", ".ahz-new", () => new_scan_dialog($wrapper));
@@ -682,7 +708,9 @@ frappe.provide("autoshift.horizon_calendar");
 						const name = (response || {}).message;
 						if (!name) return;
 						ahz_state($wrapper, { scan: name, date: null });
-						$wrapper.find(".ahz-detail, .ahz-chart").empty();
+						$wrapper.data("ahz-drawn", null);
+						$wrapper.find(".ahz-detail").empty();
+						teardown_chart($wrapper.find(".ahz-chart"));
 						if (values.start_now) return act($wrapper, "start_scan", {});
 						return fetch_scan($wrapper);
 					});
