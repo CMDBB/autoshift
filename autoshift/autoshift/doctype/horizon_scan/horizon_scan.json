@@ -1,0 +1,188 @@
+{
+ "actions": [],
+ "autoname": "format:HS-{start_date}-{###}",
+ "creation": "2026-10-27 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "field_order": [
+  "scan_tab",
+  "ruleset",
+  "start_date",
+  "end_date",
+  "mode",
+  "column_break_1",
+  "status",
+  "weeks_done",
+  "weeks_total",
+  "last_scanned_on",
+  "cancel_requested",
+  "section_break_options",
+  "reuse_cached",
+  "window_time_limit",
+  "section_break_windows",
+  "windows",
+  "calendar_tab",
+  "scan_view_html"
+ ],
+ "fields": [
+  {
+   "fieldname": "scan_tab",
+   "fieldtype": "Tab Break",
+   "label": "Scan"
+  },
+  {
+   "default": "Standard Ruleset",
+   "description": "The Optimization Ruleset every window of this scan is solved under.",
+   "fieldname": "ruleset",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Optimization Ruleset",
+   "options": "Optimization Ruleset",
+   "reqd": 1
+  },
+  {
+   "description": "First day to scan. Snapped back to its Monday — a window is a whole week.",
+   "fieldname": "start_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Start Date",
+   "reqd": 1
+  },
+  {
+   "description": "Scan forward until this day. The window containing it is kept whole.",
+   "fieldname": "end_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "End Date",
+   "reqd": 1
+  },
+  {
+   "default": "1-week",
+   "description": "Length of each window, and the step between them. Windows never overlap, so every day is judged by exactly one run.",
+   "fieldname": "mode",
+   "fieldtype": "Select",
+   "label": "Window Length",
+   "options": "1-week\n2-week\n4-week",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nScanning\nPaused\nComplete",
+   "read_only": 1
+  },
+  {
+   "fieldname": "weeks_done",
+   "fieldtype": "Int",
+   "label": "Windows Scanned",
+   "read_only": 1
+  },
+  {
+   "fieldname": "weeks_total",
+   "fieldtype": "Int",
+   "label": "Windows In Horizon",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_scanned_on",
+   "fieldtype": "Datetime",
+   "label": "Last Progress",
+   "read_only": 1
+  },
+  {
+   "description": "Set by Stop; the sweep reads it between windows and pauses.",
+   "fieldname": "cancel_requested",
+   "fieldtype": "Check",
+   "hidden": 1,
+   "label": "Stop Requested",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_options",
+   "fieldtype": "Section Break",
+   "label": "Solving"
+  },
+  {
+   "default": "1",
+   "description": "Link an earlier run with the same input hash instead of solving a window again. A re-run of a scan nothing has changed under then costs no solves at all.",
+   "fieldname": "reuse_cached",
+   "fieldtype": "Check",
+   "label": "Reuse Identical Runs"
+  },
+  {
+   "default": "120",
+   "description": "Seconds one window's solve may take before the scan moves on and leaves it Timed Out. Resuming retries it.",
+   "fieldname": "window_time_limit",
+   "fieldtype": "Int",
+   "label": "Window Time Limit (s)"
+  },
+  {
+   "fieldname": "section_break_windows",
+   "fieldtype": "Section Break",
+   "label": "Windows"
+  },
+  {
+   "description": "One row per window, planned from the horizon above. Solved windows survive a re-plan.",
+   "fieldname": "windows",
+   "fieldtype": "Table",
+   "label": "Windows",
+   "options": "Horizon Scan Window",
+   "read_only": 1
+  },
+  {
+   "fieldname": "calendar_tab",
+   "fieldtype": "Tab Break",
+   "label": "Calendar"
+  },
+  {
+   "fieldname": "scan_view_html",
+   "fieldtype": "HTML",
+   "label": "Calendar"
+  }
+ ],
+ "links": [],
+ "modified": "2026-10-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Autoshift",
+ "name": "Horizon Scan",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "HR Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

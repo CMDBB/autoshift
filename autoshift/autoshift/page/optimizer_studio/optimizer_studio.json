@@ -1,0 +1,16 @@
+{
+ "doctype": "Page",
+ "module": "Autoshift",
+ "name": "optimizer-studio",
+ "page_name": "optimizer-studio",
+ "roles": [
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "HR Manager"
+  }
+ ],
+ "standard": "Yes",
+ "title": "Optimizer Studio"
+}

@@ -6,15 +6,24 @@
  "engine": "InnoDB",
  "field_order": [
   "section_template",
+  "template_html",
   "favourite_shift",
   "shift_preferences",
   "section_break_branch_template",
   "preferred_branch",
+  "section_role_template",
+  "assign_role",
+  "role_fte",
+  "column_break_role",
+  "role_max_rooms",
+  "role_valid_from",
+  "role_valid_to",
   "section_filters",
   "company",
+  "coverage",
   "column_break_filters",
-  "department",
-  "designation",
+  "discipline",
+  "holds_role",
   "quick_filters_section",
   "filter_list",
   "advanced_filters_section",
@@ -23,17 +32,25 @@
  ],
  "fields": [
   {
+   "description": "Applied by the Create Employee Settings action. Preferences feed the optimizer objective; they never constrain it.",
    "fieldname": "section_template",
    "fieldtype": "Section Break",
-   "label": "Settings Template"
+   "label": "Employee Settings Template"
   },
   {
+   "fieldname": "template_html",
+   "fieldtype": "HTML",
+   "label": "Template Help"
+  },
+  {
+   "description": "Preferred singular shift type. Leave empty to use the preference table.",
    "fieldname": "favourite_shift",
    "fieldtype": "Link",
    "label": "Favourite Shift",
    "options": "Shift Type"
   },
   {
+   "description": "Per-shift preference weights. Leave empty for uniform preferences.",
    "fieldname": "shift_preferences",
    "fieldtype": "Table",
    "label": "Shift Preferences",
@@ -45,10 +62,53 @@
    "label": "Branch Preferences"
   },
   {
+   "description": "Weights should sum to 1.0.",
    "fieldname": "preferred_branch",
    "fieldtype": "Table",
    "label": "Preferred Branch",
    "options": "Employee Branch Preference"
+  },
+  {
+   "description": "Applied by the Assign Scheduling Role action. A role is what makes someone schedulable at all — the optimizer ignores Department and Designation entirely.",
+   "fieldname": "section_role_template",
+   "fieldtype": "Section Break",
+   "label": "Scheduling Role Assignment"
+  },
+  {
+   "fieldname": "assign_role",
+   "fieldtype": "Link",
+   "label": "Scheduling Role",
+   "options": "Scheduling Role"
+  },
+  {
+   "description": "Percent, matching Employee's FTE % convention. Blank means no agreed split: the optimizer then only respects the overall FTE ceiling.",
+   "fieldname": "role_fte",
+   "fieldtype": "Float",
+   "label": "Agreed FTE % in Role",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "column_break_role",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Blank inherits the Scheduling Role's Max Rooms Per Holder.",
+   "fieldname": "role_max_rooms",
+   "fieldtype": "Int",
+   "label": "Max Rooms Override",
+   "non_negative": 1
+  },
+  {
+   "description": "Blank means the capability has always been held.",
+   "fieldname": "role_valid_from",
+   "fieldtype": "Date",
+   "label": "Valid From"
+  },
+  {
+   "description": "Blank means the capability is held indefinitely.",
+   "fieldname": "role_valid_to",
+   "fieldtype": "Date",
+   "label": "Valid To"
   },
   {
    "fieldname": "section_filters",
@@ -64,20 +124,30 @@
    "reqd": 1
   },
   {
+   "default": "All Employees",
+   "description": "Narrow the list to people missing one of the two things this tool creates.",
+   "fieldname": "coverage",
+   "fieldtype": "Select",
+   "label": "Coverage",
+   "options": "All Employees\nWithout Employee Settings\nWithout Any Scheduling Role"
+  },
+  {
    "fieldname": "column_break_filters",
    "fieldtype": "Column Break"
   },
   {
-   "fieldname": "department",
+   "description": "Employees holding any active role in this discipline.",
+   "fieldname": "discipline",
    "fieldtype": "Link",
-   "label": "Department",
+   "label": "Discipline",
    "options": "Department"
   },
   {
-   "fieldname": "designation",
+   "description": "Employees holding this specific role.",
+   "fieldname": "holds_role",
    "fieldtype": "Link",
-   "label": "Designation",
-   "options": "Designation"
+   "label": "Holds Role",
+   "options": "Scheduling Role"
   },
   {
    "collapsible": 1,
@@ -110,7 +180,7 @@
  "hide_toolbar": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-06-15 00:00:00.000000",
+ "modified": "2026-08-21 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Autoshift",
  "name": "Bulk Employee Settings",

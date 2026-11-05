@@ -1,0 +1,105 @@
+{
+ "actions": [],
+ "creation": "2026-10-27 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Data",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "window_start",
+  "window_end",
+  "status",
+  "severity",
+  "optimizer_run",
+  "reused",
+  "message",
+  "input_hash",
+  "findings"
+ ],
+ "fields": [
+  {
+   "fieldname": "window_start",
+   "fieldtype": "Date",
+   "in_grid_view": 1,
+   "in_list_view": 1,
+   "label": "Window Start",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "window_end",
+   "fieldtype": "Date",
+   "in_grid_view": 1,
+   "in_list_view": 1,
+   "label": "Window End",
+   "read_only": 1
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_grid_view": 1,
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Pending\nSolving\nSolved\nFailed\nTimed Out",
+   "read_only": 1
+  },
+  {
+   "description": "Worst verdict of any day in the window, measured against configured capacity.",
+   "fieldname": "severity",
+   "fieldtype": "Data",
+   "in_grid_view": 1,
+   "in_list_view": 1,
+   "label": "Severity",
+   "read_only": 1
+  },
+  {
+   "description": "The run that solved this window. Kept whatever the outcome — a failed window's Solver Log carries the diagnosis.",
+   "fieldname": "optimizer_run",
+   "fieldtype": "Link",
+   "in_grid_view": 1,
+   "in_list_view": 1,
+   "label": "Optimizer Run",
+   "options": "Optimizer Run",
+   "read_only": 1
+  },
+  {
+   "description": "The window's input had not changed, so an earlier run with the same input hash was linked instead of solving again.",
+   "fieldname": "reused",
+   "fieldtype": "Check",
+   "label": "Reused Cached Run",
+   "read_only": 1
+  },
+  {
+   "fieldname": "message",
+   "fieldtype": "Small Text",
+   "label": "Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "input_hash",
+   "fieldtype": "Data",
+   "label": "Input Hash",
+   "read_only": 1
+  },
+  {
+   "description": "Per-day findings of this window as JSON (see scanner/horizon.py: dumps). Raw numbers — the reader's choice of capacity is applied on read.",
+   "fieldname": "findings",
+   "fieldtype": "Long Text",
+   "hidden": 1,
+   "label": "Findings",
+   "read_only": 1
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-10-27 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Autoshift",
+ "name": "Horizon Scan Window",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

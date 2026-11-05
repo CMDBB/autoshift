@@ -1,0 +1,80 @@
+{
+ "actions": [],
+ "creation": "2026-08-25 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Data",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "discipline",
+  "branch",
+  "date",
+  "shift_type",
+  "staffed_rooms",
+  "capacity"
+ ],
+ "fields": [
+  {
+   "fieldname": "discipline",
+   "fieldtype": "Link",
+   "in_grid_view": 1,
+   "in_list_view": 1,
+   "label": "Discipline",
+   "options": "Department",
+   "reqd": 1
+  },
+  {
+   "fieldname": "branch",
+   "fieldtype": "Link",
+   "in_grid_view": 1,
+   "in_list_view": 1,
+   "label": "Branch",
+   "options": "Branch",
+   "reqd": 1
+  },
+  {
+   "fieldname": "date",
+   "fieldtype": "Date",
+   "in_grid_view": 1,
+   "in_list_view": 1,
+   "label": "Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "shift_type",
+   "fieldtype": "Link",
+   "in_grid_view": 1,
+   "in_list_view": 1,
+   "label": "Shift Type",
+   "options": "Shift Type",
+   "reqd": 1
+  },
+  {
+   "description": "The solver's active_rooms decision for this slot.",
+   "fieldname": "staffed_rooms",
+   "fieldtype": "Int",
+   "in_grid_view": 1,
+   "in_list_view": 1,
+   "label": "Staffed Rooms"
+  },
+  {
+   "description": "Configured room count of the (discipline, branch) pair at solve time.",
+   "fieldname": "capacity",
+   "fieldtype": "Int",
+   "in_grid_view": 1,
+   "in_list_view": 1,
+   "label": "Capacity"
+  }
+ ],
+ "istable": 1,
+ "links": [],
+ "modified": "2026-08-25 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Autoshift",
+ "name": "Optimizer Run Coverage",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
