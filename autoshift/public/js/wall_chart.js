@@ -167,6 +167,11 @@ autoshift.wall_chart.inject_styles = function () {
 		.autoshift-wall-chart .awc-pending-who { color: var(--text-muted); }
 		.autoshift-wall-chart .awc-today-col { background: var(--blue-50, #eff6ff); }
 		.autoshift-wall-chart .awc-today-col.awc-nonworking { background: var(--blue-50, #eff6ff); }
+		.autoshift-wall-chart .awc-footnote { font-size: 0.7em; vertical-align: super; margin-left: 1px; }
+		.autoshift-wall-chart .awc-footnotes {
+			margin-top: 0.5rem; font-size: var(--text-xs); color: var(--text-muted);
+		}
+		.autoshift-wall-chart .awc-footnote-entry sup { margin-right: 0.15rem; }
 	`;
 	const style = document.createElement("style");
 	style.id = "autoshift-wall-chart-styles";
@@ -293,6 +298,7 @@ function cell_markup(cell, ctx) {
 					cell.employee_name || cell.employee,
 					cell.role,
 					cell.kind === "dropped" ? __("not scheduled this week") : "",
+					cell.note,
 			  ]
 			: [
 					cell.employee_name || cell.employee,
@@ -309,6 +315,7 @@ function cell_markup(cell, ctx) {
 						? __("on the books; this run does not schedule it")
 						: "",
 					cell.kind === "added" ? __("proposed; nothing on the books for it") : "",
+					cell.note,
 			  ]
 	)
 		.filter(Boolean)
@@ -320,9 +327,14 @@ function cell_markup(cell, ctx) {
 			  (cell.changed
 					? `<span class="awc-mark" title="${esc(cell.changed)}">→</span>`
 					: "")) + highlight_mark(ctx.highlighted[cell.employee]);
+	// The footnote number survives a clean sheet like the label itself does — it
+	// is a fact about the half-day, not provenance about how the run was
+	// produced, and a printed sheet has no hover to fall back on. See
+	// `footnotes_markup` for the legend it keys into.
+	const footnote = cell.footnote ? `<sup class="awc-footnote">${cell.footnote}</sup>` : "";
 	return `<span class="${classes.join(" ")}" data-who="${esc(cell.employee)}" title="${esc(
 		title
-	)}">${esc(cell.label)}</span>${marks}`;
+	)}">${esc(cell.label)}${footnote}</span>${marks}`;
 }
 
 // Which roles made this chip stand out, as a mark beside it — never dropped on
@@ -632,6 +644,19 @@ function highlight_key(payload) {
 	)}</span>`;
 }
 
+// The legend a footnote number points into — see `cell_markup`'s `.awc-footnote`.
+// Survives "Finished sheet" and every other display toggle, on screen and on
+// paper alike: a superscript with nothing underneath it to read is worse than
+// no mark at all, and a printed sheet has no tooltip to fall back on.
+function footnotes_markup(payload) {
+	const entries = payload.footnotes || [];
+	if (!entries.length) return "";
+	const items = entries
+		.map((f) => `<div class="awc-footnote-entry"><sup>${f.number}</sup> ${esc(f.note)}</div>`)
+		.join("");
+	return `<div class="awc-footnotes">${items}</div>`;
+}
+
 function bar_markup(payload) {
 	const monday = frappe.datetime.str_to_user(payload.week);
 	return `<div class="awc-bar">
@@ -711,7 +736,7 @@ autoshift.wall_chart.build_html = function (payload) {
 	}
 
 	return `${bar_markup(payload)}${totals_markup(payload)}${pending_markup(payload)}${warnings}
-		<div class="awc-scroll">${table_markup(sections + leaves, ctx)}</div>`;
+		<div class="awc-scroll">${table_markup(sections + leaves, ctx)}</div>${footnotes_markup(payload)}`;
 };
 
 // ── the filter row ──────────────────────────────────────────────────────────
@@ -1053,6 +1078,9 @@ function export_css(options) {
 	/* On a clean sheet the leave chips keep a hairline box: several of them share
 	   one cell, and without it a row of initials runs together. */
 	.awc-who.awc-leave.awc-plain { border-color: #d1d5db; color: #374151; font-weight: 400; }
+	.awc-footnote { font-size: 0.7em; vertical-align: super; margin-left: 1px; }
+	.awc-footnotes { margin-top: 0.4rem; font-size: ${pt(7.5)}; color: #6b7280; }
+	.awc-footnote-entry sup { margin-right: 0.15rem; }
 	/* A row never breaks; a table always may. Avoiding a break inside the table
 	   itself would be ignored by every engine the moment one section is taller
 	   than a page, and pushed to a fresh page before breaking anyway — so the
@@ -1108,16 +1136,20 @@ function export_markup(payload, options) {
 					.map((w) => `<div class="awc-warning">${esc(w)}</div>`)
 					.join(""));
 
+	// Unconditional, even with "Finished sheet" on: a footnote is a fact about
+	// the half-day, not provenance about how the run was produced, so it is kept
+	// exactly like the chip label and the ½ leave mark are.
+	const footnotes = footnotes_markup(payload);
 	if (!sections) {
 		return `${head}${
 			leaves
 				? table_markup(leaves, ctx)
 				: `<div>${__("Nothing to draw for this week.")}</div>`
-		}`;
+		}${footnotes}`;
 	}
 	return ctx.per_section
-		? `${head}${sections}${leaves}`
-		: `${head}${table_markup(sections + leaves, ctx)}`;
+		? `${head}${sections}${leaves}${footnotes}`
+		: `${head}${table_markup(sections + leaves, ctx)}${footnotes}`;
 }
 
 /**

@@ -118,6 +118,11 @@ class Slot:
 	#: it always has. Sparse by construction, the same convention as everywhere else
 	#: a figure is "real where measured, absent otherwise".
 	room_index: tuple[int, ...] = ()
+	#: A planner's footnote on this half-day (`autoshift.rota.notes`), read by `source.py`
+	#: off `Rota Day Note` — never from a run or a Shift Assignment, so it carries over
+	#: unchanged whichever `kind` the half-day ends up with. `None` for the ordinary case.
+	#: Never read by the optimizer; drawn here only so `footnotes()` can number it.
+	note: str | None = None
 
 	@property
 	def match_key(self) -> tuple[str, datetime.date, str]:
@@ -376,6 +381,7 @@ def _recast(slot: Slot, kind: str, changed: str | None = None, virtual: bool | N
 		sort_value=slot.sort_value,
 		virtual=slot.virtual if virtual is None else virtual,
 		room_index=slot.room_index,
+		note=slot.note,
 	)
 
 
@@ -598,3 +604,39 @@ def _coverage(
 		return ()
 	rows = set.intersection(*(set(reach.get((day_index, key), frozenset())) for key in gating))
 	return tuple(sorted(rows))
+
+
+#: `(section, band key, row, lane key, day index)` — the same address `api._index`
+#: keys a cell by, so a cell's own footnote number is a plain dict lookup.
+CellKey = tuple[str, str, int, str, int]
+
+
+def footnotes(chart: Chart) -> tuple[list[tuple[int, str]], dict[CellKey, int]]:
+	"""Number every distinct `Slot.note` text drawn on `chart`.
+
+	Two half-days whose note reads exactly the same share one number — the whole
+	reason a note is free text rather than a number of its own (`rota/notes.py`):
+	a planner writing the same explanation on two different days should not have
+	to remember which number it got the first time. Numbered in the order each
+	distinct text is first met scanning the week by (date, employee), the order
+	a reader's eye actually meets them in, not the incidental order placement
+	bookkeeping happens to visit cells in.
+
+	Returns `(footnotes, cell_numbers)`: `footnotes` is `[(number, text), …]` in
+	that order, for a legend underneath the chart; `cell_numbers` keys every
+	placement that carries a note by its own `CellKey`, for `api.py` to stamp
+	onto the cell payload it already builds.
+	"""
+	first_seen: dict[str, tuple[datetime.date, str]] = {}
+	for placement in chart.placements:
+		note = placement.slot.note
+		if note:
+			first_seen.setdefault(note, (placement.slot.date, placement.slot.employee))
+	ordered = sorted(first_seen, key=lambda text: first_seen[text])
+	number_of = {text: index + 1 for index, text in enumerate(ordered)}
+	cell_numbers = {
+		(p.section, p.band, p.row, p.lane, p.day_index): number_of[p.slot.note]
+		for p in chart.placements
+		if p.slot.note
+	}
+	return [(number_of[text], text) for text in ordered], cell_numbers

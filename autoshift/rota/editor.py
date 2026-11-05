@@ -24,6 +24,7 @@ import datetime
 import frappe
 
 from . import edit, materialize
+from . import notes as rota_notes
 from .cycle import (
 	FREQUENCY_LABEL,
 	WEEKDAY_INDEX,
@@ -543,6 +544,18 @@ def _mark_clashes(cells: dict[str, dict], foreign: dict[str, dict], per_day: boo
 			cells[other]["clash"] = True
 
 
+def _apply_notes(cells: dict[str, dict], employee: str, note_map: dict[tuple[str, str, str], str]) -> None:
+	"""Attach a right-click footnote (`rota/notes.py`) to every cell it was written
+	against. Discipline-agnostic — a note is keyed on (employee, date, shift_type)
+	alone, so it draws the same whether the cell arrived as native, foreign or a
+	hidden row's averaged-cadence summary. Never changes what a cell *is*."""
+	for key, cell in cells.items():
+		shift_type, date = key.split("|", 1)
+		note = note_map.get((employee, date, shift_type))
+		if note:
+			cell["note"] = note
+
+
 @frappe.whitelist()
 def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 	"""Everything the Rota Editor page needs to draw one discipline at one width: the
@@ -599,6 +612,7 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 	)
 
 	per_day = materialize.one_shift_per_day()
+	note_map = rota_notes.for_window(set(employees), start_date, end_date)
 	own_shift_types = shift_types_of(discipline)
 	own_names = {row.name for row in own_shift_types}
 	extra_names: set[str] = set()
@@ -609,6 +623,7 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 		emp_rotas = by_employee.get(employee, [])
 		native, outside = split_by_discipline(emp_rotas, discipline)
 		foreign = _foreign_cells(outside, start_date, end_date)
+		_apply_notes(foreign, employee, note_map)
 		# Any Shift Type this discipline's own config does not cover, whoever books it:
 		# `branches_of` lists no drop target for one, so it could never be edited here
 		# anyway, and drawing it read-only beats the old behaviour of not drawing it.
@@ -634,6 +649,7 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 		if bad_cadences:
 			cells = _hidden_cells(native, days, start_date)
 			_mark_clashes(cells, foreign, per_day)
+			_apply_notes(cells, employee, note_map)
 			hidden.append({**row, "cycle_weeks": bad_cadences, "cells": cells})
 			continue
 		cells = {}
@@ -649,6 +665,7 @@ def get_state(discipline: str, start: str, view_weeks: int | str) -> dict:
 					"clash": False,
 				}
 		_mark_clashes(cells, foreign, per_day)
+		_apply_notes(cells, employee, note_map)
 		visible.append({**row, "cells": cells})
 	visible = sorted(visible, key=lambda e: int(e.get("employee")))
 
@@ -853,6 +870,48 @@ def stage_change(discipline: str, change: str | dict, start: str, view_weeks: in
 	)
 	draft.save(ignore_permissions=True)
 
+	return get_state(discipline, start, view_weeks)
+
+
+@frappe.whitelist()
+def set_note(
+	discipline: str,
+	employee: str,
+	assignment: str,
+	weekday: str,
+	note: str,
+	start: str,
+	view_weeks: int | str,
+) -> dict:
+	"""Write, change or clear the footnote tied to one weekday of a rota pattern.
+
+	**Tied to the pattern, not to the day the right-click happened on** — a note
+	written against "every Wednesday" reads back on every Wednesday that
+	`Shift Schedule Assignment` covers, for as long as it runs, carrying the same
+	periodicity and start/end dates `cycle.occurrences` already reads off it (see
+	`rota/notes.py`). Edit the pattern and the note goes with it, the same as
+	everything else `edit.py` supersedes rather than mutates in place.
+
+	Unlike every other edit this page makes, a note **bypasses the draft
+	entirely**: it never touches a Shift Assignment or a Shift Schedule
+	Assignment of its own, so there is nothing for Apply or Discard to stage or
+	undo, and it takes effect the moment the menu's prompt is submitted.
+
+	Refuses a pattern this draft has only staged, not yet applied (`NEW-…`, see
+	`_effective_rotas`) — there is no real Shift Schedule Assignment yet for the
+	note to point at. `employee` is checked against this discipline, and against
+	the assignment's own, only because that is as far as the right-click menu
+	calling this can reach, not because a note on somebody else's half-day would
+	be wrong.
+	"""
+	frappe.has_permission("Shift Schedule Assignment", "write", throw=True)
+	if employee not in _employees_of(discipline):
+		frappe.throw(frappe._("{0} does not hold a binding role in {1}.").format(employee, discipline))
+	if assignment.startswith("NEW-"):
+		frappe.throw(frappe._("Apply this change before adding a note to it."))
+	if frappe.db.get_value("Shift Schedule Assignment", assignment, "employee") != employee:
+		frappe.throw(frappe._("That pattern does not belong to {0}.").format(employee))
+	rota_notes.set_note(assignment, weekday, note or "")
 	return get_state(discipline, start, view_weeks)
 
 

@@ -26,6 +26,7 @@ from autoshift.wallchart.chart import (
 	Slot,
 	bucket_leaves,
 	build,
+	footnotes,
 	merge,
 	monday_of,
 	week_dates,
@@ -667,3 +668,49 @@ def test_the_three_buckets_partition_every_entry_of_a_drawn_day():
 	assert [e["employee"] for e in by_shift[AM][0]] == ["E1"]
 	assert [e["employee"] for e in rest[0]] == ["E2"]
 	assert [e["employee"] for e in not_due[0]] == ["E3"]
+
+
+# ── footnotes ────────────────────────────────────────────────────────────────
+
+
+def test_a_slot_with_no_note_gets_no_footnote():
+	chart = build(layout(), [slot()], MONDAY)
+	entries, cell_numbers = footnotes(chart)
+	assert entries == []
+	assert cell_numbers == {}
+
+
+def test_two_notes_reading_the_same_text_share_one_number():
+	chart = build(
+		layout(),
+		[
+			slot(employee="E1", day=MONDAY, note="covering for Jan"),
+			slot(employee="E2", day=TUESDAY, role="R2", note="covering for Jan"),
+		],
+		MONDAY,
+	)
+	entries, cell_numbers = footnotes(chart)
+	assert entries == [(1, "covering for Jan")]
+	assert len(set(cell_numbers.values())) == 1
+
+
+def test_distinct_notes_get_distinct_numbers_in_date_order():
+	chart = build(
+		layout(),
+		[
+			slot(employee="E1", day=TUESDAY, note="second note"),
+			slot(employee="E2", day=MONDAY, role="R2", note="first note"),
+		],
+		MONDAY,
+	)
+	entries, _cell_numbers = footnotes(chart)
+	assert entries == [(1, "first note"), (2, "second note")]
+
+
+def test_a_footnote_number_keys_the_same_tuple_a_cell_is_addressed_by():
+	chart = build(layout(), [slot(note="covering for Jan")], MONDAY)
+	entries, cell_numbers = footnotes(chart)
+	[placement] = chart.placements
+	key = (placement.section, placement.band, placement.row, placement.lane, placement.day_index)
+	assert cell_numbers == {key: 1}
+	assert entries == [(1, "covering for Jan")]

@@ -107,6 +107,27 @@ With a run, cells are `kept` / `added` / `dropped`, plus `changed` on a moved ha
 
 ---
 
+## Footnotes
+
+A `Rota Day Note` (`autoshift/rota/notes.py`) — a planner's right-click note tied to one weekday
+of a `Shift Schedule Assignment`, never read by the optimizer — reaches a `Slot` as `note`,
+expanded by `notes.for_window` into the same (employee, date, shift_type) shape a per-day lookup
+would have and read by `source.py` off that key, in each of the three sources. `chart.
+footnotes(chart)` is the only place that numbers them: a pure function over
+`chart.placements` (tested in `tests/test_wallchart.py`), so two half-days whose note reads
+exactly the same text share one number — the reason a note is free text rather than a number of
+its own. `api.get_week_chart` stamps `cells[*]["footnote"]` from it and returns the legend as
+top-level `footnotes`.
+
+**Survives every display toggle that strips provenance**, on screen and on paper alike — `cell.
+note`/`cell.footnote` sit beside the chip label in `cell_markup`, never behind `ctx.clean`, and
+`footnotes_markup`'s legend is unconditional in `export_markup` too. A footnote is a fact about
+the half-day, not a record of how a run produced it, which is exactly the distinction "Finished
+sheet" exists to draw (see the module header above) — and unlike a tooltip, a legend is the only
+form of it that survives onto paper at all.
+
+---
+
 ## The reader's controls
 
 Four pickers in a row of their own above the chart — the only part of the view that outlives a

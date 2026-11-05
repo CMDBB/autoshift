@@ -25,7 +25,7 @@ function inject_rota_editor_styles() {
 	if (document.getElementById("rota-editor-styles")) return;
 	const css = `
 		/* The right-click role menu is positioned against this, so it must be the
-		   offset parent — see open_role_menu. */
+		   offset parent — see open_chip_menu. */
 		.rota-editor { position: relative; }
 		.rota-editor .re-hint { margin-bottom: 0.75rem; }
 		.rota-editor .re-banner { margin-bottom: 0.75rem; }
@@ -129,6 +129,8 @@ function inject_rota_editor_styles() {
 		.rota-editor .re-menu-item:hover { background: var(--control-bg); }
 		.rota-editor .re-menu-item.re-menu-current { font-weight: 600; cursor: default; }
 		.rota-editor .re-menu-item.re-menu-current:hover { background: transparent; }
+		.rota-editor .re-menu-sep { height: 1px; margin: 0.25rem 0; background: var(--border-color); }
+		.rota-editor .re-chip-note { font-size: 0.6em; opacity: 0.8; margin-left: 1px; vertical-align: super; }
 	`;
 	const style = document.createElement("style");
 	style.id = "rota-editor-styles";
@@ -215,7 +217,7 @@ autoshift.RotaEditor = class RotaEditor {
 				)} ${__(
 			"A dotted grey border marks a pattern imported but not yet confirmed. Editing a pattern confirms it; Promote all confirms the rest of that person's patterns as they stand."
 		)} ${__(
-			"Right-click a chip to change the Scheduling Role it is worked in. Faint italic chips are another discipline's settled week — read-only here, and red where they land on the same half-day as one of this discipline's."
+			"Right-click a chip to change the Scheduling Role it is worked in, or to add a short note — tied to the pattern, so it reads back on every future occurrence of that weekday until the pattern changes, never affects the optimizer, and shows up as a numbered footnote on the wall chart. Faint italic chips are another discipline's settled week — read-only here, and red where they land on the same half-day as one of this discipline's."
 		)}</div>
 				<div class="re-banner form-message yellow" hidden></div>
 				<div class="re-upcoming form-message blue" hidden></div>
@@ -259,15 +261,33 @@ autoshift.RotaEditor = class RotaEditor {
 				this.stage_move(drag, to_shift_type, to_date);
 			})
 			.on("contextmenu", ".re-chip[draggable='true']", (e) => {
-				// Right-click is the only way to re-role a half-day: a drag already means
-				// "move it", and the role is the other thing a chip records.
+				// Right-click is the only way to re-role a half-day or to leave a note on
+				// one: a drag already means "move it".
 				e.preventDefault();
-				this.open_role_menu($(e.currentTarget), e.pageX, e.pageY);
+				this.open_chip_menu($(e.currentTarget), e.pageX, e.pageY);
 			})
 			.on("click", ".re-menu-item[data-role]", (e) => {
 				const $item = $(e.currentTarget);
 				this.close_role_menu();
 				this.stage_retag($item.data("chip"), $item.attr("data-role"));
+			})
+			.on("click", ".re-menu-item[data-note-action]", (e) => {
+				const $item = $(e.currentTarget);
+				const action = $item.attr("data-note-action");
+				const ctx = $item.data("note_ctx");
+				this.close_role_menu();
+				if (ctx.pending) {
+					frappe.show_alert({
+						message: __("Apply this change before adding a note to it."),
+						indicator: "orange",
+					});
+					return;
+				}
+				if (action === "remove") {
+					this.set_note(ctx.employee, ctx.assignment, ctx.weekday, "");
+				} else {
+					this.prompt_note(ctx);
+				}
 			})
 			.on("click", ".re-promote", (e) => {
 				this.stage({ op: "promote", employee: $(e.currentTarget).attr("data-employee") });
@@ -336,48 +356,67 @@ autoshift.RotaEditor = class RotaEditor {
 	}
 
 	// The roles this person holds in *this* discipline (server-side `_role_candidates`),
-	// so the menu can only ever offer something the edit would be allowed to stage.
-	open_role_menu($chip, x, y) {
+	// so the "Worked as" section can only ever offer something the edit would be
+	// allowed to stage. The note section underneath it is always offered, whatever
+	// the role count — a note never stages anything, it is written straight away.
+	open_chip_menu($chip, x, y) {
 		this.close_role_menu();
 		const employee = $chip.attr("data-employee");
+		const date = $chip.attr("data-date");
+		const assignment = $chip.attr("data-assignment");
+		const note = $chip.attr("data-note") || "";
 		const emp = (this.state.employees || []).find((e) => e.employee === employee);
 		const roles = (emp && emp.roles) || [];
 		const current = $chip.attr("data-role") || "";
-		if (roles.length < 2) {
-			frappe.show_alert({
-				message: roles.length
-					? __("{0} holds only one Scheduling Role in this discipline.", [employee])
-					: __("{0} holds no Scheduling Role in this discipline.", [employee]),
-				indicator: "orange",
-			});
-			return;
-		}
-		const chip = {
-			assignment: $chip.attr("data-assignment"),
+		const chip = { assignment, employee, date };
+		// A note is tied to the *pattern*, not the calendar day — see rota/notes.py
+		// — so it is keyed on the weekday within the assignment this chip belongs
+		// to, not on `date` itself; `date` is kept only to word the prompt.
+		const note_ctx = {
 			employee,
-			date: $chip.attr("data-date"),
+			assignment,
+			weekday: this.day_labels[date],
+			date,
+			note,
+			pending: String(assignment).indexOf("NEW-") === 0,
 		};
-		const labels = this.state.role_labels || {};
-		const items = roles
-			.map((role) => {
-				const badge = labels[role]
-					? ` <span class="text-muted">(${labels[role]})</span>`
-					: "";
-				return (
-					`<div class="re-menu-item${role === current ? " re-menu-current" : ""}" ` +
-					`${role === current ? "" : `data-role="${frappe.utils.escape_html(role)}"`}>` +
-					`${role === current ? "✓ " : ""}${frappe.utils.escape_html(
-						role
-					)}${badge}</div>`
-				);
-			})
-			.join("");
-		this.$menu = $(
-			`<div class="re-menu"><div class="re-menu-title">${__(
+
+		let html = "";
+		if (roles.length >= 2) {
+			const labels = this.state.role_labels || {};
+			const items = roles
+				.map((role) => {
+					const badge = labels[role]
+						? ` <span class="text-muted">(${labels[role]})</span>`
+						: "";
+					return (
+						`<div class="re-menu-item${role === current ? " re-menu-current" : ""}" ` +
+						`${
+							role === current ? "" : `data-role="${frappe.utils.escape_html(role)}"`
+						}>` +
+						`${role === current ? "✓ " : ""}${frappe.utils.escape_html(
+							role
+						)}${badge}</div>`
+					);
+				})
+				.join("");
+			html += `<div class="re-menu-title">${__(
 				"Worked as"
-			)}</div>${items}</div>`
-		).appendTo(this.$body);
+			)}</div>${items}<div class="re-menu-sep"></div>`;
+		}
+		html += `<div class="re-menu-title">${__("Note")}</div>`;
+		html += `<div class="re-menu-item" data-note-action="edit">${
+			note ? __("Edit note…") : __("Add note…")
+		}</div>`;
+		if (note) {
+			html += `<div class="re-menu-item" data-note-action="remove">${__(
+				"Remove note"
+			)}</div>`;
+		}
+
+		this.$menu = $(`<div class="re-menu">${html}</div>`).appendTo(this.$body);
 		this.$menu.find(".re-menu-item[data-role]").data("chip", chip);
+		this.$menu.find(".re-menu-item[data-note-action]").data("note_ctx", note_ctx);
 		const offset = this.$body.offset();
 		this.$menu.css({ left: x - offset.left, top: y - offset.top });
 	}
@@ -392,6 +431,50 @@ autoshift.RotaEditor = class RotaEditor {
 			from_phase: this.day_phases[chip.date],
 			scheduling_role: role,
 		});
+	}
+
+	// ── notes — a footnote the wall chart draws, nothing the optimizer reads ───
+
+	prompt_note(ctx) {
+		frappe.prompt(
+			[
+				{
+					fieldname: "note",
+					fieldtype: "Small Text",
+					label: __("Note"),
+					default: ctx.note || "",
+					description: __(
+						"Tied to the pattern, not just this one day — it will read back on every {0} this rota runs, until the pattern changes.",
+						[ctx.weekday]
+					),
+					reqd: 1,
+				},
+			],
+			({ note }) => this.set_note(ctx.employee, ctx.assignment, ctx.weekday, note),
+			__("Note for {0}, every {1}", [ctx.employee, ctx.weekday]),
+			__("Save")
+		);
+	}
+
+	// Bypasses staging entirely — a note never touches a Shift Assignment or
+	// Shift Schedule Assignment of its own (see `rota/notes.py`), so it writes
+	// immediately rather than waiting on Apply.
+	set_note(employee, assignment, weekday, note) {
+		frappe
+			.call({
+				method: "autoshift.rota.editor.set_note",
+				args: {
+					discipline: this.discipline_field.get_value(),
+					employee,
+					assignment,
+					weekday,
+					note,
+					start: this.date_field.get_value(),
+					view_weeks: this.view_weeks(),
+				},
+				freeze: true,
+			})
+			.then(({ message }) => this.render(message));
 	}
 
 	// `?discipline=…&start=…` (a plain link) or `frappe.route_options` (set_route). Returns
@@ -638,6 +721,21 @@ autoshift.RotaEditor = class RotaEditor {
 		return `<sub class="re-chip-role">${frappe.utils.escape_html(label)}</sub>`;
 	}
 
+	// The note's own text for a tooltip, or nothing where there isn't one — see
+	// rota/notes.py. Never influences the optimizer; the wall chart draws the
+	// same text as a numbered footnote.
+	note_title(cell) {
+		return cell && cell.note ? " — " + __("note: {0}", [cell.note]) : "";
+	}
+
+	// A small marker that a half-day carries a note, wherever the cell is drawn
+	// — including read-only and foreign chips, since a note is worth seeing even
+	// where it cannot be changed from this view.
+	note_marker(cell) {
+		if (!cell || !cell.note) return "";
+		return `<sup class="re-chip-note" title="${frappe.utils.escape_html(cell.note)}">✎</sup>`;
+	}
+
 	// Another discipline's chip: faint, dashed, never draggable, red when it collides with
 	// one of this discipline's own half-days. See rota/editor.py, `_foreign_cells`.
 	foreign_chip(cell) {
@@ -647,11 +745,16 @@ autoshift.RotaEditor = class RotaEditor {
 		const clash = cell.clash
 			? " — " + __("clashes with a shift in this discipline on the same half-day")
 			: "";
-		const title = __("{0} — read-only here", [discipline]) + role + branch + clash;
+		const title =
+			__("{0} — read-only here", [discipline]) +
+			role +
+			branch +
+			clash +
+			this.note_title(cell);
 		return (
 			`<span class="re-chip re-chip-foreign${cell.clash ? " re-chip-clash" : ""}" ` +
 			`draggable="false" title="${frappe.utils.escape_html(title)}">` +
-			`${frappe.utils.escape_html(discipline.slice(0, 3))}</span>`
+			`${frappe.utils.escape_html(discipline.slice(0, 3))}${this.note_marker(cell)}</span>`
 		);
 	}
 
@@ -675,8 +778,10 @@ autoshift.RotaEditor = class RotaEditor {
 		return (
 			`<span class="re-chip${classes}" draggable="false" ` +
 			`style="--chip-bg: ${color.bg}; --chip-fg: ${color.fg}; --chip-border: ${color.border};" ` +
-			`title="${branch}${role}${frappe.utils.escape_html(why)}">` +
-			`${(cell.branch || "?").slice(0, 3)}${this.role_badge(emp, cell)}</span>`
+			`title="${branch}${role}${frappe.utils.escape_html(why)}${this.note_title(cell)}">` +
+			`${(cell.branch || "?").slice(0, 3)}${this.role_badge(emp, cell)}${this.note_marker(
+				cell
+			)}</span>`
 		);
 	}
 
@@ -770,8 +875,8 @@ autoshift.RotaEditor = class RotaEditor {
 						(cell.clash ? " re-chip-clash" : "");
 					const title = `${branch}${cadence_title}${this.role_title(
 						cell
-					)}${pending_title}${silver_title}${clash_title} — ${__(
-						"right-click to change the role"
+					)}${pending_title}${silver_title}${clash_title}${this.note_title(cell)} — ${__(
+						"right-click to change the role or add a note"
 					)}`;
 					rows +=
 						`<span class="re-chip${chip_class}" ` +
@@ -780,12 +885,12 @@ autoshift.RotaEditor = class RotaEditor {
 						`data-employee="${emp.employee}" data-shift-type="${shift_type}" data-date="${d.date}" ` +
 						`data-branch="${branch}" data-role="${frappe.utils.escape_html(
 							cell.role || ""
-						)}" ` +
+						)}" data-note="${frappe.utils.escape_html(cell.note || "")}" ` +
 						`${style} title="${frappe.utils.escape_html(title)}">` +
 						`${(cell.branch || "?").slice(0, 3)}${cadence}${this.role_badge(
 							emp,
 							cell
-						)}</span>`;
+						)}${this.note_marker(cell)}</span>`;
 				} else if (!foreign) {
 					rows +=
 						`<span class="re-cell-empty" data-employee="${emp.employee}" ` +

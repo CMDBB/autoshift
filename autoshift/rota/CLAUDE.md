@@ -170,3 +170,36 @@ never ran).
   become read-only `extra_shift_types` sections.
 - `editor.unconfirmed_rotas` backs the solve-time warning and the editor's own banner
   (`get_state`'s `unconfirmed_employees`, counted on the draft-folded rotas).
+
+---
+
+## Notes (`notes.py`)
+
+A right-click **footnote** on one weekday of a `Shift Schedule Assignment`, stored in its own
+`Rota Day Note` doctype and never read by the optimizer or anything in `optimizer/`. Exists for
+the case the rest of this app has no doctype for yet: one person's rota genuinely differs on a
+recurring day, and a one-off pattern or a new rule would be the wrong size of tool to explain it.
+
+**Tied to the rota, not to the day it was written on.** Keyed by (`shift_schedule_assignment`,
+`weekday`) rather than a calendar date — `for_window` reads the pattern's own cycle, anchor and
+`custom_create_shifts_until` (mirroring `materialize.load_rotas` in miniature, minus the role
+resolution a note has no use for) and replays them through the same `cycle.occurrences` the
+pattern itself uses, so the note reappears on every future occurrence of that weekday. Edit the
+pattern — `edit.py`'s "superseded, not deleted" — and the note goes with it: the assignment it
+names stops covering any days, so expanding it produces nothing more, the same as everything
+else tied to that document. `for_window`'s own return shape is unchanged from a per-day lookup
+(`dict[(employee, date, shift_type), note]`), so every caller — `editor.get_state`'s
+`_apply_notes`, and the wall chart's `source.py` — stays oblivious to notes being stored per
+weekday-of-a-pattern rather than per day.
+
+**Bypasses the draft entirely.** `editor.set_note` writes (or clears, on a blank note) straight
+away, with no staging and nothing for Apply/Discard to carry — unlike every other right-click
+edit here, it is not a `Change` and never touches `Rota Edit Draft`. It refuses a pattern this
+draft has only staged, not yet applied (`NEW-…`, see `_effective_rotas`): there is no real
+`Shift Schedule Assignment` yet for the note to point at. `get_state` folds the note map onto
+every cell dict it builds (native, foreign and hidden alike — a note is discipline-agnostic) via
+`_apply_notes`, so a cell carries its note whether or not it is editable here.
+
+**Drawn where it was written, not staged where it is seen.** The wall chart reads the same
+`for_window` lookup off `Rota Day Note` directly (`autoshift/wallchart/CLAUDE.md`) — nothing
+about a note passes through `Optimizer Run` or a draft on its way there.

@@ -322,6 +322,8 @@ def _book_slots(records: list[dict], days: list[datetime.date], virtual: bool) -
 	"""
 	if not records:
 		return []
+	from autoshift.rota import notes as rota_notes
+
 	names = {record["employee"] for record in records}
 	chip_sort = _chip_sort_config()
 	people = _employees(names, tuple({field for field, _ in chip_sort.values()}))
@@ -331,6 +333,7 @@ def _book_slots(records: list[dict], days: list[datetime.date], virtual: bool) -
 	role_order = layout.role_order()
 	held = _held_roles(names)
 	role_max_rooms = _role_max_rooms()
+	note_map = rota_notes.for_window(names, days[0], days[-1])
 
 	slots: list[Slot] = []
 	for record in records:
@@ -375,6 +378,7 @@ def _book_slots(records: list[dict], days: list[datetime.date], virtual: bool) -
 						role_certain=is_certain,
 						sort_value=_sort_value(role_of_chip, person, chip_sort),
 						virtual=virtual,
+						note=note_map.get((record["employee"], day.isoformat(), record["shift_type"])),
 					)
 				)
 	return slots
@@ -410,11 +414,15 @@ def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 	)
 	if not rows:
 		return []
-	days = set(week_dates(monday))
+	from autoshift.rota import notes as rota_notes
+
+	week = week_dates(monday)
+	days = set(week)
 	names = {row["employee"] for row in rows}
 	chip_sort = _chip_sort_config()
 	people = _employees(names, tuple({field for field, _ in chip_sort.values()}))
 	branches = _location_branches()
+	note_map = rota_notes.for_window(names, week[0], week[-1])
 
 	# Roles became a slot field partway through; a run solved before that has none
 	# on any of its slots, and without this every one of them would land under
@@ -472,6 +480,7 @@ def from_optimizer_run(run_name: str, monday: datetime.date) -> list[Slot]:
 				role_certain=certain,
 				sort_value=_sort_value(role, person, chip_sort),
 				room_index=_parse_room_index(row["room_index"]),
+				note=note_map.get((row["employee"], day.isoformat(), row["shift_type"])),
 			)
 		)
 	return slots

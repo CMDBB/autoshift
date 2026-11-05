@@ -23,6 +23,7 @@ and nothing more. The shape is nested to match the drawing order:
                    weekdays:        {selected: [0‥6]},
                    highlight_roles: {options: […],             selected: [str]},
                    hidden: int},
+      "footnotes": [{number, note}, …],
       "warnings": [str],
       "totals":   {staffed, capacity, kept, added, dropped},
       "pending_bound": {first_day, last_day, count, employees, employee_names},
@@ -49,6 +50,11 @@ day somebody works twice: they are away for both.
 whichever of those roles they hold — independent of `cell.role`, since the point is to mark
 them on a half-day worked in a *different* role too. The browser marks a chip whose
 `employee` is a key, whatever the chip's own role.
+
+A cell's `note` is a planner's right-click footnote on that half-day (`autoshift.rota.notes`)
+— never read by the optimizer — and `footnote` is the number it shares with every other cell
+whose note reads exactly the same text, assigned by `chart.footnotes` in the order a reader's
+eye meets them. `footnotes` at the top level is the legend those numbers key into.
 
 `filters` is the reader's own narrowing, the one view preference in the payload.
 `weekdays` is which weekdays the practice works — the reader's answer where they gave
@@ -85,6 +91,7 @@ from .chart import (
 	OVERFLOW,
 	bucket_leaves,
 	build,
+	footnotes,
 	merge,
 	monday_of,
 	week_dates,
@@ -162,6 +169,11 @@ def _cell(slot, room: int) -> dict:
 		# measured it — the row it is drawn at is already placed from this, so it is
 		# reporting-only here, for a tooltip to say "Room 3" instead of just showing it.
 		"room": room or None,
+		# A planner's right-click note (`autoshift.rota.notes`), for the on-screen
+		# tooltip. `footnote` — the number this text shares with every other cell
+		# whose note reads the same — is stamped on separately once the whole
+		# chart's notes are numbered; see `get_week_chart`.
+		"note": slot.note,
 	}
 
 
@@ -313,6 +325,10 @@ def get_week_chart(
 
 	chart = build(structure, merge(existing, proposed), monday)
 	cells = _index(chart)
+	footnote_list, cell_footnotes = footnotes(chart)
+	for key, number in cell_footnotes.items():
+		if key in cells:
+			cells[key]["footnote"] = number
 
 	options = layout_mod.filter_options()
 	role_labels = {option["value"]: option["label"] for option in options["roles"]}
@@ -384,6 +400,11 @@ def get_week_chart(
 		"leaves_not_due": _not_due,
 		"highlighted": highlighted,
 		"filters": _filters(options, disciplines, branches, sorted(worked), hidden, highlight_roles),
+		# A planner's right-click notes (`autoshift.rota.notes`), numbered in reading
+		# order with same-text notes sharing a number — see `chart.footnotes`. Drawn
+		# as a legend under the chart; `cells[*]["footnote"]` names which number a
+		# given chip carries.
+		"footnotes": [{"number": number, "note": text} for number, text in footnote_list],
 		"warnings": _warnings(chart, structure, calendar),
 		"totals": _totals(chart, structure, days),
 		"pending_bound": pending,

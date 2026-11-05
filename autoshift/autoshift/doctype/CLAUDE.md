@@ -169,5 +169,14 @@ has the record is **skipped, never overwritten**.
 one discipline's bound rotas. Autonamed from (user, discipline) so staging always finds the same
 document. See `autoshift/rota/CLAUDE.md`.
 
+**Rota Day Note** — a planner's footnote on one weekday of a `Shift Schedule Assignment`,
+written from the Rota Editor's right-click menu and drawn on the wall chart. Keyed by
+(`shift_schedule_assignment`, `weekday`), **not** by a calendar date, so it carries over to
+every future occurrence of that weekday for as long as the pattern runs, reading the pattern's
+own periodicity and start/end dates the same way `cycle.occurrences` does. Autonamed from its
+own two fields; edit the pattern (superseded, not deleted) and the note goes with it. Never
+touches a Shift Assignment, a draft or anything `DataPackage` reads — see
+`autoshift/rota/notes.py`.
+
 **Collateral Scheduling Role** — child doctype behind the `custom_collateral_roles` Table
 MultiSelect on `Shift Assignment` and `Shift Schedule Assignment`.
